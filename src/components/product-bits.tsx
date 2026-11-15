@@ -1,13 +1,14 @@
 import { Image } from 'expo-image';
 import { StyleSheet, Text, View } from 'react-native';
 
-import { Colors, Radius, Type, tabularNumbers } from '@/constants/theme';
+import { Radius, Type, tabularNumbers, useColors, useThemedStyles, type Palette } from '@/constants/theme';
 import type { Rating } from '@/data/types';
 import { formatCount, formatPrice } from '@/lib/format';
 import { productImageSource } from '@/lib/product-image';
 import { retailerBrand } from '@/lib/retailer-brand';
 
 export function ProductImage({ imageUrl, size }: { imageUrl: string | null | undefined; size: number }) {
+  const styles = useThemedStyles(createStyles);
   const source = productImageSource(imageUrl);
   return (
     <View style={[styles.tile, { width: size, height: size }]}>
@@ -17,7 +18,8 @@ export function ProductImage({ imageUrl, size }: { imageUrl: string | null | und
 }
 
 export function RetailerLogo({ retailer, retailerName, size = 40 }: { retailer: string; retailerName: string; size?: number }) {
-  const brand = retailerBrand(retailer, retailerName);
+  const styles = useThemedStyles(createStyles);
+  const brand = retailerBrand(retailer, retailerName, useColors());
   const fontSize = size * (brand.mark.length > 2 ? 0.3 : brand.mark.length > 1 ? 0.36 : 0.46);
   return (
     <View style={[styles.logo, { width: size, height: size, backgroundColor: brand.background }]}>
@@ -27,6 +29,7 @@ export function RetailerLogo({ retailer, retailerName, size = 40 }: { retailer: 
 }
 
 export function RatingText({ rating }: { rating: Rating | null }) {
+  const styles = useThemedStyles(createStyles);
   if (!rating) return null;
   return (
     <Text
@@ -38,6 +41,7 @@ export function RatingText({ rating }: { rating: Rating | null }) {
 }
 
 export function PriceText({ priceCents, listPriceCents }: { priceCents: number; listPriceCents: number | null }) {
+  const styles = useThemedStyles(createStyles);
   return (
     <View>
       <Text style={styles.price}>{formatPrice(priceCents)}</Text>
@@ -48,7 +52,7 @@ export function PriceText({ priceCents, listPriceCents }: { priceCents: number; 
   );
 }
 
-const styles = StyleSheet.create({
+const createStyles = (Colors: Palette) => StyleSheet.create({
   tile: {
     backgroundColor: Colors.imageTile,
     borderRadius: Radius.tile,

@@ -15,13 +15,15 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { PillButton } from '@/components/pill-button';
 import { ProductImage, RatingText } from '@/components/product-bits';
-import { Colors, Radius, Spacing, Type, tabularNumbers } from '@/constants/theme';
+import { Radius, Spacing, Type, tabularNumbers, useColors, useThemedStyles, type Palette } from '@/constants/theme';
 import type { ChatMessage, ChatSuggestion } from '@/data/assistant-api';
 import { useShop } from '@/data/shop-store';
 import { formatPrice } from '@/lib/format';
 import { useSession } from '@/lib/session';
 
 export default function ChatScreen() {
+  const Colors = useColors();
+  const styles = useThemedStyles(createStyles);
   const insets = useSafeAreaInsets();
   const { messages, assistantTyping, sendMessage, cartCount } = useShop();
   const session = useSession();
@@ -94,6 +96,7 @@ export default function ChatScreen() {
 }
 
 function Message({ message }: { message: ChatMessage }) {
+  const styles = useThemedStyles(createStyles);
   if (message.role === 'user') {
     return (
       <View style={styles.userBubble}>
@@ -120,6 +123,8 @@ function Message({ message }: { message: ChatMessage }) {
 }
 
 function Suggestion({ suggestion: { url, product, offer, rating } }: { suggestion: ChatSuggestion }) {
+  const Colors = useColors();
+  const styles = useThemedStyles(createStyles);
   const { items, addItem } = useShop();
   const inCart = items.some((item) => item.url === url);
   return (
@@ -151,7 +156,7 @@ function Suggestion({ suggestion: { url, product, offer, rating } }: { suggestio
   );
 }
 
-const styles = StyleSheet.create({
+const createStyles = (Colors: Palette) => StyleSheet.create({
   screen: { flex: 1, backgroundColor: Colors.background },
   header: { alignItems: 'center', paddingBottom: Spacing.md },
   wordmark: { fontSize: 24, lineHeight: 30, fontWeight: '700', letterSpacing: -1, color: Colors.accent },

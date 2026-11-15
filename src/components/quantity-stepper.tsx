@@ -2,7 +2,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
-import { Colors, Radius, Type, tabularNumbers } from '@/constants/theme';
+import { Radius, Type, tabularNumbers, useColors, useThemedStyles, type Palette } from '@/constants/theme';
 
 const MAX_QUANTITY = 10;
 
@@ -15,6 +15,8 @@ export function QuantityStepper({
   onChange: (quantity: number) => Promise<void>;
   onRemove: () => Promise<void>;
 }) {
+  const Colors = useColors();
+  const styles = useThemedStyles(createStyles);
   const [pending, setPending] = useState(false);
   const atMax = quantity >= MAX_QUANTITY;
   const run = async (update: () => Promise<void>) => {
@@ -51,7 +53,7 @@ export function QuantityStepper({
   );
 }
 
-const styles = StyleSheet.create({
+const createStyles = (Colors: Palette) => StyleSheet.create({
   container: {
     flexDirection: 'row',
     alignItems: 'center',

@@ -4,7 +4,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { PillButton } from '@/components/pill-button';
 import { ProductImage, RatingText } from '@/components/product-bits';
-import { Colors, Spacing, Type } from '@/constants/theme';
+import { Spacing, Type, useThemedStyles, type Palette } from '@/constants/theme';
 import type { Rating } from '@/data/types';
 
 export function ItemCard({
@@ -30,6 +30,7 @@ export function ItemCard({
   onAction: () => void;
   children?: ReactNode;
 }) {
+  const styles = useThemedStyles(createStyles);
   return (
     <View style={styles.container}>
       <View style={styles.row}>
@@ -60,7 +61,7 @@ export function ItemCard({
   );
 }
 
-const styles = StyleSheet.create({
+const createStyles = (Colors: Palette) => StyleSheet.create({
   container: { gap: Spacing.md },
   row: { flexDirection: 'row', gap: Spacing.md },
   details: { flex: 1, gap: 2 },

@@ -9,12 +9,14 @@ import { PillButton } from '@/components/pill-button';
 import { PriceText, RetailerLogo } from '@/components/product-bits';
 import { QuantityStepper } from '@/components/quantity-stepper';
 import { SegmentedControl } from '@/components/segmented-control';
-import { Colors, Radius, Spacing, Type, tabularNumbers } from '@/constants/theme';
+import { Radius, Spacing, Type, tabularNumbers, useColors, useThemedStyles, type Palette } from '@/constants/theme';
 import { useShop } from '@/data/shop-store';
 import type { CartItem, Purchase } from '@/data/types';
 import { etaDate, formatPrice, formatShortDate, isToday } from '@/lib/format';
 
 export default function CartScreen() {
+  const Colors = useColors();
+  const styles = useThemedStyles(createStyles);
   const insets = useSafeAreaInsets();
   const { ready, error, live, cartTab, setCartTab, loadDemoCart } = useShop();
 
@@ -27,7 +29,7 @@ export default function CartScreen() {
       router.push('/connect-agent');
     } else if (Platform.OS === 'ios') {
       ActionSheetIOS.showActionSheetWithOptions(
-        { options: [...actions.map((a) => a.label), 'Cancel'], cancelButtonIndex: actions.length, userInterfaceStyle: 'dark' },
+        { options: [...actions.map((a) => a.label), 'Cancel'], cancelButtonIndex: actions.length },
         (index) => actions[index]?.run()
       );
     } else {
@@ -79,6 +81,8 @@ function checkout(itemIds: string[]) {
 }
 
 function CartTab({ bottomInset }: { bottomInset: number }) {
+  const Colors = useColors();
+  const styles = useThemedStyles(createStyles);
   const { items, live, setQuantity, removeItem, loadDemoCart } = useShop();
   const [loadingDemo, setLoadingDemo] = useState(false);
 
@@ -169,6 +173,7 @@ function CartTab({ bottomInset }: { bottomInset: number }) {
 }
 
 function PurchasesTab({ bottomInset }: { bottomInset: number }) {
+  const styles = useThemedStyles(createStyles);
   const { purchases, purchasedItems, addItem } = useShop();
   if (purchases.length === 0) {
     return (
@@ -217,6 +222,7 @@ function PurchasesTab({ bottomInset }: { bottomInset: number }) {
 }
 
 function RetailerHeader({ retailer, retailerName, detail }: { retailer: string; retailerName: string; detail: string }) {
+  const styles = useThemedStyles(createStyles);
   return (
     <View style={styles.retailer}>
       <RetailerLogo retailer={retailer} retailerName={retailerName} size={36} />
@@ -268,7 +274,7 @@ function statusLine({ status, shipment }: Purchase) {
   }
 }
 
-const styles = StyleSheet.create({
+const createStyles = (Colors: Palette) => StyleSheet.create({
   screen: { flex: 1, backgroundColor: Colors.background },
   header: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, paddingHorizontal: Spacing.lg, paddingBottom: Spacing.md },
   back: {

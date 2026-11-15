@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import Svg, { Circle, Line, Path } from 'react-native-svg';
 
-import { Colors, Spacing, Type } from '@/constants/theme';
+import { Spacing, Type, useColors, useThemedStyles, type Palette } from '@/constants/theme';
 import type { PricePoint } from '@/data/types';
 import { formatShortDate } from '@/lib/format';
 
@@ -10,6 +10,8 @@ const HEIGHT = 150;
 const PAD = 8;
 
 export function PriceChart({ points }: { points: PricePoint[] }) {
+  const Colors = useColors();
+  const styles = useThemedStyles(createStyles);
   const [width, setWidth] = useState(0);
   const prices = points.map((p) => p.priceCents);
   const min = Math.min(...prices);
@@ -29,7 +31,7 @@ export function PriceChart({ points }: { points: PricePoint[] }) {
             <Line x1={PAD} x2={width - PAD} y1={y(min)} y2={y(min)} stroke={Colors.textTertiary} strokeDasharray="3 5" strokeWidth={1} />
             <Path d={path} stroke={Colors.accent} strokeWidth={2.5} fill="none" strokeLinejoin="round" strokeLinecap="round" />
             {lowIndex !== last && <Circle cx={x(lowIndex)} cy={y(min)} r={3.5} fill={Colors.textSecondary} />}
-            <Circle cx={x(last)} cy={y(prices[last])} r={6} fill={Colors.accent} stroke={Colors.surface} strokeWidth={2} />
+            <Circle cx={x(last)} cy={y(prices[last])} r={6} fill={Colors.accent} stroke={Colors.sheet} strokeWidth={2} />
           </Svg>
         )}
       </View>
@@ -41,7 +43,7 @@ export function PriceChart({ points }: { points: PricePoint[] }) {
   );
 }
 
-const styles = StyleSheet.create({
+const createStyles = (Colors: Palette) => StyleSheet.create({
   axis: { flexDirection: 'row', justifyContent: 'space-between', marginTop: Spacing.sm, paddingHorizontal: PAD },
   axisLabel: { ...Type.secondary, color: Colors.textTertiary },
 });

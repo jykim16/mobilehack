@@ -1,6 +1,6 @@
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
-import { Colors, Radius, Type } from '@/constants/theme';
+import { Radius, Type, useThemedStyles, type Palette } from '@/constants/theme';
 
 export function SegmentedControl<T extends string>({
   segments,
@@ -11,6 +11,7 @@ export function SegmentedControl<T extends string>({
   value: T;
   onChange: (value: T) => void;
 }) {
+  const styles = useThemedStyles(createStyles);
   return (
     <View style={styles.track} accessibilityRole="tablist">
       {segments.map((segment) => {
@@ -30,7 +31,7 @@ export function SegmentedControl<T extends string>({
   );
 }
 
-const styles = StyleSheet.create({
+const createStyles = (Colors: Palette) => StyleSheet.create({
   track: {
     flex: 1,
     flexDirection: 'row',
