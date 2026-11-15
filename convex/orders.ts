@@ -168,7 +168,14 @@ export const syncShipment = internalAction({
       orderRef: loaded.order.orderRef,
     });
     if (status.status !== "placed") return null;
-    await ctx.runMutation(internal.orders.applyShipment, { orderId, ...status.shipment });
+    await ctx.runMutation(internal.orders.applyShipment, {
+      orderId,
+      status: status.shipment.status,
+      carrier: status.shipment.carrier ?? "",
+      trackingNumber: status.shipment.trackingNumber ?? "",
+      trackingUrl: status.shipment.trackingUrl ?? "",
+      eta: status.shipment.eta ?? "",
+    });
     const done = status.shipment.status === "delivered" || status.shipment.status === "shipped";
     if (!done && polls < 60) {
       await ctx.scheduler.runAfter(SHIPMENT_POLL_MS, internal.orders.syncShipment, { orderId, polls: polls + 1 });
@@ -181,18 +188,25 @@ export const applyShipment = internalMutation({
   args: {
     orderId: v.id("orders"),
     status: shipmentStatus,
-    carrier: v.optional(v.string()),
-    trackingNumber: v.optional(v.string()),
-    trackingUrl: v.optional(v.string()),
-    eta: v.optional(v.string()),
+    carrier: v.string(),
+    trackingNumber: v.string(),
+    trackingUrl: v.string(),
+    eta: v.string(),
   },
-  handler: async (ctx, { orderId, ...fields }) => {
+  handler: async (ctx, { orderId, status, carrier, trackingNumber, trackingUrl, eta }) => {
     const shipment = await ctx.db
       .query("shipments")
       .withIndex("by_orderId", (q) => q.eq("orderId", orderId))
       .unique();
     if (!shipment) return null;
-    await ctx.db.patch("shipments", shipment._id, { ...fields, updatedAt: Date.now() });
+    await ctx.db.patch("shipments", shipment._id, {
+      status,
+      carrier: carrier || undefined,
+      trackingNumber: trackingNumber || undefined,
+      trackingUrl: trackingUrl || undefined,
+      eta: eta || undefined,
+      updatedAt: Date.now(),
+    });
     return null;
   },
 });

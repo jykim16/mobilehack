@@ -174,5 +174,14 @@ export const resetDemo = mutation({
   },
 });
 
+/** Creates a shopper row for the agent / CLI demo paths that have no Convex session. */
+export const createDemoShopper = internalMutation({
+  args: { name: v.string() },
+  handler: async (ctx, { name }) => {
+    await ensureCatalog(ctx);
+    return await ctx.db.insert("users", { name, isAnonymous: true });
+  },
+});
+
 export const resetPriceInternal = internalMutation({ args: {}, handler: async (ctx) => { await resetPrice(ctx); return null; } });
 

@@ -38,6 +38,9 @@ export const mcpTables = {
     createdAt: v.number(),
     expiresAt: v.optional(v.number()),
     revokedAt: v.optional(v.number()),
+    // Legacy field on tokens minted before grant ids were dropped; kept so the
+    // existing documents validate.
+    grantId: v.optional(v.string()),
   })
     .index("by_tokenHash", ["tokenHash"])
     .index("by_shopperId", ["shopperId"]),

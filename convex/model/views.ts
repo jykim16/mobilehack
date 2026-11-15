@@ -68,15 +68,25 @@ export async function cartItemView(
       variantLabels.set(o.variantId, vdoc?.label ?? "");
     }
   }
-  const rated = productOffers.filter((o) => o.rating);
-  const ratingCount = rated.reduce((n, o) => n + o.rating!.count, 0);
+  // One rating per retailer: sibling variants of the same listing share a review
+  // set, so summing them would double-count.
+  const perRetailer = new Map<string, { retailerName: string; average: number; count: number }>();
+  for (const o of productOffers) {
+    if (!o.rating) continue;
+    const seen = perRetailer.get(o.retailer);
+    if (!seen || o.rating.count > seen.count) {
+      perRetailer.set(o.retailer, { retailerName: o.retailerName, ...o.rating });
+    }
+  }
+  const retailers = [...perRetailer.values()];
+  const ratingCount = retailers.reduce((n, r) => n + r.count, 0);
   const rating =
     ratingCount > 0
       ? {
           average:
-            Math.round((rated.reduce((s, o) => s + o.rating!.average * o.rating!.count, 0) / ratingCount) * 10) / 10,
+            Math.round((retailers.reduce((s, r) => s + r.average * r.count, 0) / ratingCount) * 10) / 10,
           count: ratingCount,
-          retailers: rated.map((o) => ({ retailerName: o.retailerName, ...o.rating! })),
+          retailers,
         }
       : null;
 

@@ -63,8 +63,8 @@ export const start = internalMutation({
 });
 
 export const resolveOffer = internalAction({
-  args: { cartItemId: v.id("cartItems"), variant: v.optional(v.string()) },
-  handler: async (ctx, { cartItemId, variant }) => {
+  args: { cartItemId: v.id("cartItems") },
+  handler: async (ctx, { cartItemId }) => {
     const item = await ctx.runQuery(internal.enrichment.getItemInternal, { cartItemId });
     if (!item || item.offerId) return null;
     let og: Awaited<ReturnType<typeof fetchOpenGraph>> = {};
@@ -76,10 +76,9 @@ export const resolveOffer = internalAction({
     await ctx.runMutation(internal.enrichment.attachOffer, {
       cartItemId,
       title: og.title ?? titleFromUrl(item.url),
-      imageUrl: og.image,
-      description: og.description,
-      priceCents: og.priceCents,
-      variant,
+      imageUrl: og.image ?? "",
+      description: og.description ?? "",
+      priceCents: og.priceCents ?? 0,
     });
     return null;
   },
@@ -89,10 +88,9 @@ export const attachOffer = internalMutation({
   args: {
     cartItemId: v.id("cartItems"),
     title: v.string(),
-    imageUrl: v.optional(v.string()),
-    description: v.optional(v.string()),
-    priceCents: v.optional(v.number()),
-    variant: v.optional(v.string()),
+    imageUrl: v.string(),
+    description: v.string(),
+    priceCents: v.number(),
   },
   handler: async (ctx, args) => {
     const item = await ctx.db.get("cartItems", args.cartItemId);
@@ -108,10 +106,10 @@ export const attachOffer = internalMutation({
       const productId = await ctx.db.insert("products", {
         title: args.title.slice(0, 200),
         category: "general",
-        imageUrl: args.imageUrl,
-        description: args.description?.slice(0, 500),
+        imageUrl: args.imageUrl || undefined,
+        description: args.description ? args.description.slice(0, 500) : undefined,
       });
-      const variantId = await ctx.db.insert("variants", { productId, label: args.variant ?? "Default" });
+      const variantId = await ctx.db.insert("variants", { productId, label: "Default" });
       const now = Date.now();
       const offerId = await ctx.db.insert("offers", {
         productId,
@@ -121,16 +119,16 @@ export const attachOffer = internalMutation({
         seller: retailerName,
         url: item.url,
         canonicalKey,
-        priceCents: args.priceCents ?? 0,
+        priceCents: args.priceCents,
         shippingCents: 0,
         currency: "USD",
         deliveryEstimate: "Delivery estimate unavailable",
         returnSummary: RETAILER_RETURN_TERMS[retailer]?.summary ?? "See retailer for return terms.",
-        inStock: args.priceCents !== undefined && args.priceCents > 0,
-        simulated: args.priceCents === undefined,
+        inStock: args.priceCents > 0,
+        simulated: args.priceCents <= 0,
         updatedAt: now,
       });
-      if (args.priceCents !== undefined) {
+      if (args.priceCents > 0) {
         await ctx.db.insert("priceObservations", {
           offerId,
           priceCents: args.priceCents,

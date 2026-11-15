@@ -77,10 +77,7 @@ export async function addItemFor(
   if (offer) {
     await ctx.scheduler.runAfter(0, internal.enrichment.start, { cartItemId: itemId });
   } else {
-    await ctx.scheduler.runAfter(0, internal.enrichment.resolveOffer, {
-      cartItemId: itemId,
-      variant: args.variant,
-    });
+    await ctx.scheduler.runAfter(0, internal.enrichment.resolveOffer, { cartItemId: itemId });
   }
   return { itemId, enrichmentStatus: offer ? ("enriching" as const) : ("resolving" as const), deduplicated: false };
 }
