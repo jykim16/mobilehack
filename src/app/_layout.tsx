@@ -42,6 +42,9 @@ function RootStack() {
         <Stack.Screen name="connect-agent" />
         <Stack.Screen name="price-history/[id]" options={{ ...sheetOptions, sheetAllowedDetents: [0.82] }} />
         <Stack.Screen name="checkout" options={{ ...sheetOptions, sheetAllowedDetents: [0.75] }} />
+        <Stack.Screen name="item/[id]" options={{ presentation: 'fullScreenModal' }} />
+        <Stack.Screen name="purchase/[id]" options={{ presentation: 'fullScreenModal' }} />
+        <Stack.Screen name="reviews/[id]" options={{ presentation: 'modal', contentStyle: { backgroundColor: Colors.sheet } }} />
       </Stack.Protected>
       <Stack.Protected guard={needsSignIn}>
         <Stack.Screen name="sign-in" />

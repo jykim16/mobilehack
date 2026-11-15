@@ -1,0 +1,19 @@
+# Signs up a fresh shopper and loads the demo cart. Import with module_import "cart-sign-up".
+# Expects test variables shopper_email and password.
+blocks:
+  - type: instructions
+    step_description: "On the Create your account screen, enter {{shopper_email}} as the email and {{password}} as the password, then tap Create account."
+  - type: validation
+    step_description: "The chat screen is visible with the lowercase cart wordmark at the top and a Cart button at the bottom."
+  - type: instructions
+    step_description: "Tap the Cart button at the bottom of the chat screen."
+  - type: if
+    condition: "The cart shows Your cart is empty"
+    then:
+      - type: instructions
+        step_description: "Tap Load demo cart."
+      - type: manual
+        step_type: wait
+        step_description: "3"
+  - type: validation
+    step_description: "The Cart tab lists at least one item card with a product image, a rating line, Price history, and a Buy button."

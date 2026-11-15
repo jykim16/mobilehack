@@ -8,7 +8,8 @@ import * as assistantApi from './assistant-api';
 import type { ChatMessage } from './assistant-api';
 import * as cartApi from './cart-api';
 import { api } from './convex-api';
-import type { CartItem, DecideOutcome, Purchase, PurchaseRequest, Quote } from './types';
+import { mockReviews } from './mock-reviews';
+import type { CartItem, DecideOutcome, Purchase, PurchaseRequest, Quote, ReviewList } from './types';
 
 /**
  * Screen-facing state. With EXPO_PUBLIC_CONVEX_URL set, lists are live useQuery subscriptions on the
@@ -239,3 +240,51 @@ function useMockItem(itemId: string): CartItem | undefined {
 
 /** One cart item with full sections and price history, kept live on Convex. */
 export const useItem = convexConfigured ? useLiveItem : useMockItem;
+
+let reviewsDeployed: boolean | undefined;
+
+function useLiveReviews(item: CartItem | undefined) {
+  const convex = useConvex();
+  const [deployed, setDeployed] = useState(reviewsDeployed);
+  const cartItemId = item?.id;
+
+  useEffect(() => {
+    if (deployed !== undefined || !cartItemId) return;
+    convex
+      .query(api.reviews.list, { cartItemId })
+      .then(
+        () => true,
+        () => false
+      )
+      .then((ok) => {
+        reviewsDeployed = ok;
+        setDeployed(ok);
+      });
+  }, [convex, deployed, cartItemId]);
+
+  const list = useQuery(api.reviews.list, deployed && cartItemId ? { cartItemId } : 'skip');
+  if (!item) return undefined;
+  return deployed === false ? mockReviews(item) : list;
+}
+
+function useMockReviews(item: CartItem | undefined) {
+  return item && mockReviews(item);
+}
+
+/**
+ * reviews:list for one cart item. Until the backend deploys that query, it falls back to simulated
+ * reviews, so the screen works today and switches to live data without a code change.
+ */
+export const useReviews: (item: CartItem | undefined) => ReviewList | undefined = convexConfigured
+  ? useLiveReviews
+  : useMockReviews;
+
+function useLivePurchaseRequest(requestId: string | null | undefined) {
+  const signedIn = useSession() === 'signed_in';
+  return useQuery(api.purchases.getPurchaseStatus, signedIn && requestId ? { requestId } : 'skip');
+}
+
+/** purchases:getPurchaseStatus, kept live on Convex. The offline mocks have no request to read. */
+export const usePurchaseRequest: (requestId: string | null | undefined) => PurchaseRequest | undefined = convexConfigured
+  ? useLivePurchaseRequest
+  : () => undefined;

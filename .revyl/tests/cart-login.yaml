@@ -1,0 +1,36 @@
+# Create an account, sign out, and sign back in with the same email and password.
+test:
+  metadata:
+    name: cart-login
+    platform: ios
+    tags:
+      - cart
+      - auth
+      - smoke
+  build:
+    name: capy--org_01M7EXXJQYFBXQJNNW82GRTS5Z--mobilehack-ios
+  variables:
+    password: cart-e2e-demo-pass
+  blocks:
+    - type: code_execution
+      step_description: |
+        import uuid
+        print(f"cart-e2e-{uuid.uuid4().hex[:10]}@example.com")
+      code_execution_runtime: python
+      variable_name: shopper_email
+    - type: instructions
+      step_description: "On the Create your account screen, enter {{shopper_email}} as the email and {{password}} as the password, then tap Create account."
+    - type: validation
+      step_description: "The chat screen is visible with the lowercase cart wordmark at the top."
+    - type: instructions
+      step_description: "Tap the Cart button, then tap the more button (three dots) at the top right and choose Connect an agent."
+    - type: instructions
+      step_description: "Scroll to the bottom and tap Sign out."
+    - type: validation
+      step_description: "The sign-in screen is visible with Email and Password fields."
+    - type: instructions
+      step_description: "Tap Already have an account? Sign in."
+    - type: instructions
+      step_description: "Enter {{shopper_email}} as the email and {{password}} as the password, then tap Sign in."
+    - type: validation
+      step_description: "The chat screen is visible again with the lowercase cart wordmark at the top."

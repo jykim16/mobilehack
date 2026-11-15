@@ -1,0 +1,38 @@
+# Open a purchase and check the shipment tracking timeline.
+test:
+  metadata:
+    name: cart-purchase-tracking
+    platform: ios
+    tags:
+      - cart
+      - tracking
+  build:
+    name: capy--org_01M7EXXJQYFBXQJNNW82GRTS5Z--mobilehack-ios
+  variables:
+    password: cart-e2e-demo-pass
+  blocks:
+    - type: code_execution
+      step_description: |
+        import uuid
+        print(f"cart-e2e-{uuid.uuid4().hex[:10]}@example.com")
+      code_execution_runtime: python
+      variable_name: shopper_email
+    - type: module_import
+      module: "cart-sign-up"
+    - type: instructions
+      step_description: "Tap Buy on the first item card, then tap Approve on the Review order sheet."
+    - type: validation
+      step_description: "The Purchases tab shows the purchased item."
+    - type: manual
+      step_type: wait
+      step_description: "25"
+    - type: instructions
+      step_description: "Tap the product title of the purchased item card."
+    - type: validation
+      step_description: "A full-screen purchase page shows a vertical timeline with the steps Ordered, Shipped, In transit, Out for delivery, and Delivered, with a time on each completed step."
+    - type: validation
+      step_description: "Below the timeline, a Purchase details section shows the order reference starting with CART-, the Total, and a Payment and delivery section with Visa •••• 4242."
+    - type: instructions
+      step_description: "Tap the X button at the top left."
+    - type: validation
+      step_description: "The Purchases tab is visible."

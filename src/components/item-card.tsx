@@ -17,6 +17,7 @@ export function ItemCard({
   actionVariant,
   actionDisabled,
   onAction,
+  onOpen,
   children,
 }: {
   itemId: string;
@@ -28,12 +29,17 @@ export function ItemCard({
   actionVariant: 'strong' | 'secondary';
   actionDisabled?: boolean;
   onAction: () => void;
+  onOpen: () => void;
   children?: ReactNode;
 }) {
   const styles = useThemedStyles(createStyles);
   return (
     <View style={styles.container}>
-      <View style={styles.row}>
+      <Pressable
+        accessible={false}
+        testID={`item-${itemId}`}
+        onPress={onOpen}
+        style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}>
         <ProductImage imageUrl={imageUrl} size={88} />
         <View style={styles.details}>
           <Text style={styles.title} numberOfLines={2}>
@@ -44,10 +50,13 @@ export function ItemCard({
               {subtitle}
             </Text>
           )}
-          <RatingText rating={rating} />
+          <RatingText
+            rating={rating}
+            onPress={() => router.push({ pathname: '/reviews/[id]', params: { id: itemId } })}
+          />
           {children}
         </View>
-      </View>
+      </Pressable>
       <View style={styles.footer}>
         <Pressable
           accessibilityRole="button"
@@ -64,6 +73,7 @@ export function ItemCard({
 const createStyles = (Colors: Palette) => StyleSheet.create({
   container: { gap: Spacing.md },
   row: { flexDirection: 'row', gap: Spacing.md },
+  rowPressed: { opacity: 0.7 },
   details: { flex: 1, gap: 2 },
   title: { ...Type.headline, fontSize: 16, lineHeight: 21, color: Colors.text },
   variant: { ...Type.secondary, color: Colors.textSecondary },

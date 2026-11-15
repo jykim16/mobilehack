@@ -1,0 +1,31 @@
+# Open Connect an agent from the Cart menu and create a bearer token.
+test:
+  metadata:
+    name: cart-connect-agent
+    platform: ios
+    tags:
+      - cart
+      - agents
+  build:
+    name: capy--org_01M7EXXJQYFBXQJNNW82GRTS5Z--mobilehack-ios
+  variables:
+    password: cart-e2e-demo-pass
+  blocks:
+    - type: code_execution
+      step_description: |
+        import uuid
+        print(f"cart-e2e-{uuid.uuid4().hex[:10]}@example.com")
+      code_execution_runtime: python
+      variable_name: shopper_email
+    - type: instructions
+      step_description: "On the Create your account screen, enter {{shopper_email}} as the email and {{password}} as the password, then tap Create account."
+    - type: instructions
+      step_description: "Tap the Cart button, then tap the more button (three dots) at the top right and choose Connect an agent."
+    - type: validation
+      step_description: "The Connect an agent screen shows an MCP server URL and an Agent name field."
+    - type: instructions
+      step_description: "Enter Revyl agent as the agent name and tap Create token."
+    - type: validation
+      step_description: "A Bearer token is shown with a note that it is shown once."
+    - type: validation
+      step_description: "Revyl agent appears under Connected agents."

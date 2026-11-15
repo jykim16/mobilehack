@@ -1,6 +1,6 @@
 import { makeFunctionReference } from 'convex/server';
 
-import type { CartItem, DecideOutcome, Purchase, PurchaseRequest } from './types';
+import type { CartItem, DecideOutcome, Purchase, PurchaseRequest, ReviewList } from './types';
 
 /**
  * References to the deployed Convex functions in api-contract.md, by name, so the app needs neither
@@ -42,6 +42,9 @@ export const api = {
     >('purchases:decidePurchase'),
     getPurchaseStatus: makeFunctionReference<'query', { requestId: string }, PurchaseRequest>('purchases:getPurchaseStatus'),
     listPurchases: makeFunctionReference<'query', Empty, Purchase[]>('purchases:listPurchases'),
+  },
+  reviews: {
+    list: makeFunctionReference<'query', { cartItemId: string }, ReviewList>('reviews:list'),
   },
   demo: {
     setupMyCart: makeFunctionReference<'mutation', Empty, { heroUrl: string; airflyItemId: string }>('demo:setupMyCart'),

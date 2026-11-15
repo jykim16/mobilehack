@@ -21,6 +21,15 @@ export function formatShortDate(date: Date | number) {
   return new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
+export function formatDateTime(date: Date | number) {
+  return new Date(date).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
+
+export function formatPostedDate(date: number) {
+  const sameYear = new Date(date).getFullYear() === new Date().getFullYear();
+  return new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', ...(sameYear ? {} : { year: 'numeric' }) });
+}
+
 export function isToday(date: Date | number) {
   return new Date(date).toDateString() === new Date().toDateString();
 }

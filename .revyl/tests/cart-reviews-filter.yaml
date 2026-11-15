@@ -1,0 +1,37 @@
+# Open the reviews list from a cart item's rating line and filter it by source.
+test:
+  metadata:
+    name: cart-reviews-filter
+    platform: ios
+    tags:
+      - cart
+      - reviews
+  build:
+    name: capy--org_01M7EXXJQYFBXQJNNW82GRTS5Z--mobilehack-ios
+  variables:
+    password: cart-e2e-demo-pass
+  blocks:
+    - type: code_execution
+      step_description: |
+        import uuid
+        print(f"cart-e2e-{uuid.uuid4().hex[:10]}@example.com")
+      code_execution_runtime: python
+      variable_name: shopper_email
+    - type: module_import
+      module: "cart-sign-up"
+    - type: instructions
+      step_description: "Tap the rating line (the star rating with the review count) on the first item card."
+    - type: validation
+      step_description: "A Reviews sheet shows a summary line with a star rating and a count of reviews across several sources, a row of source filters starting with All, and review rows."
+    - type: instructions
+      step_description: "Tap the Reddit filter."
+    - type: validation
+      step_description: "The Reddit filter is selected and every visible review row is labeled Reddit."
+    - type: instructions
+      step_description: "Tap the All filter."
+    - type: validation
+      step_description: "Review rows from more than one source are visible again."
+    - type: instructions
+      step_description: "Tap the X button at the top right of the Reviews sheet."
+    - type: validation
+      step_description: "The Cart tab is visible."
