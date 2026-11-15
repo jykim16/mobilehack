@@ -22,6 +22,8 @@ export interface Offer {
   deliveryEstimate: string;
   returnSummary: string;
   rating: { average: number; count: number } | null;
+  condition?: string | null;
+  conditionClass?: string;
   inStock: boolean;
   purchasable?: boolean;
   simulated: boolean;
@@ -63,9 +65,18 @@ export interface PricePoint {
 
 export interface PriceHistory {
   points: PricePoint[];
-  lowCents: number;
-  highCents: number;
+  /** Null when the series is a sparse sample, which shows neither a real low nor a real high. */
+  lowCents: number | null;
+  highCents: number | null;
   currentCents: number;
+  observationCount?: number;
+  /** True while Cart has seen at most one price for this offer and no outside history exists. */
+  trackingSinceAdded?: boolean;
+  mode?: string;
+  seriesLabel?: string | null;
+  sourceUrl?: string | null;
+  note?: string | null;
+  sampled?: boolean;
 }
 
 export interface CartItem {
@@ -81,10 +92,53 @@ export interface CartItem {
   variant: { id: string; label: string } | null;
   offer: Offer | null;
   offers: Offer[];
+  /** The new-condition offer that stands in for the item; null when the URL only lists used or refurbished copies. */
+  newOffer?: Offer | null;
+  offerAvailability?: { newOfferAvailable: boolean; note: string | null };
   rating: Rating | null;
   price: Price | null;
   priceHistory: PriceHistory | null;
   pendingRequest?: { requestId: string; quoteVersion: number; totalCents: number | null; expiresAt: number } | null;
+  comparison?: PriceComparison | null;
+}
+
+export interface QueryAlternative {
+  title: string;
+  url: string;
+  retailer: string;
+  priceCents: number | null;
+}
+
+export interface AddFromQueryResult {
+  itemId: string;
+  enrichmentStatus: CartItem['enrichmentStatus'];
+  resolvedUrl: string;
+  resolvedTitle: string;
+  alternatives: QueryAlternative[];
+}
+
+/** Cross-store lookup on cart:getItem: one Exa run reports listings at other stores. Listing prices only, not confirmed by a scrape. */
+export interface PriceComparison {
+  status: 'running' | 'verifying' | 'completed' | 'empty' | 'failed';
+  checkedAt: number | null;
+  subjectUrl: string;
+  exaRunId: string | null;
+  note: string | null;
+  offers: {
+    retailer: string;
+    seller: string | null;
+    productUrl: string;
+    matchedIdentifier: string | null;
+    condition: string | null;
+    priceCents: number | null;
+    currency: string | null;
+    availability: string | null;
+    shippingCents: number | null;
+    checkedAt: number | null;
+    reportedBy: 'exa';
+    supportingSource: string | null;
+  }[];
+  rejected: { retailer: string; productUrl: string; reason: string }[];
 }
 
 export interface Quote {

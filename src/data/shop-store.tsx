@@ -1,25 +1,32 @@
-import { useAction, useConvex, useMutation, useQueries, useQuery } from 'convex/react';
+import { useAction, useConvex, useMutation, useQueries, useQuery, type ConvexReactClient } from 'convex/react';
 import { ConvexError } from 'convex/values';
 import { createContext, use, useCallback, useEffect, useState, type ReactNode } from 'react';
 
 import { convexConfigured, useSession } from '@/lib/session';
 
-import * as assistantApi from './assistant-api';
-import type { ChatMessage } from './assistant-api';
 import * as cartApi from './cart-api';
 import { api } from './convex-api';
+import { mockComparison } from './mock-comparison';
 import { mockReviews } from './mock-reviews';
-import type { CartItem, DecideOutcome, Purchase, PurchaseRequest, Quote, ReviewList } from './types';
+import type {
+  CartItem,
+  DecideOutcome,
+  Offer,
+  PriceComparison,
+  Purchase,
+  PurchaseRequest,
+  QueryAlternative,
+  Quote,
+  ReviewList,
+} from './types';
 
 /**
  * Screen-facing state. With EXPO_PUBLIC_CONVEX_URL set, lists are live useQuery subscriptions on the
- * deployed backend for the anonymous shopper; without it, the same state comes from the in-memory mocks
+ * deployed backend for the signed-in shopper; without it, the same state comes from the in-memory mocks
  * so the app still runs offline. Screens only see ShopState.
  */
 
-export type CartTab = 'cart' | 'purchases';
-
-export interface PendingQuote {
+interface PendingQuote {
   requestId: string;
   quoteVersion: number;
   quote: Quote;
@@ -35,18 +42,16 @@ interface ShopState {
   items: CartItem[];
   purchases: Purchase[];
   purchasedItems: Record<string, CartItem>;
-  messages: ChatMessage[];
-  assistantTyping: boolean;
   cartCount: number;
-  cartTab: CartTab;
-  setCartTab: (tab: CartTab) => void;
-  sendMessage: (text: string) => Promise<void>;
-  addItem: (url: string) => Promise<void>;
+  /** Adds a product URL and returns the new item's id; enrichment fills it in afterwards. */
+  addItem: (url: string) => Promise<string>;
+  /** Resolves free text to a product and adds it; throws a short message when nothing matched. */
+  addItemFromQuery: (query: string) => Promise<{ itemId: string; alternatives: QueryAlternative[] }>;
   setQuantity: (itemId: string, quantity: number) => Promise<void>;
   removeItem: (itemId: string) => Promise<void>;
   loadDemoCart: () => Promise<void>;
-  quoteItem: (item: CartItem) => Promise<PendingQuote>;
-  decide: (request: PendingQuote, decision: Decision) => Promise<DecideResult>;
+  /** Quotes the item and approves that quote in one step; throws a short message when no order was placed. */
+  checkoutItem: (item: CartItem) => Promise<void>;
 }
 
 const ShopContext = createContext<ShopState | null>(null);
@@ -66,32 +71,71 @@ function toPending(result: Pick<PurchaseRequest, 'requestId' | 'status' | 'quote
 }
 
 const purchaseArgs = (item: CartItem) => {
-  if (!item.offer) throw new Error('This item has no price yet.');
+  const offer = itemOffer(item);
+  if (!offer) throw new Error(item.offerAvailability?.note ?? 'This item has no price yet.');
   return {
     itemId: item.id,
-    offerId: item.offer.id,
+    offerId: offer.id,
     quantity: item.quantity,
     reason: 'Bought from the Cart app',
     idempotencyKey: idempotencyKey(),
   };
 };
 
-function useChat(purchases?: Purchase[]) {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [assistantTyping, setAssistantTyping] = useState(false);
+const outcomeMessages: Partial<Record<DecideOutcome, string>> = {
+  stale_quote: 'The price changed again. Try again.',
+  expired: 'That quote expired. Try again.',
+  invalid_state: "This item can't be bought right now.",
+};
 
-  useEffect(() => {
-    assistantApi.getChatHistory().then(setMessages);
-  }, []);
+/** requestPurchase, then decidePurchase approve, re-approving once if the quote moved in between. */
+async function placeOrder(
+  item: CartItem,
+  quoteItem: (item: CartItem) => Promise<PendingQuote>,
+  decide: (request: PendingQuote, decision: Decision) => Promise<DecideResult>
+) {
+  const first = await decide(await quoteItem(item), 'approve');
+  const { requestId, quoteVersion, quote } = first.request;
+  const { outcome, request } =
+    first.outcome === 'stale_quote' && quote ? await decide({ requestId, quoteVersion, quote }, 'approve') : first;
+  if (outcome !== 'approved' && outcome !== 'already_approved') {
+    throw new Error(outcomeMessages[outcome] ?? 'The order was not placed. Try again.');
+  }
+  if (request.status === 'failed' || request.order?.status === 'failed') throw new Error(request.error ?? 'The order failed. Try again.');
+  return request;
+}
 
-  const sendMessage = async (text: string) => {
-    setMessages((current) => [...current, { id: `pending-${current.length}`, role: 'user', text, createdAt: Date.now() }]);
-    setAssistantTyping(true);
-    setMessages(await assistantApi.sendChatMessage({ text, purchases }));
-    setAssistantTyping(false);
-  };
-
-  return { messages, assistantTyping, sendMessage };
+/**
+ * Approval only schedules the order; the retailer places it afterwards. Resolves once the order is placed and
+ * rejects when it fails or needs a new quote, so the card keeps its busy state until the real outcome.
+ */
+function placementOf(convex: ConvexReactClient, requestId: string) {
+  return new Promise<void>((resolve, reject) => {
+    const watch = convex.watchQuery(api.purchases.getPurchaseStatus, { requestId });
+    const finish = (error?: Error) => {
+      clearTimeout(timer);
+      unsubscribe();
+      if (error) reject(error);
+      else resolve();
+    };
+    const check = () => {
+      let request: PurchaseRequest | undefined;
+      try {
+        request = watch.localQueryResult();
+      } catch (e) {
+        finish(e instanceof Error ? e : new Error(String(e)));
+        return;
+      }
+      if (!request) return;
+      const order = request.order?.status;
+      if (request.status === 'ordered' || order === 'placed') finish();
+      else if (request.status === 'failed' || order === 'failed') finish(new Error(request.error ?? 'The order failed. Try again.'));
+      else if (order === 'requote_required') finish(new Error('The price changed. Try again.'));
+    };
+    const timer = setTimeout(() => finish(new Error('Still placing this order. Check Purchases before trying again.')), 180_000);
+    const unsubscribe = watch.onUpdate(check);
+    check();
+  });
 }
 
 const countOf = (items: CartItem[]) => items.reduce((sum, item) => sum + item.quantity, 0);
@@ -99,12 +143,10 @@ const countOf = (items: CartItem[]) => items.reduce((sum, item) => sum + item.qu
 function LiveShopProvider({ children }: { children: ReactNode }) {
   const session = useSession();
   const signedIn = session === 'signed_in';
-  const [cartTab, setCartTab] = useState<CartTab>('cart');
   const convex = useConvex();
 
   const items = useQuery(api.cart.listItems, signedIn ? {} : 'skip');
   const purchases = useQuery(api.purchases.listPurchases, signedIn ? {} : 'skip');
-  const chat = useChat(purchases ?? []);
   const details = useQueries(
     Object.fromEntries(
       (purchases ?? []).map((p) => [p.itemId, { query: api.cart.getItem, args: { itemId: p.itemId } }])
@@ -129,12 +171,15 @@ function LiveShopProvider({ children }: { children: ReactNode }) {
     items: items ?? [],
     purchases: purchases ?? [],
     purchasedItems,
-    ...chat,
     cartCount: countOf(items ?? []),
-    cartTab,
-    setCartTab,
-    addItem: async (url) => {
-      await addItem({ url, idempotencyKey: idempotencyKey() });
+    addItem: async (url) => (await addItem({ url, idempotencyKey: idempotencyKey() })).itemId,
+    addItemFromQuery: async (query) => {
+      try {
+        return await convex.action(api.cart.addItemFromQuery, { query, idempotencyKey: idempotencyKey() });
+      } catch (e) {
+        if (e instanceof Error && /could not find (public )?function/i.test(e.message)) throw new Error('Paste a product URL for now.');
+        throw e;
+      }
     },
     setQuantity: async (itemId, quantity) => {
       await setQuantity({ itemId, quantity });
@@ -145,15 +190,22 @@ function LiveShopProvider({ children }: { children: ReactNode }) {
     loadDemoCart: async () => {
       await setupMyCart({});
     },
-    quoteItem: async (item) => {
-      const pending = item.pendingRequest;
-      if (pending && pending.expiresAt > Date.now()) {
-        const request = await convex.query(api.purchases.getPurchaseStatus, { requestId: pending.requestId });
-        if (request.status === 'pending_approval' && request.quote) return toPending(request);
-      }
-      return toPending(await requestPurchase(purchaseArgs(item)));
+    checkoutItem: async (item) => {
+      const request = await placeOrder(
+        item,
+        async () => {
+          const pending = item.pendingRequest;
+          if (pending && pending.expiresAt > Date.now()) {
+            const request = await convex.query(api.purchases.getPurchaseStatus, { requestId: pending.requestId });
+            const matches = request.quantity === item.quantity && request.offerId === itemOffer(item)?.id;
+            if (matches && request.status === 'pending_approval' && request.quote) return toPending(request);
+          }
+          return toPending(await requestPurchase(purchaseArgs(item)));
+        },
+        ({ requestId, quoteVersion }, decision) => decidePurchase({ requestId, quoteVersion, decision })
+      );
+      await placementOf(convex, request.requestId);
     },
-    decide: ({ requestId, quoteVersion }, decision) => decidePurchase({ requestId, quoteVersion, decision }),
   };
 
   return <ShopContext value={value}>{children}</ShopContext>;
@@ -172,14 +224,13 @@ async function loadSnapshot(): Promise<Snapshot> {
 }
 
 function MockShopProvider({ children }: { children: ReactNode }) {
-  const chat = useChat();
-  const [cartTab, setCartTab] = useState<CartTab>('cart');
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
 
   const refresh = useCallback(async () => setSnapshot(await loadSnapshot()), []);
 
   useEffect(() => {
     loadSnapshot().then(setSnapshot);
+    return cartApi.subscribe(() => loadSnapshot().then(setSnapshot));
   }, []);
 
   const value: ShopState = {
@@ -189,13 +240,16 @@ function MockShopProvider({ children }: { children: ReactNode }) {
     items: snapshot?.items ?? [],
     purchases: snapshot?.purchases ?? [],
     purchasedItems: snapshot?.purchasedItems ?? {},
-    ...chat,
     cartCount: countOf(snapshot?.items ?? []),
-    cartTab,
-    setCartTab,
     addItem: async (url) => {
-      await cartApi.addItem({ url, idempotencyKey: idempotencyKey() });
+      const { itemId } = await cartApi.addItem({ url, idempotencyKey: idempotencyKey() });
       await refresh();
+      return itemId;
+    },
+    addItemFromQuery: async (query) => {
+      const result = await cartApi.addItemFromQuery({ query, idempotencyKey: idempotencyKey() });
+      await refresh();
+      return result;
     },
     setQuantity: async (itemId, quantity) => {
       await cartApi.setQuantity({ itemId, quantity });
@@ -206,11 +260,16 @@ function MockShopProvider({ children }: { children: ReactNode }) {
       await refresh();
     },
     loadDemoCart: refresh,
-    quoteItem: async (item) => toPending(await cartApi.requestPurchase(purchaseArgs(item))),
-    decide: async ({ requestId, quoteVersion }, decision) => {
-      const result = await cartApi.decidePurchase({ requestId, quoteVersion, decision });
-      await refresh();
-      return result;
+    checkoutItem: async (item) => {
+      try {
+        await placeOrder(
+          item,
+          async () => toPending(await cartApi.requestPurchase(purchaseArgs(item))),
+          ({ requestId, quoteVersion }, decision) => cartApi.decidePurchase({ requestId, quoteVersion, decision })
+        );
+      } finally {
+        await refresh();
+      }
     },
   };
 
@@ -268,7 +327,12 @@ function useLiveReviews(item: CartItem | undefined) {
 }
 
 function useMockReviews(item: CartItem | undefined) {
-  return item && mockReviews(item);
+  const [loaded, setLoaded] = useState(false);
+  useEffect(() => {
+    const timer = setTimeout(() => setLoaded(true), 2500);
+    return () => clearTimeout(timer);
+  }, []);
+  return item && loaded ? mockReviews(item) : undefined;
 }
 
 /**
@@ -288,3 +352,21 @@ function useLivePurchaseRequest(requestId: string | null | undefined) {
 export const usePurchaseRequest: (requestId: string | null | undefined) => PurchaseRequest | undefined = convexConfigured
   ? useLivePurchaseRequest
   : () => undefined;
+
+/**
+ * The item's cross-store comparison. A deployed getItem that predates the field omits it entirely, and
+ * only then does the demo comparison stand in (demo: true); null from the backend means no lookup yet.
+ */
+/**
+ * The offer the app prices and buys. A backend that reports offer availability names the new-condition
+ * offer, which is null when the URL only lists used or refurbished copies; an older backend has only the saved offer.
+ */
+export function itemOffer(item: CartItem): Offer | null {
+  return item.offerAvailability ? (item.newOffer ?? null) : item.offer;
+}
+
+export function itemComparison(item: CartItem): { comparison: PriceComparison | null; demo: boolean } {
+  if (item.comparison !== undefined) return { comparison: item.comparison, demo: false };
+  const comparison = mockComparison(item);
+  return { comparison, demo: comparison !== null };
+}

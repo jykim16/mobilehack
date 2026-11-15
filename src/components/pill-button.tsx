@@ -1,6 +1,6 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import type { ComponentProps } from 'react';
-import { Pressable, StyleSheet, Text, type StyleProp, type ViewStyle } from 'react-native';
+import { ActivityIndicator, Pressable, StyleSheet, Text, type StyleProp, type ViewStyle } from 'react-native';
 
 import { Radius, Spacing, Type, useColors, useThemedStyles, type Palette } from '@/constants/theme';
 
@@ -19,6 +19,7 @@ export function PillButton({
   size = 'regular',
   icon,
   disabled,
+  loading,
   style,
 }: {
   label: string;
@@ -27,6 +28,7 @@ export function PillButton({
   size?: 'regular' | 'small';
   icon?: ComponentProps<typeof Ionicons>['name'];
   disabled?: boolean;
+  loading?: boolean;
   style?: StyleProp<ViewStyle>;
 }) {
   const styles = useThemedStyles(createStyles);
@@ -35,7 +37,8 @@ export function PillButton({
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={label}
-      disabled={disabled}
+      accessibilityState={{ disabled: disabled || loading, busy: loading }}
+      disabled={disabled || loading}
       onPress={onPress}
       style={({ pressed }) => [
         styles.base,
@@ -43,7 +46,8 @@ export function PillButton({
         { backgroundColor: pressed ? colors.pressed : colors.background, opacity: disabled ? 0.5 : 1 },
         style,
       ]}>
-      {icon && <Ionicons name={icon} size={size === 'small' ? 16 : 20} color={colors.text} />}
+      {loading && <ActivityIndicator size="small" color={colors.text} />}
+      {icon && !loading && <Ionicons name={icon} size={size === 'small' ? 16 : 20} color={colors.text} />}
       <Text style={[size === 'small' ? styles.smallLabel : styles.regularLabel, { color: colors.text }]}>{label}</Text>
     </Pressable>
   );

@@ -1,0 +1,31 @@
+# Add a product by link from the Cart input and watch its card fill in.
+test:
+  metadata:
+    name: cart-add-item
+    platform: ios
+    tags:
+      - cart
+      - add
+  build:
+    name: capy--org_01M7EXXJQYFBXQJNNW82GRTS5Z--mobilehack-ios
+  variables:
+    password: cart-e2e-demo-pass
+    product_url: https://www.amazon.com/dp/B0B5V7SDBX
+  blocks:
+    - type: code_execution
+      step_description: |
+        import uuid
+        print(f"cart-e2e-{uuid.uuid4().hex[:10]}@example.com")
+      code_execution_runtime: python
+      variable_name: shopper_email
+    - type: module_import
+      module: "cart-sign-up"
+    - type: instructions
+      step_description: "Tap the Add product title or URL field at the top of the Cart, type {{product_url}}, and tap the round purple + button."
+    - type: validation
+      step_description: "The input is empty again and a new card at the top of the Cart shows grey placeholder shapes or a product being filled in."
+    - type: manual
+      step_type: wait
+      step_description: "20"
+    - type: validation
+      step_description: "The new card at the top shows a product title and image, and a Checkout button or a price."

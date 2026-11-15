@@ -1,4 +1,3 @@
-import { useAuthActions } from '@convex-dev/auth/react';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useMutation, useQuery } from 'convex/react';
 import * as Clipboard from 'expo-clipboard';
@@ -25,7 +24,7 @@ export default function ConnectAgentScreen() {
           accessibilityRole="button"
           accessibilityLabel="Back"
           hitSlop={8}
-          onPress={() => (router.canGoBack() ? router.back() : router.replace('/cart'))}
+          onPress={() => (router.canGoBack() ? router.back() : router.replace('/account'))}
           style={({ pressed }) => [styles.back, pressed && { backgroundColor: Colors.control }]}>
           <Ionicons name="chevron-back" size={22} color={Colors.text} />
         </Pressable>
@@ -46,7 +45,6 @@ function ConnectAgent({ mcpUrl, bottomInset }: { mcpUrl: string; bottomInset: nu
   const Colors = useColors();
   const styles = useThemedStyles(createStyles);
   const signedIn = useSession() === 'signed_in';
-  const { signOut } = useAuthActions();
   const connections = useQuery(api.agentConnections.list, signedIn ? {} : 'skip');
   const create = useMutation(api.agentConnections.create);
   const revoke = useMutation(api.agentConnections.revoke);
@@ -136,9 +134,6 @@ function ConnectAgent({ mcpUrl, bottomInset }: { mcpUrl: string; bottomInset: nu
         </View>
       )}
 
-      <Pressable accessibilityRole="button" hitSlop={8} onPress={() => signOut()} style={styles.signOut}>
-        {({ pressed }) => <Text style={[styles.revoke, pressed && { color: Colors.text }]}>Sign out</Text>}
-      </Pressable>
     </ScrollView>
   );
 }
@@ -205,5 +200,4 @@ const createStyles = (Colors: Palette) => StyleSheet.create({
   connectionText: { flex: 1, gap: 2 },
   connectionLabel: { ...Type.body, fontWeight: '600', color: Colors.text },
   revoke: { ...Type.body, color: Colors.textSecondary },
-  signOut: { alignSelf: 'center', marginTop: Spacing.xxl },
 });

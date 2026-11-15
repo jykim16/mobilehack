@@ -1,4 +1,4 @@
-# Open the reviews list from a cart item's rating line and filter it by source.
+# Open the full reviews list from an item's detail sheet and filter it by source.
 test:
   metadata:
     name: cart-reviews-filter
@@ -20,7 +20,9 @@ test:
     - type: module_import
       module: "cart-sign-up"
     - type: instructions
-      step_description: "Tap the rating line (the star rating with the review count) on the first item card."
+      step_description: "Tap the product title of the first item card in the Cart tab."
+    - type: instructions
+      step_description: "Scroll to the Reviews section and tap See all."
     - type: validation
       step_description: "A Reviews sheet shows a summary line with a star rating and a count of reviews across several sources, a row of source filters starting with All, and review rows."
     - type: instructions
@@ -34,4 +36,4 @@ test:
     - type: instructions
       step_description: "Tap the X button at the top right of the Reviews sheet."
     - type: validation
-      step_description: "The Cart tab is visible."
+      step_description: "The item detail page is visible."

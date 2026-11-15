@@ -1,4 +1,4 @@
-# Buy an item, review the order, approve it, and land on Purchases.
+# Check out one item in one tap and find it in Purchases.
 test:
   metadata:
     name: cart-buy-approve
@@ -21,10 +21,10 @@ test:
     - type: module_import
       module: "cart-sign-up"
     - type: instructions
-      step_description: "Tap Buy on the first item card."
+      step_description: "Tap Checkout on the first item card."
     - type: validation
-      step_description: "The Review order sheet shows the item, Subtotal, Estimated tax, Shipping, Total, and an Approve button with the total on it."
+      step_description: "A message reading Ordered with a View in Purchases link appears, and the item card is no longer in the Cart."
     - type: instructions
-      step_description: "Tap the Approve button."
+      step_description: "Tap the Purchases tab in the bottom tab bar."
     - type: validation
-      step_description: "The Purchases tab is selected and shows the purchased item with a delivery status line such as Order placed or Shipped."
+      step_description: "The Purchases tab shows the purchased item with a delivery status line such as Order placed or Shipped."

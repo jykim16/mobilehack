@@ -1,4 +1,4 @@
-# Create an account, sign out, and sign back in with the same email and password.
+# Create an account, sign out from Account, and sign back in with the same email and password.
 test:
   metadata:
     name: cart-login
@@ -21,11 +21,13 @@ test:
     - type: instructions
       step_description: "On the Create your account screen, enter {{shopper_email}} as the email and {{password}} as the password, then tap Create account."
     - type: validation
-      step_description: "The chat screen is visible with the lowercase cart wordmark at the top."
+      step_description: "The Cart screen is visible with a bottom tab bar showing Cart, Purchases, and Account."
     - type: instructions
-      step_description: "Tap the Cart button, then tap the more button (three dots) at the top right and choose Connect an agent."
+      step_description: "Tap the Account tab in the bottom tab bar."
+    - type: validation
+      step_description: "The Account screen shows {{shopper_email}}."
     - type: instructions
-      step_description: "Scroll to the bottom and tap Sign out."
+      step_description: "Tap Sign out."
     - type: validation
       step_description: "The sign-in screen is visible with Email and Password fields."
     - type: instructions
@@ -33,4 +35,4 @@ test:
     - type: instructions
       step_description: "Enter {{shopper_email}} as the email and {{password}} as the password, then tap Sign in."
     - type: validation
-      step_description: "The chat screen is visible again with the lowercase cart wordmark at the top."
+      step_description: "The Cart screen is visible again with the Cart tab selected."

@@ -1,4 +1,4 @@
-# Open a purchase and check the shipment tracking timeline.
+# Check out an item, open the purchase, and check the shipment tracking timeline.
 test:
   metadata:
     name: cart-purchase-tracking
@@ -20,7 +20,7 @@ test:
     - type: module_import
       module: "cart-sign-up"
     - type: instructions
-      step_description: "Tap Buy on the first item card, then tap Approve on the Review order sheet."
+      step_description: "Tap Checkout on the first item card, wait for the Ordered message, then tap the Purchases tab."
     - type: validation
       step_description: "The Purchases tab shows the purchased item."
     - type: manual
@@ -29,7 +29,7 @@ test:
     - type: instructions
       step_description: "Tap the product title of the purchased item card."
     - type: validation
-      step_description: "A full-screen purchase page shows a vertical timeline with the steps Ordered, Shipped, In transit, Out for delivery, and Delivered, with a time on each completed step."
+      step_description: "A full-screen purchase page shows a vertical timeline with the steps Ordered, Shipped, Out for delivery, and Delivered, with the current step highlighted and a time next to Ordered."
     - type: validation
       step_description: "Below the timeline, a Purchase details section shows the order reference starting with CART-, the Total, and a Payment and delivery section with Visa •••• 4242."
     - type: instructions

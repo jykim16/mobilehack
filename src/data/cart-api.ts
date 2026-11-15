@@ -7,8 +7,10 @@ import {
   offerUrl,
   returnSummaryFor,
   HERO_URL,
+  catalog,
 } from './mock-catalog';
 import type {
+  AddFromQueryResult,
   CartItem,
   DecideOutcome,
   Offer,
@@ -29,7 +31,7 @@ import type {
 
 class ApiError extends Error {
   constructor(
-    public code: 'NOT_FOUND' | 'INVALID_URL' | 'INVALID_QUANTITY' | 'INVALID_STATE',
+    public code: 'NOT_FOUND' | 'INVALID_URL' | 'INVALID_QUANTITY' | 'INVALID_STATE' | 'NO_MATCH',
     message: string
   ) {
     super(message);
@@ -42,7 +44,7 @@ const latency = (ms = 120) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function buildItem(url: string, quantity: number, extra: Partial<CartItem> = {}): CartItem {
   const match = findByUrl(url);
-  if (!match) throw new ApiError('INVALID_URL', `Unknown product URL ${url}`);
+  if (!match) throw new ApiError('INVALID_URL', "Couldn't find a product at that link.");
   const { entry, offer } = match;
   return {
     id: newId('item'),
@@ -194,9 +196,51 @@ export async function addItem({
   const known = idempotency.get(idempotencyKey);
   if (known) return { itemId: known, enrichmentStatus: 'enriching', deduplicated: true };
   const item = buildItem(url, quantity, { reason: reason ?? null });
-  items = [...items, item];
+  items = [...items, enrichLater(item)];
   idempotency.set(idempotencyKey, item.id);
-  return { itemId: item.id, enrichmentStatus: 'enriching', deduplicated: false };
+  return { itemId: item.id, enrichmentStatus: 'resolving', deduplicated: false };
+}
+
+const listeners = new Set<() => void>();
+
+/** Calls back whenever simulated enrichment changes an item, as a Convex subscription would. */
+export function subscribe(listener: () => void) {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
+/** Starts the item bare and fills it in the way the enrichment pipeline does: product, then offer, then the rest. */
+function enrichLater(full: CartItem): CartItem {
+  const update = (delay: number, fields: Partial<CartItem>) =>
+    setTimeout(() => {
+      items = items.map((i) => (i.id === full.id ? { ...i, ...fields } : i));
+      listeners.forEach((listener) => listener());
+    }, delay);
+  update(1200, { enrichmentStatus: 'enriching', product: full.product, variant: full.variant });
+  update(2400, { offer: full.offer, offers: full.offers, price: full.price });
+  update(3400, { enrichmentStatus: 'ready', rating: full.rating, priceHistory: full.priceHistory });
+  return { ...full, enrichmentStatus: 'resolving', product: null, variant: null, offer: null, offers: [], rating: null, price: null, priceHistory: null };
+}
+
+export async function addItemFromQuery({ query, idempotencyKey }: { query: string; idempotencyKey: string }): Promise<AddFromQueryResult> {
+  await latency(2500);
+  const words = query.toLowerCase().split(/\W+/).filter((w) => w.length > 1);
+  const ranked = catalog
+    .map((entry) => ({ entry, score: words.filter((w) => entry.product.title.toLowerCase().includes(w)).length }))
+    .filter((r) => r.score > 0)
+    .sort((a, b) => b.score - a.score);
+  if (ranked.length === 0) throw new ApiError('NO_MATCH', `Couldn't find a product matching "${query}".`);
+  const [best, ...rest] = ranked.map((r) => ({ title: r.entry.product.title, offer: r.entry.offers[0] }));
+  const { itemId, enrichmentStatus } = await addItem({ url: best.offer.url, idempotencyKey });
+  return {
+    itemId,
+    enrichmentStatus,
+    resolvedUrl: best.offer.url,
+    resolvedTitle: best.title,
+    alternatives: rest.slice(0, 3).map(({ title, offer }) => ({ title, url: offer.url, retailer: offer.retailerName, priceCents: offer.priceCents })),
+  };
 }
 
 export async function setQuantity({ itemId, quantity }: { itemId: string; quantity: number }): Promise<null> {
@@ -205,7 +249,7 @@ export async function setQuantity({ itemId, quantity }: { itemId: string; quanti
     throw new ApiError('INVALID_QUANTITY', 'Quantity must be between 1 and 10');
   }
   const item = requireItem(itemId);
-  items = items.map((i) => (i === item ? { ...i, quantity, price: priceFor(i.offer!, quantity) } : i));
+  items = items.map((i) => (i === item ? { ...i, quantity, price: i.offer ? priceFor(i.offer, quantity) : null } : i));
   return null;
 }
 
