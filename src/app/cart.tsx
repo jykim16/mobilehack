@@ -1,6 +1,7 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { router } from 'expo-router';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useState } from 'react';
+import { ActionSheetIOS, Alert, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ItemCard } from '@/components/item-card';
@@ -10,12 +11,29 @@ import { QuantityStepper } from '@/components/quantity-stepper';
 import { SegmentedControl } from '@/components/segmented-control';
 import { Colors, Radius, Spacing, Type, tabularNumbers } from '@/constants/theme';
 import { useShop } from '@/data/shop-store';
-import type { CartItem, Shipment } from '@/data/types';
+import type { CartItem, Purchase } from '@/data/types';
 import { etaDate, formatPrice, formatShortDate, isToday } from '@/lib/format';
 
 export default function CartScreen() {
   const insets = useSafeAreaInsets();
-  const { ready, cartTab, setCartTab } = useShop();
+  const { ready, error, live, cartTab, setCartTab, loadDemoCart } = useShop();
+
+  const openMenu = () => {
+    const actions = [
+      { label: 'Connect an agent', run: () => router.push('/connect-agent') },
+      ...(live ? [{ label: 'Load demo cart', run: () => loadDemoCart().then(() => setCartTab('cart')) }] : []),
+    ];
+    if (Platform.OS === 'web') {
+      router.push('/connect-agent');
+    } else if (Platform.OS === 'ios') {
+      ActionSheetIOS.showActionSheetWithOptions(
+        { options: [...actions.map((a) => a.label), 'Cancel'], cancelButtonIndex: actions.length, userInterfaceStyle: 'dark' },
+        (index) => actions[index]?.run()
+      );
+    } else {
+      Alert.alert('Cart', undefined, [...actions.map((a) => ({ text: a.label, onPress: a.run })), { text: 'Cancel', style: 'cancel' }]);
+    }
+  };
 
   return (
     <View style={[styles.screen, { paddingTop: insets.top + Spacing.sm }]}>
@@ -36,9 +54,22 @@ export default function CartScreen() {
             { value: 'purchases', label: 'Purchases' },
           ]}
         />
+        <Pressable
+          testID="cart-menu"
+          accessibilityRole="button"
+          accessibilityLabel="More"
+          hitSlop={8}
+          onPress={openMenu}
+          style={({ pressed }) => [styles.back, pressed && { backgroundColor: Colors.control }]}>
+          <Ionicons name="ellipsis-horizontal" size={20} color={Colors.text} />
+        </Pressable>
       </View>
 
-      {!ready ? null : cartTab === 'cart' ? <CartTab bottomInset={insets.bottom} /> : <PurchasesTab bottomInset={insets.bottom} />}
+      {error ? (
+        <View style={styles.empty}>
+          <Text style={styles.emptyBody}>{error}</Text>
+        </View>
+      ) : !ready ? null : cartTab === 'cart' ? <CartTab bottomInset={insets.bottom} /> : <PurchasesTab bottomInset={insets.bottom} />}
     </View>
   );
 }
@@ -48,7 +79,8 @@ function checkout(itemIds: string[]) {
 }
 
 function CartTab({ bottomInset }: { bottomInset: number }) {
-  const { items, setQuantity, removeItem } = useShop();
+  const { items, live, setQuantity, removeItem, loadDemoCart } = useShop();
+  const [loadingDemo, setLoadingDemo] = useState(false);
 
   if (items.length === 0) {
     return (
@@ -56,13 +88,30 @@ function CartTab({ bottomInset }: { bottomInset: number }) {
         <Text style={styles.emptyTitle}>Your cart is empty</Text>
         <Text style={styles.emptyBody}>Ask the assistant to find something, and add it from the chat.</Text>
         <PillButton label="Back to chat" onPress={() => router.back()} style={styles.emptyButton} />
+        {live && (
+          <Pressable
+            accessibilityRole="button"
+            hitSlop={8}
+            disabled={loadingDemo}
+            onPress={() => {
+              setLoadingDemo(true);
+              loadDemoCart().finally(() => setLoadingDemo(false));
+            }}>
+            {({ pressed }) => (
+              <Text style={[styles.quietAction, pressed && { color: Colors.text }]}>
+                {loadingDemo ? 'Loading demo cart…' : 'Load demo cart'}
+              </Text>
+            )}
+          </Pressable>
+        )}
       </View>
     );
   }
 
   const groups = groupByRetailer(items);
-  const total = items.reduce((sum, item) => sum + (item.price?.subtotalCents ?? 0), 0);
-  const count = items.reduce((sum, item) => sum + item.quantity, 0);
+  const buyable = items.filter(canBuy);
+  const total = buyable.reduce((sum, item) => sum + (item.price?.subtotalCents ?? 0), 0);
+  const count = buyable.reduce((sum, item) => sum + item.quantity, 0);
 
   return (
     <>
@@ -78,8 +127,9 @@ function CartTab({ bottomInset }: { bottomInset: number }) {
                 subtitle={item.variant?.label ?? null}
                 imageUrl={item.product?.imageUrl}
                 rating={item.rating}
-                actionLabel="Buy"
+                actionLabel={item.pendingRequest ? 'Review' : 'Buy'}
                 actionVariant="strong"
+                actionDisabled={!canBuy(item)}
                 onAction={() => checkout([item.id])}>
                 {item.price && (
                   <View style={styles.priceRow}>
@@ -103,13 +153,15 @@ function CartTab({ bottomInset }: { bottomInset: number }) {
             )}
           </View>
         ))}
+        {items.some((item) => item.offer?.simulated) && <Text style={styles.footnote}>Demo data</Text>}
       </ScrollView>
       <View style={[styles.checkoutBar, { paddingBottom: Math.max(bottomInset, Spacing.lg) }]}>
         <PillButton
           variant="accent"
           icon="cart"
           label={`Checkout all (${count}) · ${formatPrice(total)}`}
-          onPress={() => checkout(items.map((item) => item.id))}
+          disabled={buyable.length === 0}
+          onPress={() => checkout(buyable.map((item) => item.id))}
         />
       </View>
     </>
@@ -118,6 +170,14 @@ function CartTab({ bottomInset }: { bottomInset: number }) {
 
 function PurchasesTab({ bottomInset }: { bottomInset: number }) {
   const { purchases, purchasedItems, addItem } = useShop();
+  if (purchases.length === 0) {
+    return (
+      <View style={styles.empty}>
+        <Text style={styles.emptyTitle}>No purchases yet</Text>
+        <Text style={styles.emptyBody}>Orders you approve show up here with their delivery status.</Text>
+      </View>
+    );
+  }
   return (
     <ScrollView contentContainerStyle={[styles.list, { paddingBottom: Spacing.xxl + bottomInset }]}>
       {purchases.map((purchase) => {
@@ -141,9 +201,11 @@ function PurchasesTab({ bottomInset }: { bottomInset: number }) {
               onAction={() => item && addItem(item.url)}>
               <View style={styles.delivery}>
                 <Text style={[styles.status, purchase.shipment?.status === 'delivered' && styles.delivered]}>
-                  {statusLine(purchase.shipment)}
+                  {statusLine(purchase)}
                 </Text>
-                <Text style={styles.orderMeta}>{formatPrice(quote.totalCents, quote.currency)} total</Text>
+                <Text style={styles.orderMeta}>
+                  {formatPrice(quote.totalCents, quote.currency)} total{purchase.simulated ? ' · Simulated checkout' : ''}
+                </Text>
                 <Text style={styles.orderMeta}>{quote.returnSummary}</Text>
               </View>
             </ItemCard>
@@ -183,7 +245,15 @@ function groupByRetailer(items: CartItem[]) {
   return groups;
 }
 
-function statusLine(shipment: Shipment | null) {
+function canBuy(item: CartItem) {
+  return Boolean(item.offer && item.offer.purchasable !== false && item.price);
+}
+
+function statusLine({ status, shipment }: Purchase) {
+  if (status === 'submitting') return 'Placing order';
+  if (status === 'failed') return 'Order failed';
+  if (status === 'requote_required') return 'Price changed · Review it in your cart';
+  if (status === 'unknown') return 'Checking order status';
   if (!shipment) return 'Order placed';
   const eta = shipment.eta ? etaDate(shipment.eta) : null;
   switch (shipment.status) {
@@ -235,4 +305,6 @@ const styles = StyleSheet.create({
   emptyTitle: { ...Type.title, color: Colors.text },
   emptyBody: { ...Type.body, color: Colors.textSecondary, textAlign: 'center' },
   emptyButton: { marginTop: Spacing.lg },
+  quietAction: { ...Type.body, color: Colors.textSecondary, marginTop: Spacing.md },
+  footnote: { ...Type.secondary, color: Colors.textTertiary, textAlign: 'center' },
 });
