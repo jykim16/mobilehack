@@ -6,7 +6,7 @@ import { requestPurchaseArgs } from "./purchases";
 
 /**
  * Internal variants for the MCP layer. Call these only after authenticating
- * the agent's token and resolving it to a shopperId (see agentConnections.ts).
+ * the agent's token and resolving it to a shopperId (see mcp/store.ts).
  * Every function enforces that the records belong to shopperId.
  */
 

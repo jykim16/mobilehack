@@ -1,6 +1,7 @@
 import { defineSchema, defineTable } from "convex/server";
 import { authTables } from "@convex-dev/auth/server";
 import { v } from "convex/values";
+import { mcpTables } from "./mcp/tables";
 import {
   actor,
   decision,
@@ -156,13 +157,5 @@ export default defineSchema({
     placedAt: v.number(),
   }).index("by_orderRef", ["orderRef"]),
 
-  agentConnections: defineTable({
-    shopperId: v.id("users"),
-    tokenHash: v.string(),
-    label: v.string(),
-    createdAt: v.number(),
-    revokedAt: v.optional(v.number()),
-  })
-    .index("by_tokenHash", ["tokenHash"])
-    .index("by_shopperId", ["shopperId"]),
+  ...mcpTables,
 });
