@@ -23,7 +23,9 @@ export default function CartScreen() {
       { label: 'Connect an agent', run: () => router.push('/connect-agent') },
       ...(live ? [{ label: 'Load demo cart', run: () => loadDemoCart().then(() => setCartTab('cart')) }] : []),
     ];
-    if (Platform.OS === 'ios') {
+    if (Platform.OS === 'web') {
+      router.push('/connect-agent');
+    } else if (Platform.OS === 'ios') {
       ActionSheetIOS.showActionSheetWithOptions(
         { options: [...actions.map((a) => a.label), 'Cancel'], cancelButtonIndex: actions.length, userInterfaceStyle: 'dark' },
         (index) => actions[index]?.run()

@@ -13,7 +13,7 @@ import { formatPrice } from '@/lib/format';
 export default function CheckoutSheet() {
   const insets = useSafeAreaInsets();
   const { items: itemParam } = useLocalSearchParams<{ items: string }>();
-  const { items, quoteItem, decide: decidePurchase, setCartTab } = useShop();
+  const { ready, items, quoteItem, decide: decidePurchase, setCartTab } = useShop();
   const [requests, setRequests] = useState<PendingQuote[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -21,7 +21,7 @@ export default function CheckoutSheet() {
   const started = useRef(false);
 
   useEffect(() => {
-    if (started.current) return;
+    if (!ready || started.current) return;
     started.current = true;
     const itemIds = (itemParam ?? '').split(',').filter(Boolean);
     const selected = items.filter((item) => itemIds.includes(item.id));
@@ -30,7 +30,7 @@ export default function CheckoutSheet() {
     )
       .then(setRequests)
       .catch((e: unknown) => setError(errorMessage(e)));
-  }, [itemParam, items, quoteItem]);
+  }, [ready, itemParam, items, quoteItem]);
 
   const decide = async (decision: 'approve' | 'defer') => {
     if (!requests) return;

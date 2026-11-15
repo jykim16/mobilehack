@@ -75,7 +75,7 @@ const purchaseArgs = (item: CartItem) => {
   };
 };
 
-function useChat() {
+function useChat(purchases?: Purchase[]) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [assistantTyping, setAssistantTyping] = useState(false);
 
@@ -86,7 +86,7 @@ function useChat() {
   const sendMessage = async (text: string) => {
     setMessages((current) => [...current, { id: `pending-${current.length}`, role: 'user', text, createdAt: Date.now() }]);
     setAssistantTyping(true);
-    setMessages(await assistantApi.sendChatMessage({ text }));
+    setMessages(await assistantApi.sendChatMessage({ text, purchases }));
     setAssistantTyping(false);
   };
 
@@ -98,12 +98,12 @@ const countOf = (items: CartItem[]) => items.reduce((sum, item) => sum + item.qu
 function LiveShopProvider({ children }: { children: ReactNode }) {
   const session = useSession();
   const signedIn = session === 'signed_in';
-  const chat = useChat();
   const [cartTab, setCartTab] = useState<CartTab>('cart');
   const convex = useConvex();
 
   const items = useQuery(api.cart.listItems, signedIn ? {} : 'skip');
   const purchases = useQuery(api.purchases.listPurchases, signedIn ? {} : 'skip');
+  const chat = useChat(purchases ?? []);
   const details = useQueries(
     Object.fromEntries(
       (purchases ?? []).map((p) => [p.itemId, { query: api.cart.getItem, args: { itemId: p.itemId } }])

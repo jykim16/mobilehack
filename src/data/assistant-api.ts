@@ -1,6 +1,6 @@
 import { listPurchases } from './cart-api';
 import { catalog, HERO_URL } from './mock-catalog';
-import type { Offer, Product, Rating } from './types';
+import type { Offer, Product, Purchase, Rating } from './types';
 
 /**
  * Canned shopping assistant. Not part of the backend contract yet; a real agent replaces
@@ -68,18 +68,18 @@ export async function getChatHistory(): Promise<ChatMessage[]> {
   return history;
 }
 
-export async function sendChatMessage({ text }: { text: string }): Promise<ChatMessage[]> {
+export async function sendChatMessage({ text, purchases }: { text: string; purchases?: Purchase[] }): Promise<ChatMessage[]> {
   history = [...history, message('user', text)];
   await latency(900);
-  const reply = await cannedReply(text);
+  const reply = await cannedReply(text, purchases);
   history = [...history, message('assistant', reply.text, reply.suggestions)];
   return history;
 }
 
-async function cannedReply(text: string): Promise<{ text: string; suggestions?: ChatSuggestion[] }> {
+async function cannedReply(text: string, purchases?: Purchase[]): Promise<{ text: string; suggestions?: ChatSuggestion[] }> {
   const q = text.toLowerCase();
   if (/(where|track|arriv|deliver|order|package)/.test(q)) {
-    const open = (await listPurchases()).filter((p) => p.shipment && p.shipment.status !== 'delivered');
+    const open = (purchases ?? (await listPurchases())).filter((p) => p.shipment && p.shipment.status !== 'delivered');
     if (open.length === 0) return { text: 'Everything you ordered has been delivered.' };
     const lines = open.map((p) => `${p.quote.productTitle.split(' ').slice(0, 3).join(' ')} from ${p.quote.retailerName}: ${statusPhrase(p.shipment!.status, p.shipment!.eta)}`);
     return { text: `Here's where things stand.\n\n${lines.join('\n')}` };
