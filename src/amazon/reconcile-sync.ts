@@ -46,6 +46,7 @@ export function selectVerifiedAddedCartItem(
 export async function executeIdempotentAddItem(params: {
   idempotencyMap: Map<string, string>;
   idempotencyKey: string;
+  isSessionCurrent?: () => boolean;
   runAddToCart: () => Promise<AmazonAddToCartResult>;
 }): Promise<{
   itemId: string;
@@ -62,6 +63,9 @@ export async function executeIdempotentAddItem(params: {
   }
 
   const res = await params.runAddToCart();
+  if (params.isSessionCurrent && !params.isSessionCurrent()) {
+    throw new Error('Amazon session was reset before addItem completed.');
+  }
   if (!res.ok || !res.addedItem) {
     throw new Error(
       res.error ?? `Failed to add ASIN ${res.asin || 'unknown'} to Amazon cart.`,
@@ -319,6 +323,7 @@ export interface ConvexSyncQueueSnapshot {
 export class ConvexSyncRetryQueue {
   private readonly jobs = new Map<string, PendingConvexSyncJob>();
   private lastError: string | null = null;
+  private generation = 0;
   private activeFlush: Promise<{ synced: number; remaining: number; lastSyncError: string | null }> | null =
     null;
   private readonly onStateChange?: (snapshot: ConvexSyncQueueSnapshot) => void;
@@ -336,8 +341,10 @@ export class ConvexSyncRetryQueue {
   }
 
   clear(): void {
+    this.generation += 1;
     this.jobs.clear();
     this.lastError = null;
+    this.activeFlush = null;
     this.emit();
   }
 
@@ -409,11 +416,13 @@ export class ConvexSyncRetryQueue {
   }> {
     if (this.activeFlush) {
       return this.activeFlush.then(() =>
-        this.jobs.size > 0 && client ? this.runFlush(client) : {
-          synced: 0,
-          remaining: this.jobs.size,
-          lastSyncError: this.lastError,
-        },
+        this.jobs.size > 0 && client
+          ? this.flush(client)
+          : {
+              synced: 0,
+              remaining: this.jobs.size,
+              lastSyncError: this.lastError,
+            },
       );
     }
 
@@ -425,14 +434,20 @@ export class ConvexSyncRetryQueue {
       });
     }
 
-    const run = this.runFlush(client).finally(() => {
-      this.activeFlush = null;
+    const flushGen = this.generation;
+    const run = this.runFlush(client, flushGen).finally(() => {
+      if (this.activeFlush === run) {
+        this.activeFlush = null;
+      }
     });
     this.activeFlush = run;
     return run;
   }
 
-  private async runFlush(client: ConvexAmazonSyncClient): Promise<{
+  private async runFlush(
+    client: ConvexAmazonSyncClient,
+    flushGen: number,
+  ): Promise<{
     synced: number;
     remaining: number;
     lastSyncError: string | null;
@@ -441,6 +456,17 @@ export class ConvexSyncRetryQueue {
     let latestFailure: string | null = null;
 
     for (const [key, job] of Array.from(this.jobs.entries())) {
+      if (this.generation !== flushGen) {
+        return {
+          synced: 0,
+          remaining: this.jobs.size,
+          lastSyncError: this.lastError,
+        };
+      }
+      if (this.jobs.get(key) !== job) {
+        continue;
+      }
+
       try {
         if (job.kind === 'quote') {
           if (!client.attachClientQuote) continue;
@@ -452,11 +478,38 @@ export class ConvexSyncRetryQueue {
           if (!client.syncClientShipment) continue;
           await client.syncClientShipment(job.args);
         }
-        this.jobs.delete(key);
-        synced += 1;
+
+        if (this.generation !== flushGen) {
+          return {
+            synced: 0,
+            remaining: this.jobs.size,
+            lastSyncError: this.lastError,
+          };
+        }
+        if (this.jobs.get(key) === job) {
+          this.jobs.delete(key);
+          synced += 1;
+        }
       } catch (err) {
-        latestFailure = err instanceof Error ? err.message : String(err);
+        if (this.generation !== flushGen) {
+          return {
+            synced: 0,
+            remaining: this.jobs.size,
+            lastSyncError: this.lastError,
+          };
+        }
+        if (this.jobs.get(key) === job) {
+          latestFailure = err instanceof Error ? err.message : String(err);
+        }
       }
+    }
+
+    if (this.generation !== flushGen) {
+      return {
+        synced: 0,
+        remaining: this.jobs.size,
+        lastSyncError: this.lastError,
+      };
     }
 
     if (this.jobs.size === 0) {
@@ -492,6 +545,7 @@ export async function settleSubmittedOrderConfirmation(params: {
   ledger: OrderSubmissionLedger;
   syncQueue: ConvexSyncRetryQueue;
   convexSync?: ConvexAmazonSyncClient;
+  isSessionCurrent?: () => boolean;
   readConfirmation: () => Promise<{
     retailerOrderId: string | null;
     isConfirmationSurface?: boolean;
@@ -499,13 +553,17 @@ export async function settleSubmittedOrderConfirmation(params: {
     currentUrl: string;
   }>;
 }): Promise<AmazonPlaceOrderResult> {
-  params.ledger.recordUnknown({
-    orderRef: params.orderRef,
-    submittedAt: params.submittedAt,
-    approvedItems: params.approvedItems,
-    expectedTotalCents: params.expectedTotalCents,
-    preExistingOrderIds: params.preExistingOrderIds,
-  });
+  const stillCurrent = () => (params.isSessionCurrent ? params.isSessionCurrent() : true);
+
+  if (stillCurrent()) {
+    params.ledger.recordUnknown({
+      orderRef: params.orderRef,
+      submittedAt: params.submittedAt,
+      approvedItems: params.approvedItems,
+      expectedTotalCents: params.expectedTotalCents,
+      preExistingOrderIds: params.preExistingOrderIds,
+    });
+  }
 
   let confirmation: {
     retailerOrderId: string | null;
@@ -527,7 +585,22 @@ export async function settleSubmittedOrderConfirmation(params: {
       quote: params.verifiedQuote,
       shipment: null,
       reason: `Place Order was submitted, but confirmation inspection failed (${detail}). Retained as unknown; reconcile via syncOrders() before retrying.`,
-      syncError: params.syncQueue.lastSyncError,
+      syncError: stillCurrent() ? params.syncQueue.lastSyncError : null,
+    };
+  }
+
+  if (!stillCurrent()) {
+    return {
+      status: 'unknown',
+      safetyGate: { dryRun: false, userConfirmed: true, orderSubmitted: true },
+      orderRef: params.orderRef,
+      retailerOrderId: null,
+      placedAt: null,
+      quote: params.verifiedQuote,
+      shipment: null,
+      reason:
+        'Session was reset after Place Order submission before confirmation settled; avoiding cross-account state or sync writes.',
+      syncError: null,
     };
   }
 
@@ -652,4 +725,69 @@ export function resetAmazonSessionStores<TCacheValue = unknown>(
     lastSyncError: null,
     pendingSyncCount: 0,
   };
+}
+
+/**
+ * Epoch + fail-closed logout barrier that fences all asynchronous WebView continuations
+ * and refuses new shopper operations until Amazon's server-side sign-out (`HttpOnly` cookies)
+ * is positively verified (`signedIn === false` on an `amazon.com` origin).
+ */
+export class SessionResetBarrier {
+  private currentEpoch = 0;
+  private logoutRequired = false;
+
+  get epoch(): number {
+    return this.currentEpoch;
+  }
+
+  get isLogoutPending(): boolean {
+    return this.logoutRequired;
+  }
+
+  beginReset(options: { requiresBrowserSignOut: boolean }): number {
+    this.currentEpoch += 1;
+    if (options.requiresBrowserSignOut) {
+      this.logoutRequired = true;
+    }
+    return this.currentEpoch;
+  }
+
+  isCurrent(capturedEpoch: number): boolean {
+    return this.currentEpoch === capturedEpoch && !this.logoutRequired;
+  }
+
+  verifySignOutResult(
+    resetEpoch: number,
+    probe: { currentUrl?: string | null; signedIn?: boolean | null } | null | undefined,
+  ): { ok: true } | { ok: false; reason: string } {
+    if (this.currentEpoch !== resetEpoch) {
+      return {
+        ok: false,
+        reason: 'Superseded by a newer Amazon session reset.',
+      };
+    }
+
+    const url = typeof probe?.currentUrl === 'string' ? probe.currentUrl : '';
+    const onAmazonOrigin = /^https:\/\/([a-z0-9-]+\.)?amazon\.com(\/|$)/i.test(url);
+    if (!onAmazonOrigin) {
+      this.logoutRequired = true;
+      return {
+        ok: false,
+        reason:
+          'Amazon sign-out could not be verified (browser did not reach amazon.com). Session remains locked until sign-out succeeds.',
+      };
+    }
+
+    if (probe?.signedIn !== false) {
+      this.logoutRequired = true;
+      return {
+        ok: false,
+        reason:
+          'Amazon session still appeared signed in after sign-out navigation. Session remains locked until sign-out succeeds.',
+      };
+    }
+
+    this.logoutRequired = false;
+    return { ok: true };
+  }
 }

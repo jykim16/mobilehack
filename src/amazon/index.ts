@@ -47,6 +47,7 @@ export {
   resetAmazonSessionStores,
   type ResettableAmazonStores,
   selectVerifiedAddedCartItem,
+  SessionResetBarrier,
   settleSubmittedOrderConfirmation,
   shouldResetAmazonSessionOnShopperChange,
   verifyFinalCartRowQuantity,

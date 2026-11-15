@@ -54,6 +54,7 @@ const {
   executeIdempotentAddItem,
   resetAmazonSessionStores,
   selectVerifiedAddedCartItem,
+  SessionResetBarrier,
   settleSubmittedOrderConfirmation,
   shouldResetAmazonSessionOnShopperChange,
   verifyFinalCartRowQuantity,
@@ -1518,4 +1519,211 @@ test('(i.2) resetAmazonSessionStores + buildClearWebViewSessionScript wipe ledge
   assert.equal(sessionCleared, true);
   assert.ok(expiredWrites.length >= 2);
   assert.ok(expiredWrites.every((w) => w.includes('Max-Age=0') && !w.includes('tb:123')));
+});
+
+test('(i.3) SessionResetBarrier fences mid-flight confirmation and addItem continuations across account switches', async () => {
+  const barrier = new SessionResetBarrier();
+  const ledger = new OrderSubmissionLedger();
+  const syncQueue = new ConvexSyncRetryQueue();
+  const idempotencyMap = new Map();
+  let placementSynced = 0;
+
+  const startEpoch = barrier.epoch;
+  assert.equal(barrier.isCurrent(startEpoch), true);
+
+  const quote = {
+    retailer: 'amazon',
+    retailerName: 'Amazon',
+    seller: 'Amazon.com',
+    productTitle: 'Sony WH-1000XM5',
+    variantLabel: null,
+    imageUrl: null,
+    quantity: 1,
+    unitPriceCents: 22999,
+    subtotalCents: 22999,
+    taxCents: 1901,
+    shippingCents: 0,
+    totalCents: 24900,
+    currency: 'USD',
+    deliveryEstimate: 'Tomorrow',
+    returnSummary: '30-day returns',
+    quotedAt: 1_700_000_000_000,
+    simulated: false,
+  };
+
+  // Account switch happens WHILE readConfirmation() is awaiting!
+  const settled = await settleSubmittedOrderConfirmation({
+    orderRef: 'CART-STALE-EPOCH',
+    submittedAt: 1_700_000_000_000,
+    approvedItems: [{ asin: 'B09XS7JWHH', quantity: 1 }],
+    expectedTotalCents: 24900,
+    verifiedQuote: quote,
+    ledger,
+    syncQueue,
+    convexSync: {
+      recordClientPlacement: async () => {
+        placementSynced += 1;
+      },
+    },
+    isSessionCurrent: () => barrier.isCurrent(startEpoch),
+    readConfirmation: async () => {
+      barrier.beginReset({ requiresBrowserSignOut: true });
+      ledger.clear();
+      syncQueue.clear();
+      return {
+        retailerOrderId: '114-2223334-5556667',
+        isConfirmationSurface: true,
+        hasAuthOrErrorBarrier: false,
+        currentUrl: 'https://www.amazon.com/gp/buy/thankyou/handlers/display.html',
+      };
+    },
+  });
+
+  // Must NOT write Shopper A's order into cleared ledger or enqueue placement under Shopper B!
+  assert.equal(settled.status, 'unknown');
+  assert.equal(ledger.get('CART-STALE-EPOCH'), undefined);
+  assert.equal(placementSynced, 0);
+  assert.equal(syncQueue.pendingCount, 0);
+
+  // Likewise executeIdempotentAddItem rejects and leaves idempotencyMap untouched if reset occurred mid-add
+  await assert.rejects(
+    () =>
+      executeIdempotentAddItem({
+        idempotencyMap,
+        idempotencyKey: 'idem-stale-add',
+        isSessionCurrent: () => barrier.isCurrent(startEpoch),
+        runAddToCart: async () => ({
+          ok: true,
+          asin: 'B09XS7JWHH',
+          usedAodFallback: false,
+          cartCount: 1,
+          subtotalCents: 22999,
+          addedItem: { id: 'amz-item-B09XS7JWHH', url: 'https://www.amazon.com/dp/B09XS7JWHH', quantity: 1 },
+          cartRows: [],
+          syncedAt: Date.now(),
+        }),
+      }),
+    /reset/,
+  );
+  assert.equal(idempotencyMap.size, 0);
+});
+
+test('(i.4) SessionResetBarrier keeps Amazon operations fail-closed locked when sign-out fails offline until signedIn=false is verified on amazon.com', () => {
+  const barrier = new SessionResetBarrier();
+  const resetEpoch = barrier.beginReset({ requiresBrowserSignOut: true });
+  assert.equal(barrier.isLogoutPending, true);
+  assert.equal(barrier.isCurrent(resetEpoch), false);
+
+  // 1. Offline / blank URL fails verification and keeps session locked
+  const offlineVerdict = barrier.verifySignOutResult(resetEpoch, {
+    currentUrl: 'about:blank',
+    signedIn: false,
+  });
+  assert.equal(offlineVerdict.ok, false);
+  assert.equal(barrier.isLogoutPending, true);
+  assert.equal(barrier.isCurrent(resetEpoch), false);
+
+  // 2. Still signed in on amazon.com (HttpOnly cookie survived) fails verification and keeps session locked
+  const stillSignedInVerdict = barrier.verifySignOutResult(resetEpoch, {
+    currentUrl: 'https://www.amazon.com/gp/cart/view.html',
+    signedIn: true,
+  });
+  assert.equal(stillSignedInVerdict.ok, false);
+  assert.equal(barrier.isLogoutPending, true);
+  assert.equal(barrier.isCurrent(resetEpoch), false);
+
+  // 3. Verified signedIn=false on https://www.amazon.com/... unlocks the new session epoch
+  const okVerdict = barrier.verifySignOutResult(resetEpoch, {
+    currentUrl: 'https://www.amazon.com/gp/cart/view.html',
+    signedIn: false,
+  });
+  assert.equal(okVerdict.ok, true);
+  assert.equal(barrier.isLogoutPending, false);
+  assert.equal(barrier.isCurrent(resetEpoch), true);
+});
+
+test('(i.5) ConvexSyncRetryQueue.clear() aborts active multi-job flushes and never deletes newly enqueued jobs sharing a key', async () => {
+  const dispatched = [];
+  let resolveFirstJob;
+
+  const clientA = {
+    recordClientPlacement: (args) =>
+      new Promise((resolve) => {
+        dispatched.push(`A:${args.orderRef}:${args.retailerOrderId}`);
+        resolveFirstJob = resolve;
+      }),
+    syncClientShipment: async (args) => {
+      dispatched.push(`A-ship:${args.retailerOrderId}`);
+    },
+  };
+
+  const queue = new ConvexSyncRetryQueue();
+
+  // Seed two queued jobs by failing while offline first
+  await queue.enqueuePlacement(
+    {
+      orderRef: 'CART-SHARED-KEY',
+      retailerOrderId: '114-1111111-1111111',
+      placedAt: 1_700_000_000_000,
+    },
+    {
+      recordClientPlacement: async () => {
+        throw new Error('offline');
+      },
+    },
+  );
+  await queue.enqueueShipment(
+    {
+      orderRef: 'CART-SHARED-KEY',
+      retailerOrderId: '114-1111111-1111111',
+      shipment: { status: 'shipped', events: [], updatedAt: 1_700_000_001_000 },
+    },
+    {
+      syncClientShipment: async () => {
+        throw new Error('offline');
+      },
+    },
+  );
+  assert.equal(queue.pendingCount, 2);
+
+  // Start flushing under Shopper A; job #1 hangs in-flight
+  const inFlightFlush = queue.flush(clientA);
+  await new Promise((r) => setTimeout(r, 5));
+  assert.deepEqual(dispatched, ['A:CART-SHARED-KEY:114-1111111-1111111']);
+
+  // Account switch clears queue while job #1 is in flight, AND Shopper B enqueues a new job with the same key (kept pending via offline client)
+  queue.clear();
+  assert.equal(queue.pendingCount, 0);
+
+  await queue.enqueuePlacement(
+    {
+      orderRef: 'CART-SHARED-KEY',
+      retailerOrderId: '114-9999999-9999999',
+      placedAt: 1_700_000_050_000,
+    },
+    {
+      recordClientPlacement: async () => {
+        throw new Error('shopper B transient retry');
+      },
+    },
+  );
+  assert.equal(queue.pendingCount, 1);
+
+  // Now Shopper A's in-flight job #1 settles -> MUST NOT dispatch Shopper A's job #2 AND MUST NOT delete Shopper B's new job!
+  resolveFirstJob();
+  await inFlightFlush;
+
+  assert.deepEqual(dispatched, ['A:CART-SHARED-KEY:114-1111111-1111111']);
+  assert.equal(queue.pendingCount, 1);
+
+  // Flushing under Shopper B dispatches Shopper B's replacement order ID cleanly
+  const shopperBSynced = [];
+  const resB = await queue.flush({
+    recordClientPlacement: async (args) => {
+      shopperBSynced.push(args.retailerOrderId);
+    },
+  });
+  assert.equal(resB.synced, 1);
+  assert.equal(queue.pendingCount, 0);
+  assert.deepEqual(shopperBSynced, ['114-9999999-9999999']);
 });
