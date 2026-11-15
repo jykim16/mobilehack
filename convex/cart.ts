@@ -12,6 +12,7 @@ import {
   getItemFor,
   listItemsFor,
   removeItemFor,
+  retryItemFor,
   setQuantityFor,
   updateDecisionFor,
 } from "./model/cart";
@@ -106,8 +107,9 @@ export const addItemFromQuery = action({
     query: v.string(),
     idempotencyKey: v.string(),
     reason: v.optional(v.string()),
+    refresh: v.optional(v.boolean()),
   },
-  handler: async (ctx, { query, idempotencyKey, reason }): Promise<AddFromQueryResult> => {
+  handler: async (ctx, { query, idempotencyKey, reason, refresh }): Promise<AddFromQueryResult> => {
     const shopperId = await requireShopper(ctx);
     const existing: { itemId: Id<"cartItems">; enrichmentStatus: EnrichmentStatus; url: string; title: string } | null =
       await ctx.runQuery(internal.cart.findByKey, { shopperId, idempotencyKey });
@@ -126,13 +128,22 @@ export const addItemFromQuery = action({
     }
     const resolved: { ok: boolean; error: string | null; candidates: Candidate[] } = await ctx.runAction(
       internal.exa.resolveProductQuery,
-      { query: words },
+      { query: words, force: refresh ?? false },
     );
     if (!resolved.ok || resolved.candidates.length === 0) {
-      throw new ConvexError({
-        code: "NO_MATCH",
-        message: `Couldn't find a product for "${words}". Try a more specific name or paste the link.`,
-      });
+      // A provider that is down is not a product that does not exist: say which.
+      const unavailable = resolved.error !== null && !/no product pages/i.test(resolved.error);
+      throw new ConvexError(
+        unavailable
+          ? {
+              code: "UPSTREAM_UNAVAILABLE",
+              message: `Product search is unavailable right now. Try again in a moment, or paste the link. (${resolved.error})`,
+            }
+          : {
+              code: "NO_MATCH",
+              message: `Couldn't find a product for "${words}". Try a more specific name or paste the link.`,
+            },
+      );
     }
     const top: Candidate = resolved.candidates[0];
     const added: { itemId: Id<"cartItems">; enrichmentStatus: EnrichmentStatus; deduplicated: boolean } =
@@ -180,4 +191,16 @@ export const addForShopper = internalMutation({
     idempotencyKey: v.string(),
   },
   handler: async (ctx, { shopperId, ...args }) => addItemFor(ctx, shopperId, args, "app"),
+});
+
+export const retryItem = mutation({
+  args: { cartItemId: v.id("cartItems") },
+  handler: async (ctx, { cartItemId }) => retryItemFor(ctx, await requireShopper(ctx), cartItemId),
+});
+
+/** Forces a fresh read of the listing, bypassing the extraction cache. */
+export const refreshItem = mutation({
+  args: { cartItemId: v.id("cartItems") },
+  handler: async (ctx, { cartItemId }) =>
+    retryItemFor(ctx, await requireShopper(ctx), cartItemId, { force: true }),
 });

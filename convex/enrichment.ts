@@ -4,6 +4,8 @@ import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { env, type ActionCtx, type MutationCtx, type QueryCtx } from "./_generated/server";
 import { SECTION_NAMES, sectionName, sectionStatus, highlight, source, type SectionName } from "./lib/validators";
+import { describeAge } from "./lib/cache";
+import { isFresh } from "./cache";
 import {
   RETAILER_RETURN_TERMS,
   SEEDED_EVIDENCE,
@@ -40,20 +42,163 @@ export const RETURN_POLICY_URLS: Record<string, string> = {
 };
 
 /** Runs the Firecrawl offer + return-terms steps. No key means nothing happens. */
+type CachedExtraction = {
+  offer: {
+    model: string | null;
+    variant: string | null;
+    retailer: string | null;
+    seller: string | null;
+    condition: string | null;
+    priceCents: number | null;
+    currency: string | null;
+    availability: string | null;
+    starRating: number | null;
+    ratingCount: number | null;
+    asinOrSku: string | null;
+    imageUrl: string | null;
+    evidence: string | null;
+  } | null;
+  sourceUrl: string;
+  observedAt: number;
+  stale: boolean;
+  note: string | null;
+  error: string | null;
+  variantMatches: boolean;
+};
+
+/**
+ * One scrape per listing, shared by every shopper: a fresh cached extraction is
+ * used as-is, a duplicate request during an in-flight scrape attaches to it, and a
+ * refusal from upstream serves the last extraction we did read, marked stale with
+ * the time it was read. Never invented numbers — an empty answer stays empty.
+ */
+async function extractWithCache(
+  ctx: ActionCtx,
+  url: string,
+  canonicalKey: string,
+  force: boolean,
+): Promise<CachedExtraction> {
+  const now = Date.now();
+  const cached = await ctx.runQuery(internal.cache.read, { kind: "offer", key: canonicalKey });
+  const stored = cached?.payload
+    ? (JSON.parse(cached.payload) as { offer: CachedExtraction["offer"]; variantMatches: boolean })
+    : null;
+  const payload = stored?.offer ?? null;
+  const variantMatches = stored?.variantMatches ?? true;
+  const fresh = Boolean(payload) && !force && !cached!.invalidatedAt && isFresh("offer", cached!.fetchedAt, now);
+  if (fresh) {
+    return {
+      offer: payload,
+      sourceUrl: url,
+      observedAt: cached!.fetchedAt,
+      stale: false,
+      note: null,
+      error: null,
+      variantMatches,
+    };
+  }
+
+  const claim = await ctx.runMutation(internal.cache.claim, {
+    kind: "offer",
+    key: canonicalKey,
+    source: "firecrawl",
+  });
+  if (!claim.claimed) {
+    if (payload) {
+      return {
+        offer: payload,
+        sourceUrl: url,
+        observedAt: cached!.fetchedAt,
+        stale: true,
+        note: `A fresh read of this page is already running; showing the price read ${describeAge(cached!.fetchedAt)}.`,
+        error: null,
+        variantMatches,
+      };
+    }
+    return {
+      offer: null,
+      sourceUrl: url,
+      observedAt: now,
+      stale: false,
+      note: null,
+      error: "A read of this page is already running.",
+      variantMatches: true,
+    };
+  }
+
+  const token = claim.token;
+  let extraction: Awaited<ReturnType<typeof ctx.runAction<typeof internal.firecrawl.extractOffer>>>;
+  try {
+    extraction = await ctx.runAction(internal.firecrawl.extractOffer, {
+      url,
+      expectedKey: canonicalKey,
+    });
+  } catch (e) {
+    const error = e instanceof Error ? e.message : String(e);
+    await ctx.runMutation(internal.cache.fail, { kind: "offer", key: canonicalKey, error, token });
+    if (payload) {
+      return {
+        offer: payload,
+        sourceUrl: url,
+        observedAt: cached!.fetchedAt,
+        stale: true,
+        note: `This page could not be read right now, so this is the price read ${describeAge(cached!.fetchedAt)}.`,
+        error,
+        variantMatches,
+      };
+    }
+    return { offer: null, sourceUrl: url, observedAt: now, stale: false, note: null, error, variantMatches: true };
+  }
+  // A page can answer with no price (a bot wall). That must never overwrite a priced
+  // cache entry, or the honest fallback disappears for a whole TTL.
+  const hasPrice = extraction.ok && extraction.offer !== null && (extraction.offer.priceCents ?? 0) > 0;
+  if (hasPrice && extraction.offer) {
+    await ctx.runMutation(internal.cache.finish, {
+      kind: "offer",
+      key: canonicalKey,
+      payload: JSON.stringify({ offer: extraction.offer, variantMatches: extraction.variantMatches }),
+      source: "firecrawl",
+      simulated: false,
+      token,
+    });
+    return {
+      offer: extraction.offer,
+      sourceUrl: extraction.sourceUrl ?? url,
+      observedAt: now,
+      stale: false,
+      note: null,
+      error: null,
+      variantMatches: extraction.variantMatches,
+    };
+  }
+
+  const error = extraction.error ?? "the page returned no price";
+  await ctx.runMutation(internal.cache.fail, { kind: "offer", key: canonicalKey, error, token });
+  if (payload) {
+    return {
+      offer: payload,
+      sourceUrl: url,
+      observedAt: cached!.fetchedAt,
+      stale: true,
+      note: `This page could not be read right now, so this is the price read ${describeAge(
+        cached!.fetchedAt,
+      )}.`,
+      error,
+      variantMatches,
+    };
+  }
+  return { offer: null, sourceUrl: url, observedAt: now, stale: false, note: null, error, variantMatches: true };
+}
+
 export const enrichOfferFromWeb = internalAction({
   args: { cartItemId: v.id("cartItems") },
   handler: async (ctx, { cartItemId }) => {
     if (!env.FIRECRAWL_API_KEY) return null;
     const data = await ctx.runQuery(internal.enrichment.getSectionContext, { cartItemId });
     if (!data) return null;
-    const extraction = await ctx.runAction(internal.firecrawl.extractOffer, {
-      url: data.offer.url,
-      expectedKey: data.offer.canonicalKey,
-    });
+    const extraction = await extractWithCache(ctx, data.offer.url, data.offer.canonicalKey, false);
     const usable =
-      extraction.ok &&
-      extraction.offer !== null &&
-      (extraction.offer.priceCents !== null || extraction.offer.seller !== null);
+      extraction.offer !== null && (extraction.offer.priceCents !== null || extraction.offer.seller !== null);
     if (!usable) {
       await ctx.runMutation(internal.enrichment.recordExtractionFailure, {
         offerId: data.offer._id,
@@ -65,7 +210,8 @@ export const enrichOfferFromWeb = internalAction({
         extraction: extraction.offer,
         sourceUrl: extraction.sourceUrl ?? data.offer.url,
         variantMatches: extraction.variantMatches,
-        observedAt: Date.now(),
+        observedAt: extraction.observedAt,
+        note: extraction.note ?? undefined,
       });
     }
     // The policy page is a separate scrape and stands on its own, even when the
@@ -115,8 +261,9 @@ export const applyExtractedOffer = internalMutation({
     sourceUrl: v.string(),
     variantMatches: v.boolean(),
     observedAt: v.number(),
+    note: v.optional(v.string()),
   },
-  handler: async (ctx, { offerId, extraction, sourceUrl, variantMatches, observedAt }) => {
+  handler: async (ctx, { offerId, extraction, sourceUrl, variantMatches, observedAt, note }) => {
     const offer = await ctx.db.get("offers", offerId);
     if (!offer) return null;
     const provenance = {
@@ -125,7 +272,9 @@ export const applyExtractedOffer = internalMutation({
       observedAt,
       supportingText: extraction.evidence,
       verifiedKey: extraction.asinOrSku,
-      note: variantMatches ? null : "The scraped page named a different variant, so its price was not applied.",
+      note:
+        note ??
+        (variantMatches ? null : "The scraped page named a different variant, so its price was not applied."),
     };
     if (!variantMatches) {
       await ctx.db.patch("offers", offerId, { provenance });
@@ -454,18 +603,78 @@ export const start = internalMutation({
   },
 });
 
+/**
+ * Re-runs the sections an item still needs, mirroring start()'s scheduling: the
+ * reset rows are the ones start() skips, so they need their workers enqueued here.
+ */
+export const restartSections = internalMutation({
+  args: { cartItemId: v.id("cartItems") },
+  handler: async (ctx, { cartItemId }) => {
+    const item = await ctx.db.get("cartItems", cartItemId);
+    if (!item || !item.offerId) return null;
+    const isAmazon = !!item.url && /amazon\./i.test(item.url);
+    const rows = await ctx.db
+      .query("evidence")
+      .withIndex("by_cartItemId_and_section", (q) => q.eq("cartItemId", cartItemId))
+      .take(20);
+    for (const section of SECTION_NAMES) {
+      const row = rows.find((r) => r.section === section);
+      if (row && row.status === "ready") continue;
+      if (row) {
+        await ctx.db.patch("evidence", row._id, {
+          status: section === "priceHistory" && isAmazon ? "loading" : "pending",
+          attempts: 0,
+          error: undefined,
+          pendingRun: undefined,
+        });
+      } else {
+        await ctx.db.insert("evidence", {
+          shopperId: item.shopperId,
+          cartItemId,
+          section,
+          status: section === "priceHistory" && isAmazon ? "loading" : "pending",
+          attempts: 0,
+          scope: SECTION_SCOPE[section],
+          highlights: [],
+          sources: [],
+          simulated: false,
+        });
+      }
+      if (section === "priceHistory" && isAmazon) {
+        await ctx.scheduler.runAfter(
+          SECTION_DELAY_MS[section],
+          internal.enrichment.enrichHistoryFromKeepa,
+          { cartItemId },
+        );
+        continue;
+      }
+      await ctx.scheduler.runAfter(SECTION_DELAY_MS[section], internal.enrichment.runSection, {
+        cartItemId,
+        section,
+      });
+    }
+    await ctx.db.patch("cartItems", cartItemId, { enrichmentStatus: "enriching" });
+    if (env.FIRECRAWL_API_KEY) {
+      // Same listing refresh start() performs, so a retried item re-reads its page.
+      await ctx.scheduler.runAfter(200, internal.enrichment.enrichOfferFromWeb, { cartItemId });
+    }
+    return null;
+  },
+});
+
 export const resolveOffer = internalAction({
   args: { cartItemId: v.id("cartItems") },
   handler: async (ctx, { cartItemId }) => {
     const item = await ctx.runQuery(internal.enrichment.getItemInternal, { cartItemId });
     if (!item || item.offerId) return null;
     if (env.FIRECRAWL_API_KEY) {
-      const extraction = await ctx.runAction(internal.firecrawl.extractOffer, {
-        url: item.url,
-        expectedKey: canonicalKeyForUrl(item.url),
-      });
+      const extraction = await extractWithCache(
+        ctx,
+        item.url,
+        canonicalKeyForUrl(item.url) ?? item.url,
+        false,
+      );
       if (
-        extraction.ok &&
         extraction.offer &&
         extraction.variantMatches &&
         extraction.offer.priceCents !== null &&
@@ -475,7 +684,8 @@ export const resolveOffer = internalAction({
           cartItemId,
           extraction: extraction.offer,
           sourceUrl: extraction.sourceUrl ?? item.url,
-          observedAt: Date.now(),
+          observedAt: extraction.observedAt,
+          note: extraction.note ?? undefined,
         });
         return null;
       }
@@ -504,8 +714,9 @@ export const attachExtractedOffer = internalMutation({
     extraction: extractedOffer,
     sourceUrl: v.string(),
     observedAt: v.number(),
+    note: v.optional(v.string()),
   },
-  handler: async (ctx, { cartItemId, extraction, sourceUrl, observedAt }) => {
+  handler: async (ctx, { cartItemId, extraction, sourceUrl, observedAt, note }) => {
     const item = await ctx.db.get("cartItems", cartItemId);
     if (!item || item.offerId) return null;
     const { retailer, retailerName } = retailerFromHost(new URL(item.url).hostname);
@@ -555,7 +766,7 @@ export const attachExtractedOffer = internalMutation({
         observedAt,
         supportingText: extraction.evidence,
         verifiedKey: extraction.asinOrSku,
-        note: null,
+        note: note ?? null,
       },
       inStock: !outOfStock,
       simulated: false,
@@ -718,7 +929,11 @@ async function redditResult(product: Doc<"products">): Promise<SectionResult> {
   const q = `${product.title.split(" ").slice(0, 4).join(" ")}`;
   const res = await fetch(
     `https://www.reddit.com/search.json?q=${encodeURIComponent(q)}&limit=5&sort=relevance&t=year`,
-    { headers: { "User-Agent": "web:mobilehack-cart:0.1 (hackathon demo)" } },
+    {
+      headers: { "User-Agent": "web:mobilehack-cart:0.1 (hackathon demo)" },
+      // A blocked request can hang for minutes; fail fast so the Exa handoff starts.
+      signal: AbortSignal.timeout(8_000),
+    },
   );
   if (!res.ok) throw new Error(`Reddit HTTP ${res.status}`);
   const body = (await res.json()) as {
@@ -774,6 +989,11 @@ async function produce(
       : SEEDED_EVIDENCE[product.demoKey]?.[section];
   switch (section) {
     case "priceHistory":
+      // Without a price read from the page there is no series to show; a simulated
+      // one would put invented numbers where the listing should be.
+      if (!product.demoKey && (offer.priceCents <= 0 || offer.simulated)) {
+        throw new Error("No price could be read from the listing, so there is no price history yet.");
+      }
       return priceHistoryResult(offer, observations);
     case "returnTerms":
       // Seeded policy text is a fallback for seeded offers only; a live offer uses

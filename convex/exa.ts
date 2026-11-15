@@ -1,4 +1,6 @@
 import { v } from "convex/values";
+import { isFresh } from "./cache";
+import { normalizedQuery, modelKey, describeAge } from "./lib/cache";
 import { env, internalAction, internalMutation, internalQuery } from "./_generated/server";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
@@ -179,6 +181,36 @@ export const startLookup = internalAction({
     const key = env.EXA_API_KEY;
     const context = await ctx.runQuery(internal.exa.itemContext, { cartItemId });
     if (!context) return null;
+    const comparisonKey = productCacheKey(context);
+    const cachedComparison = await ctx.runQuery(internal.cache.read, {
+      kind: "comparison",
+      key: comparisonKey,
+    });
+    const storedComparison = cachedComparison?.payload
+      ? (JSON.parse(cachedComparison.payload) as {
+          offers: any[];
+          productId?: string | null;
+          variantId?: string | null;
+        })
+      : null;
+    const sameIdentity =
+      !storedComparison?.productId || storedComparison.productId === context.productId;
+    const storedOffers = sameIdentity ? (storedComparison?.offers ?? null) : null;
+    if (storedOffers && isFresh("comparison", cachedComparison!.fetchedAt)) {
+      await ctx.runMutation(internal.exa.saveComparison, {
+        cartItemId,
+        subjectUrl: context.url,
+        query: "",
+        status: storedOffers.length > 0 ? "completed" : "empty",
+        note:
+          storedOffers.length > 0
+            ? `Cached cross-store comparison read ${describeAge(cachedComparison!.fetchedAt)}; reported by Exa.`
+            : `No other store carried this model when we last looked ${describeAge(cachedComparison!.fetchedAt)}.`,
+        candidates: [],
+        offers: storedOffers,
+      });
+      return null;
+    }
     if (!key) {
       await ctx.runMutation(internal.exa.saveComparison, {
         cartItemId,
@@ -397,9 +429,38 @@ export const acceptCandidates = internalAction({
       status: verified.length > 0 ? "completed" : "empty",
       note: verified.length > 0 ? null : "No verified comparison yet",
     });
+    if (verified.length > 0) {
+      // The same model for the same money: one run serves every shopper for hours.
+      await ctx.runMutation(internal.cache.finish, {
+        kind: "comparison",
+        key: productCacheKey(context),
+        payload: JSON.stringify({
+          offers: verified,
+          productId: context.productId ?? null,
+          variantId: context.variantId ?? null,
+        }),
+        source: "exa",
+        simulated: false,
+        token: null,
+      });
+    }
     return null;
   },
 });
+
+/**
+ * Cache identity for product-wide answers: the product and variant documents, not
+ * loose title tokens, so no other model can ever be served from this row.
+ */
+function productCacheKey(context: {
+  title: string | null;
+  brand: string | null;
+  productId: string | null;
+  variantId: string | null;
+}): string {
+  if (context.productId) return `product:${context.productId}:variant:${context.variantId ?? "none"}`;
+  return modelKey([context.brand, context.title].filter(Boolean).join(" "));
+}
 
 export const itemContext = internalQuery({
   args: { cartItemId: v.id("cartItems") },
@@ -414,6 +475,8 @@ export const itemContext = internalQuery({
       brand: product?.brand ?? null,
       condition: offer?.condition ?? null,
       offerId: offer?._id ?? null,
+      productId: product?._id ?? null,
+      variantId: item.variantId ?? offer?.variantId ?? null,
     };
   },
 });
@@ -458,6 +521,7 @@ export const saveComparison = internalMutation({
     exaRunId: v.optional(v.string()),
     note: v.union(v.string(), v.null()),
     candidates: v.array(candidateValidator),
+    offers: v.optional(v.array(offerValidator)),
   },
   handler: async (ctx, args) => {
     const item = await ctx.db.get("cartItems", args.cartItemId);
@@ -473,7 +537,7 @@ export const saveComparison = internalMutation({
       checkedAt: Date.now(),
       note: args.note ?? undefined,
       candidates: args.candidates,
-      offers: [],
+      offers: args.offers ?? [],
     });
   },
 });
@@ -565,6 +629,20 @@ export const startRedditLookup = internalAction({
   handler: async (ctx, { cartItemId, productTitle }) => {
     const existing = await ctx.runQuery(internal.exa.pendingRedditRun, { cartItemId });
     if (existing) return null;
+    const context = await ctx.runQuery(internal.exa.itemContext, { cartItemId });
+    const redditKey = context ? productCacheKey(context) : modelKey(productTitle);
+    const cachedThreads = await ctx.runQuery(internal.cache.read, { kind: "reddit", key: redditKey });
+    const storedThreads = cachedThreads?.payload
+      ? (JSON.parse(cachedThreads.payload) as { threads: any[] }).threads
+      : null;
+    if (storedThreads && storedThreads.length > 0 && isFresh("reddit", cachedThreads!.fetchedAt)) {
+      await ctx.runMutation(internal.exa.publishCachedRedditThreads, {
+        cartItemId,
+        threads: storedThreads,
+        checkedAt: cachedThreads!.fetchedAt,
+      });
+      return null;
+    }
     const key = env.EXA_API_KEY;
     if (!key) return null;
     const query =
@@ -644,6 +722,26 @@ export const pollRedditLookup = internalAction({
           community: asString(t.subreddit),
         })),
       });
+      const publishContext = await ctx.runQuery(internal.exa.itemContext, { cartItemId });
+      if (publishContext?.title) {
+        // Twelve hours of threads: the same model, for every shopper.
+        await ctx.runMutation(internal.cache.finish, {
+          kind: "reddit",
+          key: productCacheKey(publishContext),
+          payload: JSON.stringify({
+            threads: threads.slice(0, 5).map((t: any) => ({
+              title: String(t.title ?? "Reddit thread"),
+              url: String(t.url),
+              author: asString(t.author),
+              createdAt: asString(t.createdAt) ? Date.parse(t.createdAt) : null,
+              quote: asString(t.quote),
+            })),
+          }),
+          source: "exa",
+          simulated: false,
+          token: null,
+        });
+      }
       return null;
     }
     if (body && (status === "failed" || status === "canceled" || status === "error")) {
@@ -715,11 +813,62 @@ const priceFromText = (text: string | null): number | null => {
  * Resolves a free-text product query ("sony xm5") to concrete product URLs so the
  * cart's title field can go through the same add pipeline as a pasted link.
  */
+type QueryCandidate = { title: string; url: string; retailer: string; priceCents: number | null };
+type ResolvedQuery = {
+  ok: boolean;
+  error: string | null;
+  candidates: QueryCandidate[];
+  cachedAt: number | null;
+  stale: boolean;
+};
+
 export const resolveProductQuery = internalAction({
-  args: { query: v.string() },
-  handler: async (_ctx, { query }) => {
+  args: { query: v.string(), force: v.optional(v.boolean()) },
+  handler: async (ctx, { query, force }): Promise<ResolvedQuery> => {
+    const cacheKey = normalizedQuery(query);
+    const cached = await ctx.runQuery(internal.cache.read, { kind: "query", key: cacheKey });
+    const stored = cached?.payload ? (JSON.parse(cached.payload) as { candidates: any[] }) : null;
+    if (stored && !force && isFresh("query", cached!.fetchedAt)) {
+      return { ok: true, error: null, candidates: stored.candidates, cachedAt: cached!.fetchedAt, stale: false };
+    }
+    const claim = await ctx.runMutation(internal.cache.claim, {
+      kind: "query",
+      key: cacheKey,
+      source: "exa",
+    });
+    const queryToken = claim.token;
+    if (!claim.claimed) {
+      if (stored) {
+        return { ok: true, error: null, candidates: stored.candidates, cachedAt: cached!.fetchedAt, stale: true };
+      }
+      // Another run owns this key. Wait for what it writes rather than reporting a
+      // no-match for a search that is still in flight.
+      for (let i = 0; i < 5; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 1_200));
+        const later = await ctx.runQuery(internal.cache.read, { kind: "query", key: cacheKey });
+        if (later?.payload) {
+          const arrived = JSON.parse(later.payload) as { candidates: QueryCandidate[] };
+          return { ok: true, error: null, candidates: arrived.candidates, cachedAt: later.fetchedAt, stale: false };
+        }
+      }
+      return {
+        ok: false,
+        error: "A search for these words is still running; try again in a moment.",
+        candidates: [],
+        cachedAt: null,
+        stale: false,
+      };
+    }
     const key = env.EXA_API_KEY;
-    if (!key) return { ok: false, error: "EXA_API_KEY is not set", candidates: [] };
+    if (!key) {
+      await ctx.runMutation(internal.cache.fail, {
+        kind: "query",
+        key: cacheKey,
+        error: "EXA_API_KEY is not set",
+        token: queryToken,
+      });
+      return { ok: false, error: "EXA_API_KEY is not set", candidates: [], cachedAt: null, stale: false };
+    }
     let res: Response;
     try {
       res = await fetch(EXA_SEARCH, {
@@ -733,18 +882,34 @@ export const resolveProductQuery = internalAction({
         }),
       });
     } catch (e) {
-      return { ok: false, error: `Exa search failed: ${e instanceof Error ? e.message : String(e)}`, candidates: [] };
+      const error = `Exa search failed: ${e instanceof Error ? e.message : String(e)}`;
+      await ctx.runMutation(internal.cache.fail, { kind: "query", key: cacheKey, error, token: queryToken });
+      return stored
+        ? { ok: true, error, candidates: stored.candidates, cachedAt: cached!.fetchedAt, stale: true }
+        : { ok: false, error, candidates: [], cachedAt: null, stale: false };
     }
     const text = await res.text();
-    if (!res.ok) return { ok: false, error: `Exa search HTTP ${res.status}: ${text.slice(0, 160)}`, candidates: [] };
+    if (!res.ok) {
+      const error = `Exa search HTTP ${res.status}: ${text.slice(0, 160)}`;
+      await ctx.runMutation(internal.cache.fail, { kind: "query", key: cacheKey, error, token: queryToken });
+      return stored
+        ? { ok: true, error, candidates: stored.candidates, cachedAt: cached!.fetchedAt, stale: true }
+        : { ok: false, error, candidates: [], cachedAt: null, stale: false };
+    }
     let body: any;
     try {
       body = JSON.parse(text);
     } catch {
-      return { ok: false, error: "Exa search returned non-JSON", candidates: [] };
+      await ctx.runMutation(internal.cache.fail, {
+        kind: "query",
+        key: cacheKey,
+        error: "Exa search returned non-JSON",
+        token: queryToken,
+      });
+      return { ok: false, error: "Exa search returned non-JSON", candidates: [], cachedAt: null, stale: false };
     }
     const results: any[] = Array.isArray(body?.results) ? body.results : [];
-    const candidates = results
+    const candidates: QueryCandidate[] = results
       .filter((r) => typeof r?.url === "string" && /^https?:\/\//.test(r.url))
       .map((r) => {
         const host = new URL(r.url).hostname.replace(/^www\./, "");
@@ -758,10 +923,63 @@ export const resolveProductQuery = internalAction({
         };
       })
       .slice(0, 4);
-    return {
-      ok: candidates.length > 0,
-      error: candidates.length > 0 ? null : "Exa returned no product pages",
-      candidates,
-    };
+    if (candidates.length === 0) {
+      await ctx.runMutation(internal.cache.fail, {
+        kind: "query",
+        key: cacheKey,
+        error: "Exa returned no product pages",
+        token: queryToken,
+      });
+      return { ok: false, error: "Exa returned no product pages", candidates: [], cachedAt: null, stale: false };
+    }
+    await ctx.runMutation(internal.cache.finish, {
+      kind: "query",
+      key: cacheKey,
+      payload: JSON.stringify({ candidates }),
+      source: "exa",
+      simulated: false,
+      token: queryToken,
+    });
+    return { ok: true, error: null, candidates, cachedAt: Date.now(), stale: false };
+  },
+});
+
+/** Publishes cached Reddit threads as the section, labeled with when they were read. */
+export const publishCachedRedditThreads = internalMutation({
+  args: {
+    cartItemId: v.id("cartItems"),
+    threads: v.array(
+      v.object({
+        title: v.string(),
+        url: v.string(),
+        author: v.union(v.string(), v.null()),
+        createdAt: v.union(v.number(), v.null()),
+        quote: v.union(v.string(), v.null()),
+      }),
+    ),
+    checkedAt: v.number(),
+  },
+  handler: async (ctx, { cartItemId, threads, checkedAt }) => {
+    await ctx.runMutation(internal.enrichment.publishSection, {
+      cartItemId,
+      section: "reddit",
+      summary: `${threads.length} Reddit threads about this product, read ${describeAge(checkedAt)}.`,
+      highlights: threads.slice(0, 3).map((t) => ({
+        label: "reddit.com",
+        detail: t.title,
+        tone: "neutral" as const,
+      })),
+      sources: threads.map((t) => ({ title: t.title, url: t.url, publisher: "Reddit" })),
+      simulated: false,
+      items: threads.map((t) => ({
+        author: t.author,
+        text: t.quote ?? t.title,
+        url: t.url,
+        createdAt: t.createdAt,
+        score: null,
+        community: null,
+      })),
+    });
+    return null;
   },
 });
