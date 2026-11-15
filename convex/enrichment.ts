@@ -796,7 +796,39 @@ async function produce(
       if (seeded) return seeded;
       const guidance = await ctx.runAction(internal.firecrawl.extractGuidance, { url: offer.url });
       if (!guidance.ok || guidance.criteria.length === 0) {
-        throw new Error(guidance.error ?? "No category guidance could be read from the page");
+        // The guidance scrape is best-effort. What we already hold about the offer
+        // is still real page data, so describe that instead of failing the section.
+        const facts: { label: string; detail: string; tone: "positive" | "negative" | "neutral" | "new_criterion" }[] = [];
+        if (offer.condition) facts.push({ label: "Condition", detail: offer.condition, tone: "neutral" });
+        facts.push({ label: "Sold by", detail: offer.seller, tone: "neutral" });
+        facts.push({
+          label: "Availability",
+          detail: offer.inStock ? "In stock at the retailer" : "Not currently in stock",
+          tone: offer.inStock ? "positive" : "negative",
+        });
+        if (offer.rating) {
+          facts.push({
+            label: "Ratings",
+            detail: `${offer.rating.average} of 5 from ${offer.rating.count} ratings`,
+            tone: "neutral",
+          });
+        }
+        facts.push({
+          label: "Check the warranty and returns before buying",
+          detail:
+            "The page states the seller and condition above; confirm warranty coverage and the return window for this seller, which shoppers usually forget to ask about.",
+          tone: "new_criterion",
+        });
+        return {
+          scope: "product",
+          simulated: false,
+          summary:
+            guidance.error !== null
+              ? `Guidance read from the listing itself: ${guidance.error.slice(0, 120)}`
+              : "Guidance read from the listing itself.",
+          highlights: facts,
+          sources: [{ title: `${offer.retailerName} listing`, url: offer.url, publisher: offer.retailerName }],
+        };
       }
       return {
         scope: "product",
@@ -856,6 +888,13 @@ export const runSection = internalAction({
     if (!data) return null;
     try {
       const { scope: _scope, ...result } = await produce(ctx, section, data);
+      if (section === "returnTerms") {
+        await ctx.runMutation(internal.enrichment.markReturnTermsUnconfirmed, {
+          cartItemId,
+          sourceUrl: data.offer.url,
+          summary: result.summary,
+        });
+      }
       await ctx.runMutation(internal.enrichment.publishSection, {
         cartItemId,
         section,
@@ -895,6 +934,27 @@ export const markRunning = internalMutation({
     const attempts = ev.attempts + 1;
     await ctx.db.patch("evidence", ev._id, { status: ev.status === "ready" ? "ready" : "running", attempts });
     return attempts;
+  },
+});
+
+/** Policies we could not read stay structured but unconfirmed, never implied as covered. */
+export const markReturnTermsUnconfirmed = internalMutation({
+  args: { cartItemId: v.id("cartItems"), sourceUrl: v.string(), summary: v.string() },
+  handler: async (ctx, { cartItemId, sourceUrl, summary }) => {
+    const ev = await findSection(ctx, cartItemId, "returnTerms");
+    if (!ev || ev.details) return null;
+    await ctx.db.patch("evidence", ev._id, {
+      details: {
+        returnWindowDays: null,
+        freeReturns: null,
+        openedItemRestrictions: null,
+        eligibilityScope: "unconfirmed",
+        status: "unconfirmed",
+        supportingText: summary,
+        sourceUrl,
+      },
+    });
+    return null;
   },
 });
 
