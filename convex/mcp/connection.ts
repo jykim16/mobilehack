@@ -27,7 +27,8 @@ export const createPairingCode = mutation({
   },
 });
 
-export const createConnection = mutation({
+/** The Muse path: the app mints a bearer token for its own (anonymous) shopper and shows it once. */
+export const create = mutation({
   args: { label: v.optional(v.string()) },
   handler: async (ctx, { label }): Promise<{ token: string }> => {
     const shopperId = await requireShopper(ctx);
@@ -56,9 +57,8 @@ export const revokeConnection = mutation({
   args: { tokenId: v.id("mcpTokens") },
   handler: async (ctx, { tokenId }) => {
     const shopperId = await requireShopper(ctx);
-    const row = await ctx.db.get("mcpTokens", tokenId);
-    if (!row || row.shopperId !== shopperId) throw new ConvexError({ code: "NOT_FOUND", message: "Connection not found." });
-    await ctx.runMutation(internal.mcp.store.revokeToken, { shopperId, tokenId });
+    const revoked = await ctx.runMutation(internal.mcp.store.revokeConnection, { shopperId, connectionId: tokenId });
+    if (!revoked) throw new ConvexError({ code: "NOT_FOUND", message: "Connection not found." });
     return null;
   },
 });
@@ -73,7 +73,7 @@ export const rememberDemoShopper = internalMutation({
 
 export const mintDemoConnection = internalMutation({
   args: { login: v.string() },
-  handler: async (ctx, { login }): Promise<{ token: string; shopperId: Id<"users"> }> => {
+  handler: async (ctx, { login }): Promise<{ token: string; shopperId: Id<"users">; connectionId: Id<"mcpTokens"> }> => {
     const existing = await ctx.db
       .query("mcpDemoShoppers")
       .withIndex("by_login", (q) => q.eq("login", login))
@@ -81,7 +81,7 @@ export const mintDemoConnection = internalMutation({
     const shopperId = existing?.shopperId ?? (await ctx.db.insert("users", { name: `Demo shopper (${login})`, isAnonymous: true }));
     if (!existing) await ctx.db.insert("mcpDemoShoppers", { login, shopperId });
     const token = "cart_ct_" + crypto.randomUUID().replace(/-/g, "") + crypto.randomUUID().replace(/-/g, "");
-    await ctx.db.insert("mcpTokens", {
+    const connectionId = await ctx.db.insert("mcpTokens", {
       shopperId,
       tokenHash: await hashToken(token),
       kind: "connection",
@@ -89,6 +89,6 @@ export const mintDemoConnection = internalMutation({
       label: `CLI demo (${login})`,
       createdAt: Date.now(),
     });
-    return { token, shopperId };
+    return { token, shopperId, connectionId };
   },
 });

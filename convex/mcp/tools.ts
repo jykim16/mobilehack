@@ -81,6 +81,9 @@ export const TOOLS: { name: string; title: string; description: string; inputSch
 
 export class ToolInputError extends Error {}
 
+const PENDING_MESSAGE =
+  "Purchase request sent; nothing has been bought. Ask the shopper to open the Cart app, review the exact quote and approve or defer, then check back with get_purchase_status.";
+
 const PRIVATE_KEYS = /^(payment|card|billing|shippingaddress|shippingto|address\w*|street|postal|zip|phone|recipient|tokenHash|clientId|tokenIdentifier)/i;
 
 export function redact(value: unknown): unknown {
@@ -127,7 +130,18 @@ export async function callTool(ctx: ActionCtx, shopperId: Id<"users">, name: str
     case "add_cart_item": {
       const url = str(args, "url", true);
       const variant = str(args, "variant");
-      const idempotencyKey = str(args, "idempotencyKey") ?? (await hashToken(`add:${shopperId}:${url}:${variant ?? ""}`));
+      const explicitKey = str(args, "idempotencyKey");
+      if (!explicitKey) {
+        const existing = (await backend.listItems(ctx, shopperId)).find(
+          (candidate) =>
+            candidate.url === url &&
+            (variant === undefined || candidate.variant?.label.toLowerCase() === variant.toLowerCase()),
+        );
+        if (existing) return { ...asItem(existing), deduplicated: true };
+      }
+      // Deterministic so two concurrent adds of the same offer collapse in the backend's own lookup.
+      // After an item is removed, pass a fresh idempotencyKey to add it again.
+      const idempotencyKey = explicitKey ?? (await hashToken(`add:${shopperId}:${url}:${variant ?? ""}`));
       return await backend.addItem(ctx, shopperId, { url, variant, reason: str(args, "reason"), idempotencyKey });
     }
     case "list_cart_items": {
@@ -150,13 +164,14 @@ export async function callTool(ctx: ActionCtx, shopperId: Id<"users">, name: str
       if (!item) throw new ToolInputError("No Cart item with that ID for this shopper.");
       const offerId = (str(args, "offerId") ?? item.offer?.id) as Id<"offers"> | undefined;
       if (!offerId) throw new ToolInputError("This Cart item has no resolved offer yet; try again once enrichment finishes.");
-      const idempotencyKey = str(args, "idempotencyKey") ?? (await hashToken(`purchase:${shopperId}:${itemId}:${offerId}:${quantity}`));
+      // Retries of a live request dedupe on its own key; a new request needs a new key.
+      if (!str(args, "idempotencyKey") && item.pendingRequest) {
+        const live = await backend.getPurchaseStatus(ctx, shopperId, item.pendingRequest.requestId);
+        return { ...live, message: PENDING_MESSAGE };
+      }
+      const idempotencyKey = str(args, "idempotencyKey") ?? `agent-purchase-${crypto.randomUUID()}`;
       const request = await backend.requestPurchase(ctx, shopperId, { itemId, offerId, quantity, reason, idempotencyKey });
-      return {
-        ...request,
-        message:
-          "Purchase request sent; nothing has been bought. Ask the shopper to open the Cart app, review the exact quote and approve or defer, then check back with get_purchase_status.",
-      };
+      return { ...request, message: PENDING_MESSAGE };
     }
     case "get_purchase_status":
       return await backend.getPurchaseStatus(ctx, shopperId, str(args, "requestId", true) as Id<"purchaseRequests">);

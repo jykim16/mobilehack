@@ -86,6 +86,10 @@ async function authenticate(ctx: ActionCtx, req: Request): Promise<Id<"users"> |
 
 type JsonRpcMessage = { jsonrpc?: unknown; id?: unknown; method?: unknown; params?: unknown };
 
+function isRequest(msg: unknown): msg is JsonRpcMessage {
+  return typeof msg === "object" && msg !== null && !Array.isArray(msg);
+}
+
 async function handleRpc(ctx: ActionCtx, shopperId: Id<"users">, msg: JsonRpcMessage) {
   const id = msg.id ?? null;
   if (msg.jsonrpc !== "2.0" || typeof msg.method !== "string") {
@@ -140,11 +144,16 @@ const mcpPost = httpAction(async (ctx, req) => {
   if (Array.isArray(body)) {
     const responses = [];
     for (const msg of body) {
-      const response = await handleRpc(ctx, shopperId, msg as JsonRpcMessage);
-      if (response && (msg as JsonRpcMessage).id !== undefined) responses.push(response);
+      if (!isRequest(msg)) {
+        responses.push({ jsonrpc: "2.0", id: null, error: { code: -32600, message: "Invalid Request" } });
+        continue;
+      }
+      const response = await handleRpc(ctx, shopperId, msg);
+      if (response && msg.id !== undefined) responses.push(response);
     }
     return responses.length ? json(responses) : new Response(null, { status: 202, headers: CORS_HEADERS });
   }
+  if (!isRequest(body)) return json({ jsonrpc: "2.0", id: null, error: { code: -32600, message: "Invalid Request" } }, 400);
   const msg = body as JsonRpcMessage;
   const response = await handleRpc(ctx, shopperId, msg);
   if (msg.id === undefined || response === null) return new Response(null, { status: 202, headers: CORS_HEADERS });
@@ -209,10 +218,12 @@ const authorizeGet = httpAction(async (ctx, req) => {
     `<h1>Connect Cart</h1><p><b>${appName}</b> wants to use your Cart.</p>
 <ul><li>Save items and read their decision context</li><li>Ask you to approve purchases</li></ul>
 <p>It cannot approve purchases, and it never sees payment or shipping details. You approve every purchase in the Cart app.</p>
+<form method="post" action="/oauth/authorize">${hidden}<input type="hidden" name="code" value="demo">
+<button type="submit">Continue as demo shopper</button></form>
+<p class="note" style="text-align:center">or connect a specific Cart account</p>
 <form method="post" action="/oauth/authorize">${hidden}
-<label for="code">Pairing code</label><input id="code" name="code" placeholder="ABC234" autocapitalize="characters" autocomplete="one-time-code" required>
-<button type="submit">Allow and connect</button></form>
-<p class="note">Open Cart → Connect an agent to get a pairing code.</p>`,
+<label for="code">Pairing code from the Cart app</label><input id="code" name="code" placeholder="ABC234" autocapitalize="characters" autocomplete="one-time-code" required>
+<button type="submit">Connect with code</button></form>`,
   );
 });
 
@@ -222,7 +233,7 @@ const authorizePost = httpAction(async (ctx, req) => {
   if (valid instanceof Response) return valid;
   const entered = (params.code ?? "").trim();
   let shopperId: Id<"users"> | null = entered ? await ctx.runMutation(internal.mcp.store.consumePairingCode, { code: entered }) : null;
-  if (!shopperId && entered) shopperId = await demoLoginShopperId(ctx, entered);
+  if (!shopperId && entered.toLowerCase() === "demo") shopperId = await demoLoginShopperId(ctx, "demo");
   if (!shopperId) {
     return htmlPage("Code not recognized", "<p>That pairing code is invalid or expired. Get a new one in the Cart app and try again.</p>", 400);
   }
@@ -295,9 +306,11 @@ const token = httpAction(async (ctx, req) => {
     if (!code || code.clientId !== p.client_id) return oauthError("invalid_grant", "Authorization code is invalid or expired");
     if (p.redirect_uri && p.redirect_uri !== code.redirectUri) return oauthError("invalid_grant", "redirect_uri mismatch");
     if ((await pkceChallenge(p.code_verifier)) !== code.codeChallenge) return oauthError("invalid_grant", "PKCE verification failed");
+    const client = await ctx.runQuery(internal.mcp.store.getClient, { clientId: code.clientId });
     await ctx.runMutation(internal.mcp.store.issueTokens, {
       shopperId: code.shopperId,
       clientId: code.clientId,
+      clientLabel: client?.clientName ?? "App connector",
       scope: code.scope,
       accessToken,
       refreshToken,

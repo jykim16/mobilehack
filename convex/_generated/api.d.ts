@@ -23,6 +23,7 @@ import type * as lib_validators from "../lib/validators.js";
 import type * as mcp_backend from "../mcp/backend.js";
 import type * as mcp_connection from "../mcp/connection.js";
 import type * as mcp_crypto from "../mcp/crypto.js";
+import type * as mcp_demoBridge from "../mcp/demoBridge.js";
 import type * as mcp_http from "../mcp/http.js";
 import type * as mcp_store from "../mcp/store.js";
 import type * as mcp_tables from "../mcp/tables.js";
@@ -60,6 +61,7 @@ declare const fullApi: ApiFromModules<{
   "mcp/backend": typeof mcp_backend;
   "mcp/connection": typeof mcp_connection;
   "mcp/crypto": typeof mcp_crypto;
+  "mcp/demoBridge": typeof mcp_demoBridge;
   "mcp/http": typeof mcp_http;
   "mcp/store": typeof mcp_store;
   "mcp/tables": typeof mcp_tables;
