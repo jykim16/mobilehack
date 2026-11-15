@@ -1,7 +1,7 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { router } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
-import { Keyboard, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Keyboard, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import Animated, { FadeIn, FadeInDown, FadeOut, LinearTransition } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -36,6 +36,7 @@ const gathering = (item: CartItem) => item.enrichmentStatus === 'resolving' || i
 export default function CartScreen() {
   const styles = useThemedStyles(createStyles);
   const insets = useSafeAreaInsets();
+  const overBar = Platform.OS === 'ios' ? insets.bottom : 0;
   const { ready, error, items, live, addItem, setQuantity, removeItem, loadDemoCart } = useShop();
   const checkoutItem = useCheckout();
   const addFromInput = useAddFromInput();
@@ -277,7 +278,7 @@ export default function CartScreen() {
       )}
 
       {ready && items.length > 0 && (
-        <View style={styles.checkoutBar}>
+        <View style={[styles.checkoutBar, { bottom: overBar }]}>
           <PillButton
             variant="accent"
             icon="cart"
@@ -290,7 +291,7 @@ export default function CartScreen() {
       )}
 
       {toast && (
-        <Animated.View entering={FadeInDown} exiting={FadeOut} style={styles.toastWrap}>
+        <Animated.View entering={FadeInDown} exiting={FadeOut} style={[styles.toastWrap, { bottom: 88 + overBar }]}>
           <Pressable
             accessibilityRole="button"
             onPress={() => {
