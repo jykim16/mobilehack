@@ -218,10 +218,12 @@ const authorizeGet = httpAction(async (ctx, req) => {
     `<h1>Connect Cart</h1><p><b>${appName}</b> wants to use your Cart.</p>
 <ul><li>Save items and read their decision context</li><li>Ask you to approve purchases</li></ul>
 <p>It cannot approve purchases, and it never sees payment or shipping details. You approve every purchase in the Cart app.</p>
+<form method="post" action="/oauth/authorize">${hidden}<input type="hidden" name="code" value="demo">
+<button type="submit">Continue as demo shopper</button></form>
+<p class="note" style="text-align:center">or connect a specific Cart account</p>
 <form method="post" action="/oauth/authorize">${hidden}
-<label for="code">Pairing code</label><input id="code" name="code" placeholder="ABC234" autocapitalize="characters" autocomplete="one-time-code" required>
-<button type="submit">Allow and connect</button></form>
-<p class="note">Open Cart → Connect an agent to get a pairing code.</p>`,
+<label for="code">Pairing code from the Cart app</label><input id="code" name="code" placeholder="ABC234" autocapitalize="characters" autocomplete="one-time-code" required>
+<button type="submit">Connect with code</button></form>`,
   );
 });
 

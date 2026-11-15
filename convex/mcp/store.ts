@@ -191,6 +191,21 @@ export const consumePairingCode = internalMutation({
   },
 });
 
+/** What agents actually did: registered clients, authorization attempts and live connections. */
+export const diagnostics = internalQuery({
+  args: {},
+  handler: async (ctx) => {
+    const clients = await ctx.db.query("mcpOAuthClients").order("desc").take(10);
+    const codes = await ctx.db.query("mcpAuthCodes").order("desc").take(10);
+    const tokens = await ctx.db.query("mcpTokens").order("desc").take(15);
+    return {
+      clients: clients.map((c) => ({ clientId: c.clientId, clientName: c.clientName, redirectUris: c.redirectUris, at: c.createdAt })),
+      codes: codes.map((c) => ({ clientId: c.clientId, redirectUri: c.redirectUri, used: c.used, at: c._creationTime })),
+      tokens: tokens.map((t) => ({ kind: t.kind, label: t.label, clientId: t.clientId, at: t.createdAt })),
+    };
+  },
+});
+
 export const demoShopper = internalQuery({
   args: { login: v.string() },
   handler: async (ctx, { login }) => {
