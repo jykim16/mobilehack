@@ -8,7 +8,17 @@ import * as cartApi from './cart-api';
 import { api } from './convex-api';
 import { mockComparison } from './mock-comparison';
 import { mockReviews } from './mock-reviews';
-import type { CartItem, DecideOutcome, Offer, PriceComparison, Purchase, PurchaseRequest, Quote, ReviewList } from './types';
+import type {
+  CartItem,
+  DecideOutcome,
+  Offer,
+  PriceComparison,
+  Purchase,
+  PurchaseRequest,
+  QueryAlternative,
+  Quote,
+  ReviewList,
+} from './types';
 
 /**
  * Screen-facing state. With EXPO_PUBLIC_CONVEX_URL set, lists are live useQuery subscriptions on the
@@ -33,7 +43,10 @@ interface ShopState {
   purchases: Purchase[];
   purchasedItems: Record<string, CartItem>;
   cartCount: number;
-  addItem: (url: string) => Promise<void>;
+  /** Adds a product URL and returns the new item's id; enrichment fills it in afterwards. */
+  addItem: (url: string) => Promise<string>;
+  /** Resolves free text to a product and adds it; throws a short message when nothing matched. */
+  addItemFromQuery: (query: string) => Promise<{ itemId: string; alternatives: QueryAlternative[] }>;
   setQuantity: (itemId: string, quantity: number) => Promise<void>;
   removeItem: (itemId: string) => Promise<void>;
   loadDemoCart: () => Promise<void>;
@@ -125,8 +138,14 @@ function LiveShopProvider({ children }: { children: ReactNode }) {
     purchases: purchases ?? [],
     purchasedItems,
     cartCount: countOf(items ?? []),
-    addItem: async (url) => {
-      await addItem({ url, idempotencyKey: idempotencyKey() });
+    addItem: async (url) => (await addItem({ url, idempotencyKey: idempotencyKey() })).itemId,
+    addItemFromQuery: async (query) => {
+      try {
+        return await convex.action(api.cart.addItemFromQuery, { query, idempotencyKey: idempotencyKey() });
+      } catch (e) {
+        if (e instanceof Error && /could not find (public )?function/i.test(e.message)) throw new Error('Paste a product URL for now.');
+        throw e;
+      }
     },
     setQuantity: async (itemId, quantity) => {
       await setQuantity({ itemId, quantity });
@@ -174,6 +193,7 @@ function MockShopProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     loadSnapshot().then(setSnapshot);
+    return cartApi.subscribe(() => loadSnapshot().then(setSnapshot));
   }, []);
 
   const value: ShopState = {
@@ -185,8 +205,14 @@ function MockShopProvider({ children }: { children: ReactNode }) {
     purchasedItems: snapshot?.purchasedItems ?? {},
     cartCount: countOf(snapshot?.items ?? []),
     addItem: async (url) => {
-      await cartApi.addItem({ url, idempotencyKey: idempotencyKey() });
+      const { itemId } = await cartApi.addItem({ url, idempotencyKey: idempotencyKey() });
       await refresh();
+      return itemId;
+    },
+    addItemFromQuery: async (query) => {
+      const result = await cartApi.addItemFromQuery({ query, idempotencyKey: idempotencyKey() });
+      await refresh();
+      return result;
     },
     setQuantity: async (itemId, quantity) => {
       await cartApi.setQuantity({ itemId, quantity });

@@ -1,10 +1,10 @@
 import { router } from 'expo-router';
-import { useEffect } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import Animated, { FadeIn, FadeOut, useAnimatedStyle, useSharedValue, withRepeat, withTiming } from 'react-native-reanimated';
+import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 
 import { DetailSection } from '@/components/order-details';
 import { reviewMeta, SourceLogo, summaryLine } from '@/components/review-bits';
+import { Shimmer, SkeletonBlock } from '@/components/skeleton';
 import { Radius, Spacing, Type, useThemedStyles, type Palette } from '@/constants/theme';
 import { useReviews } from '@/data/shop-store';
 import type { CartItem } from '@/data/types';
@@ -59,25 +59,19 @@ export function ReviewPreview({ item }: { item: CartItem }) {
 
 function SkeletonRows() {
   const styles = useThemedStyles(createStyles);
-  const pulse = useSharedValue(0.35);
-  useEffect(() => {
-    pulse.value = withRepeat(withTiming(0.9, { duration: 750 }), -1, true);
-  }, [pulse]);
-  const shimmer = useAnimatedStyle(() => ({ opacity: pulse.value }));
-
   return (
-    <Animated.View style={[styles.rows, shimmer]} accessibilityLabel="Loading reviews">
+    <Shimmer style={styles.rows} label="Loading reviews">
       {Array.from({ length: PREVIEW_COUNT }, (_, index) => (
         <View key={index} style={styles.row}>
-          <View style={styles.skeletonLogo} />
+          <SkeletonBlock width={28} height={28} radius={Radius.pill} />
           <View style={styles.rowText}>
-            <View style={[styles.skeletonLine, styles.skeletonShort]} />
-            <View style={styles.skeletonLine} />
-            <View style={[styles.skeletonLine, styles.skeletonMedium]} />
+            <SkeletonBlock width="40%" style={styles.skeletonLine} />
+            <SkeletonBlock style={styles.skeletonLine} />
+            <SkeletonBlock width="75%" style={styles.skeletonLine} />
           </View>
         </View>
       ))}
-    </Animated.View>
+    </Shimmer>
   );
 }
 
@@ -90,8 +84,5 @@ const createStyles = (Colors: Palette) => StyleSheet.create({
   author: { ...Type.body, fontWeight: '600', color: Colors.text },
   muted: { ...Type.secondary, fontWeight: '400', color: Colors.textSecondary },
   snippet: { ...Type.body, color: Colors.text },
-  skeletonLogo: { width: 28, height: 28, borderRadius: Radius.pill, backgroundColor: Colors.control },
-  skeletonLine: { height: 12, borderRadius: 6, backgroundColor: Colors.control, marginVertical: 3 },
-  skeletonShort: { width: '40%' },
-  skeletonMedium: { width: '75%' },
+  skeletonLine: { marginVertical: 3 },
 });

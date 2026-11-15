@@ -1,6 +1,6 @@
 import { makeFunctionReference } from 'convex/server';
 
-import type { CartItem, DecideOutcome, Purchase, PurchaseRequest, ReviewList } from './types';
+import type { AddFromQueryResult, CartItem, DecideOutcome, Purchase, PurchaseRequest, ReviewList } from './types';
 
 /**
  * References to the deployed Convex functions in api-contract.md, by name, so the app needs neither
@@ -26,6 +26,10 @@ export const api = {
       { url: string; reason?: string; quantity?: number; idempotencyKey: string },
       { itemId: string; enrichmentStatus: 'resolving' | 'enriching'; deduplicated: boolean }
     >('cart:addItem'),
+    /** Resolves free text to a product through Exa, then adds it like addItem. Ships in MOBI-9's backend PR. */
+    addItemFromQuery: makeFunctionReference<'action', { query: string; idempotencyKey: string }, AddFromQueryResult>(
+      'cart:addItemFromQuery'
+    ),
     setQuantity: makeFunctionReference<'mutation', { itemId: string; quantity: number }, null>('cart:setQuantity'),
     removeItem: makeFunctionReference<'mutation', { itemId: string }, null>('cart:removeItem'),
   },

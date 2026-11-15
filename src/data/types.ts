@@ -102,6 +102,21 @@ export interface CartItem {
   comparison?: PriceComparison | null;
 }
 
+export interface QueryAlternative {
+  title: string;
+  url: string;
+  retailer: string;
+  priceCents: number | null;
+}
+
+export interface AddFromQueryResult {
+  itemId: string;
+  enrichmentStatus: CartItem['enrichmentStatus'];
+  resolvedUrl: string;
+  resolvedTitle: string;
+  alternatives: QueryAlternative[];
+}
+
 /** Cross-store lookup on cart:getItem: one Exa run reports listings at other stores. Listing prices only, not confirmed by a scrape. */
 export interface PriceComparison {
   status: 'running' | 'verifying' | 'completed' | 'empty' | 'failed';
