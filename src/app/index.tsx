@@ -42,30 +42,32 @@ export default function ChatScreen() {
         </Text>
       </View>
 
-      <ScrollView
-        ref={scrollRef}
-        style={styles.messages}
-        contentContainerStyle={[
-          styles.messagesContent,
-          { paddingBottom: COMPOSER_HEIGHT + Math.max(insets.bottom, Spacing.md) + Spacing.xxl },
-        ]}
-        keyboardDismissMode="interactive"
-        onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: true })}>
-        {messages.map((message) => (
-          <Message key={message.id} message={message} />
-        ))}
-        {assistantTyping && <Text style={styles.typing}>Thinking…</Text>}
-      </ScrollView>
+      <View style={styles.body}>
+        <ScrollView
+          ref={scrollRef}
+          style={styles.messages}
+          contentContainerStyle={[
+            styles.messagesContent,
+            { paddingBottom: COMPOSER_HEIGHT + Math.max(insets.bottom, Spacing.md) + Spacing.xxl },
+          ]}
+          keyboardDismissMode="interactive"
+          onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: true })}>
+          {messages.map((message) => (
+            <Message key={message.id} message={message} />
+          ))}
+          {assistantTyping && <Text style={styles.typing}>Thinking…</Text>}
+        </ScrollView>
 
-      <ChatComposer
-        value={draft}
-        onChangeText={setDraft}
-        onSend={send}
-        canSend={canSend}
-        cartCount={cartCount}
-        onOpenCart={() => router.push('/cart')}
-        bottomInset={Math.max(insets.bottom, Spacing.md)}
-      />
+        <ChatComposer
+          value={draft}
+          onChangeText={setDraft}
+          onSend={send}
+          canSend={canSend}
+          cartCount={cartCount}
+          onOpenCart={() => router.push('/cart')}
+          bottomInset={Math.max(insets.bottom, Spacing.md)}
+        />
+      </View>
     </KeyboardAvoidingView>
   );
 }
@@ -132,6 +134,7 @@ const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: Colors.background },
   header: { alignItems: 'center', paddingBottom: Spacing.md },
   wordmark: { fontSize: 24, lineHeight: 30, fontWeight: '700', letterSpacing: -1, color: Colors.accent },
+  body: { flex: 1 },
   messages: { flex: 1 },
   messagesContent: { paddingHorizontal: Spacing.lg, paddingTop: Spacing.sm, gap: Spacing.xxl },
   userBubble: {
