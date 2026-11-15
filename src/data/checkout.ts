@@ -9,13 +9,14 @@ import type { CartItem } from './types';
 /**
  * One-tap checkout for a cart item. In the live app on iOS and Android, Amazon items go through
  * useAmazonSession().checkoutAmazonItem, which signs in when needed, places the real Amazon order in the
- * background browser, and records it in Convex. Every other item, and every item on web or in the offline
+ * background browser, and records it in Convex; the tap is the shopper's confirmation. When Amazon stops
+ * mid-checkout for a sign-in step, the sheet reopens on that challenge, unless the shopper just closed it. Every other item, and every item on web or in the offline
  * demo, uses the Convex quote-and-approve path. Amazon orders are real money: one attempt per tap, never
  * retried, and a second tap on the same item while one is in flight is refused.
  */
 export function useCheckout(): (item: CartItem) => Promise<void> {
   const { live, checkoutItem } = useShop();
-  const { checkoutAmazonItem } = useAmazonSession();
+  const { checkoutAmazonItem, openBrowserSheet } = useAmazonSession();
   const placing = useRef(new Set<string>());
 
   return useCallback(
@@ -26,19 +27,20 @@ export function useCheckout(): (item: CartItem) => Promise<void> {
       placing.current.add(item.id);
       try {
         const result = await checkoutAmazonItem({ item });
+        if (result.status === 'requires_signin' && !/dismiss|closed|cancel/i.test(result.reason ?? '')) openBrowserSheet();
         if (result.status !== 'placed') throw new Error(amazonFailureMessage(result));
       } finally {
         placing.current.delete(item.id);
       }
     },
-    [live, checkoutItem, checkoutAmazonItem]
+    [live, checkoutItem, checkoutAmazonItem, openBrowserSheet]
   );
 }
 
 function amazonFailureMessage({ status, reason }: AmazonPlaceOrderResult) {
   switch (status) {
     case 'requires_signin':
-      return 'Sign in to Amazon to place this order.';
+      return 'Finish signing in to Amazon to place this order.';
     case 'requote_required':
       return 'The Amazon price changed. Check the item and try again.';
     case 'basket_mismatch':
