@@ -3,7 +3,6 @@ import type { Id } from "../_generated/dataModel";
 import { internal } from "../_generated/api";
 import { httpAction, type ActionCtx } from "../_generated/server";
 import { hashToken } from "../lib/tokens";
-import { demoLoginShopperId } from "./backend";
 import { pkceChallenge, randomToken } from "./crypto";
 import { ACCESS_TOKEN_TTL_MS } from "./store";
 import { backendMessage, callTool, redact, ToolInputError, TOOLS } from "./tools";
@@ -218,12 +217,10 @@ const authorizeGet = httpAction(async (ctx, req) => {
     `<h1>Connect Cart</h1><p><b>${appName}</b> wants to use your Cart.</p>
 <ul><li>Save items and read their decision context</li><li>Ask you to approve purchases</li></ul>
 <p>It cannot approve purchases, and it never sees payment or shipping details. You approve every purchase in the Cart app.</p>
-<form method="post" action="/oauth/authorize">${hidden}<input type="hidden" name="code" value="demo">
-<button type="submit">Continue as demo shopper</button></form>
-<p class="note" style="text-align:center">or connect a specific Cart account</p>
 <form method="post" action="/oauth/authorize">${hidden}
 <label for="code">Pairing code from the Cart app</label><input id="code" name="code" placeholder="ABC234" autocapitalize="characters" autocomplete="one-time-code" required>
-<button type="submit">Connect with code</button></form>`,
+<button type="submit">Connect with code</button></form>
+<p class="note">Sign in to Cart, then open Connect an agent to get your code. It expires in 10 minutes.</p>`,
   );
 });
 
@@ -233,7 +230,7 @@ const authorizePost = httpAction(async (ctx, req) => {
   if (valid instanceof Response) return valid;
   const entered = (params.code ?? "").trim();
   let shopperId: Id<"users"> | null = entered ? await ctx.runMutation(internal.mcp.store.consumePairingCode, { code: entered }) : null;
-  if (!shopperId && entered.toLowerCase() === "demo") shopperId = await demoLoginShopperId(ctx, "demo");
+  // Only a code minted by a signed-in app session may authorize a connection.
   if (!shopperId) {
     return htmlPage("Code not recognized", "<p>That pairing code is invalid or expired. Get a new one in the Cart app and try again.</p>", 400);
   }

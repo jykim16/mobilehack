@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // End-to-end check of the Cart MCP endpoint: OAuth (DCR + PKCE) or a connection token, then every tool.
-// Usage: node scripts/mcp-smoke.mjs <site-url> [--login <pairing code or demo login>] [--url <product-url>]
+// Usage: MCP_TOKEN=<cart_ct_...> node scripts/mcp-smoke.mjs <site-url>          # bearer path
+//        node scripts/mcp-smoke.mjs <site-url> --login <pairing code>          # OAuth path
 //   MCP_TOKEN=cart_ct_... node scripts/mcp-smoke.mjs <site-url>   # skip OAuth, use a connection token
 import { createHash, randomBytes } from "node:crypto";
 
@@ -11,7 +12,7 @@ const flag = (name, fallback) => {
 };
 const site = (args.find((a) => !a.startsWith("--") && !args[args.indexOf(a) - 1]?.startsWith("--")) ?? process.env.CONVEX_SITE_URL ?? process.env.EXPO_PUBLIC_CONVEX_SITE_URL ?? "").replace(/\/$/, "");
 if (!site) throw new Error("Pass the Convex site URL, e.g. https://<deployment>.convex.site");
-const login = flag("--login", "demo"); // a pairing code from the Cart app, or "demo"
+const login = flag("--login", null); // a pairing code from the Cart app
 const productUrl = flag("--url", "https://www.amazon.com/dp/B09XS7JWHH");
 
 const b64url = (buf) => buf.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
@@ -62,7 +63,7 @@ async function oauthToken() {
   const bogus = await fetch(as.authorization_endpoint, { method: "POST", redirect: "manual", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ ...authParams, code: "ZZZZZZ" }) });
   check(bogus.status === 400, "an unknown pairing code is refused");
 
-  if (login.toLowerCase() === "demo") {
+  if (process.env.MCP_ALLOW_CODE_REUSE === "1") {
     const consent2 = await fetch(as.authorization_endpoint, { method: "POST", redirect: "manual", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ ...authParams, code: login }) });
     const code2 = new URL(consent2.headers.get("location")).searchParams.get("code");
     const badPkce = await fetch(as.token_endpoint, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ grant_type: "authorization_code", code: code2, client_id: client.client_id, redirect_uri: redirectUri, code_verifier: "wrong" }) });
@@ -74,6 +75,11 @@ async function oauthToken() {
   return next.access_token;
 }
 
+if (!process.env.MCP_TOKEN && !login) {
+  console.error("Pass MCP_TOKEN=<cart_ct_...> for the bearer path, or --login <pairing code> for the OAuth path.");
+  console.error("Mint one: npx convex run mcp/connection:mintPairingCodeInternal '{\"shopperId\":\"<id>\"}'");
+  process.exit(1);
+}
 const token = process.env.MCP_TOKEN || (await oauthToken());
 let nextId = 1;
 async function rpc(method, params) {

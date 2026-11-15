@@ -19,7 +19,7 @@ Inputs and outputs match the iOS client shapes, with `itemId` aliasing the cart 
 ## Pairing
 **Bearer token (Muse).** The app mints a token for its own signed-in shopper — an anonymous one is fine — with `api.mcp.connection.create({ label: "Muse" })`, which returns `{ token: "cart_ct_..." }` exactly once. Paste it into the agent's credential field, not into chat. `listConnections` shows every connection and `revokeConnection({ connectionId })` kills one with all the tokens it issued.
 
-**OAuth 2.1 (ChatGPT, and Muse if it prefers).** The authorize page takes a pairing code from `api.mcp.connection.createPairingCode` (10 minutes, single use), or one tap as the demo shopper.
+**OAuth 2.1 (ChatGPT, and Muse if it prefers).** The authorize page only accepts a pairing code, which the signed-in app mints with `api.mcp.connection.createPairingCode` (10 minutes, single use). There is no demo or anonymous shortcut: a connection always belongs to the account that minted the code.
 
 ## Verification
 ```bash

@@ -63,6 +63,18 @@ export const revokeConnection = mutation({
   },
 });
 
+/** Test-only: mint a pairing code for an existing shopper (the app mints its own through createPairingCode). */
+export const mintPairingCodeInternal = internalMutation({
+  args: { shopperId: v.id("users") },
+  handler: async (ctx, { shopperId }): Promise<{ code: string }> => {
+    const bytes = new Uint8Array(6);
+    crypto.getRandomValues(bytes);
+    const code = Array.from(bytes, (b) => PAIRING_ALPHABET[b % PAIRING_ALPHABET.length]).join("");
+    await ctx.db.insert("mcpPairingCodes", { code, shopperId, expiresAt: Date.now() + PAIRING_CODE_TTL_MS, used: false });
+    return { code };
+  },
+});
+
 export const rememberDemoShopper = internalMutation({
   args: { login: v.string(), shopperId: v.id("users") },
   handler: async (ctx, args) => {
