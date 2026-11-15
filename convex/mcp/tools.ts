@@ -81,6 +81,9 @@ export const TOOLS: { name: string; title: string; description: string; inputSch
 
 export class ToolInputError extends Error {}
 
+const PENDING_MESSAGE =
+  "Purchase request sent; nothing has been bought. Ask the shopper to open the Cart app, review the exact quote and approve or defer, then check back with get_purchase_status.";
+
 const PRIVATE_KEYS = /^(payment|card|billing|shippingaddress|shippingto|address\w*|street|postal|zip|phone|recipient|tokenHash|clientId|tokenIdentifier)/i;
 
 export function redact(value: unknown): unknown {
@@ -136,7 +139,9 @@ export async function callTool(ctx: ActionCtx, shopperId: Id<"users">, name: str
         );
         if (existing) return { ...asItem(existing), deduplicated: true };
       }
-      const idempotencyKey = explicitKey ?? `agent-add-${crypto.randomUUID()}`;
+      // Deterministic so two concurrent adds of the same offer collapse in the backend's own lookup.
+      // After an item is removed, pass a fresh idempotencyKey to add it again.
+      const idempotencyKey = explicitKey ?? (await hashToken(`add:${shopperId}:${url}:${variant ?? ""}`));
       return await backend.addItem(ctx, shopperId, { url, variant, reason: str(args, "reason"), idempotencyKey });
     }
     case "list_cart_items": {
@@ -160,17 +165,13 @@ export async function callTool(ctx: ActionCtx, shopperId: Id<"users">, name: str
       const offerId = (str(args, "offerId") ?? item.offer?.id) as Id<"offers"> | undefined;
       if (!offerId) throw new ToolInputError("This Cart item has no resolved offer yet; try again once enrichment finishes.");
       // Retries of a live request dedupe on its own key; a new request needs a new key.
-      const idempotencyKey =
-        str(args, "idempotencyKey") ??
-        (item.pendingRequest
-          ? `agent-purchase-${item.pendingRequest.requestId}-${quantity}`
-          : `agent-purchase-${crypto.randomUUID()}`);
+      if (!str(args, "idempotencyKey") && item.pendingRequest) {
+        const live = await backend.getPurchaseStatus(ctx, shopperId, item.pendingRequest.requestId);
+        return { ...live, message: PENDING_MESSAGE };
+      }
+      const idempotencyKey = str(args, "idempotencyKey") ?? `agent-purchase-${crypto.randomUUID()}`;
       const request = await backend.requestPurchase(ctx, shopperId, { itemId, offerId, quantity, reason, idempotencyKey });
-      return {
-        ...request,
-        message:
-          "Purchase request sent; nothing has been bought. Ask the shopper to open the Cart app, review the exact quote and approve or defer, then check back with get_purchase_status.",
-      };
+      return { ...request, message: PENDING_MESSAGE };
     }
     case "get_purchase_status":
       return await backend.getPurchaseStatus(ctx, shopperId, str(args, "requestId", true) as Id<"purchaseRequests">);

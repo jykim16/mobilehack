@@ -101,6 +101,10 @@ export const rotateRefreshToken = internalMutation({
       .withIndex("by_tokenHash", (q) => q.eq("tokenHash", refreshHash))
       .unique();
     if (!old || old.kind !== "refresh" || old.revokedAt || old.clientId !== args.clientId) return null;
+    if (old.grantId) {
+      const grant = await ctx.db.get("mcpTokens", old.grantId);
+      if (!grant || grant.revokedAt) return null;
+    }
     await ctx.db.patch("mcpTokens", old._id, { revokedAt: now });
     const base = {
       shopperId: old.shopperId,
@@ -129,6 +133,10 @@ export const resolveAccessToken = internalQuery({
       .unique();
     if (!token || token.revokedAt || token.kind === "refresh") return null;
     if (token.expiresAt !== undefined && token.expiresAt < now) return null;
+    if (token.grantId) {
+      const grant = await ctx.db.get("mcpTokens", token.grantId);
+      if (!grant || grant.revokedAt) return null;
+    }
     return { shopperId: token.shopperId };
   },
 });
@@ -168,11 +176,20 @@ export const revokeConnection = internalMutation({
     const grant = await ctx.db.get("mcpTokens", connectionId);
     if (!grant || grant.shopperId !== shopperId) return false;
     await ctx.db.patch("mcpTokens", connectionId, { revokedAt: now });
-    const issued = await ctx.db
-      .query("mcpTokens")
-      .withIndex("by_grantId", (q) => q.eq("grantId", connectionId))
-      .take(200);
-    for (const row of issued) if (!row.revokedAt) await ctx.db.patch("mcpTokens", row._id, { revokedAt: now });
+    // The grant check above makes any tail beyond these pages harmless, but sweep generously.
+    for (let page = 0; page < 5; page++) {
+      const issued = await ctx.db
+        .query("mcpTokens")
+        .withIndex("by_grantId", (q) => q.eq("grantId", connectionId))
+        .take(200);
+      let patched = 0;
+      for (const row of issued) {
+        if (row.revokedAt) continue;
+        await ctx.db.patch("mcpTokens", row._id, { revokedAt: now });
+        patched++;
+      }
+      if (patched === 0) break;
+    }
     return true;
   },
 });
@@ -188,6 +205,19 @@ export const consumePairingCode = internalMutation({
     if (!row || row.used || row.expiresAt < Date.now()) return null;
     await ctx.db.patch("mcpPairingCodes", row._id, { used: true });
     return row.shopperId;
+  },
+});
+
+/** Hand every live token owned by one shopper to another (demo bridge). */
+export const repointShopper = internalMutation({
+  args: { from: v.id("users"), to: v.id("users") },
+  handler: async (ctx, { from, to }) => {
+    const rows = await ctx.db
+      .query("mcpTokens")
+      .withIndex("by_shopperId", (q) => q.eq("shopperId", from))
+      .take(100);
+    for (const row of rows) await ctx.db.patch("mcpTokens", row._id, { shopperId: to });
+    return rows.length;
   },
 });
 

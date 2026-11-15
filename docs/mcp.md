@@ -17,7 +17,9 @@ Personal agents (Muse, ChatGPT) shop through Cart over a remote MCP server hoste
 Inputs and outputs match the iOS client shapes, with `itemId` aliasing the cart item `id`. Payment, card, billing, address and phone fields are stripped before a response leaves the server. Every call is scoped to the shopper whose token authenticated it, and approval only ever happens in the signed-in app.
 
 ## Pairing
-The OAuth page asks for a pairing code the app mints with `api.mcp.connection.createPairingCode` (10 minutes, single use). `demo` maps to the demo shopper for the stage run. `api.mcp.connection.createConnection` mints a bearer token instead, and `listConnections` / `revokeConnection` manage them.
+**Bearer token (Muse).** The app mints a token for its own signed-in shopper — an anonymous one is fine — with `api.mcp.connection.create({ label: "Muse" })`, which returns `{ token: "cart_ct_..." }` exactly once. Paste it into the agent's credential field, not into chat. `listConnections` shows every connection and `revokeConnection({ connectionId })` kills one with all the tokens it issued.
+
+**OAuth 2.1 (ChatGPT, and Muse if it prefers).** The authorize page takes a pairing code from `api.mcp.connection.createPairingCode` (10 minutes, single use), or one tap as the demo shopper.
 
 ## Verification
 ```bash

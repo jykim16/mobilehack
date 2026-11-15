@@ -27,7 +27,8 @@ export const createPairingCode = mutation({
   },
 });
 
-export const createConnection = mutation({
+/** The Muse path: the app mints a bearer token for its own (anonymous) shopper and shows it once. */
+export const create = mutation({
   args: { label: v.optional(v.string()) },
   handler: async (ctx, { label }): Promise<{ token: string }> => {
     const shopperId = await requireShopper(ctx);
