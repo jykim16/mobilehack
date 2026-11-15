@@ -53,11 +53,11 @@ export default function FriendCartScreen() {
 }
 
 function VoteCard({ item }: { item: CartItem }) {
-  const { deviceId, voterName } = useSession();
+  const { voterId, voterName } = useSession();
   const cast = useMutation(api.votes.cast);
-  const mine = item.votes.find((v) => v.voterKey === deviceId);
+  const mine = item.votes.find((v) => v.voterKey === voterId);
   const [comment, setComment] = useState(mine?.comment ?? "");
-  const vote = (value: 1 | -1) => cast({ itemId: item._id, voterKey: deviceId, voterName, value, comment: comment || undefined });
+  const vote = (value: 1 | -1) => cast({ itemId: item._id, voterKey: voterId, voterName, value, comment: comment || undefined });
 
   return (
     <Card style={{ gap: 12 }}>

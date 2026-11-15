@@ -17,6 +17,12 @@ export type Confidence = {
 };
 
 const DEFAULT_DELIBERATION_HOURS = 48;
+const MAX_COOLING_OFF_HOURS = 24 * 30;
+
+export function normalizeCoolingOff(hours: number | undefined): number | undefined {
+  if (hours === undefined || !Number.isFinite(hours) || hours <= 0) return undefined;
+  return Math.min(hours, MAX_COOLING_OFF_HOURS);
+}
 export const READY_THRESHOLD = 70;
 
 function formatHours(h: number) {
@@ -32,19 +38,18 @@ export function computeConfidence(
   now: number,
 ): Confidence {
   const hoursInCart = Math.max(0, (now - item.addedAt) / 3_600_000);
-  const target = item.coolingOffHours ?? DEFAULT_DELIBERATION_HOURS;
-  const coolingOffRemainingHours = item.coolingOffHours
-    ? Math.max(0, item.coolingOffHours - hoursInCart)
-    : 0;
+  const coolingOff = normalizeCoolingOff(item.coolingOffHours);
+  const target = coolingOff ?? DEFAULT_DELIBERATION_HOURS;
+  const coolingOffRemainingHours = coolingOff ? Math.max(0, coolingOff - hoursInCart) : 0;
   const deliberation: Signal = {
     key: "deliberation",
     label: "Time to think",
     max: 25,
     score: Math.round(25 * Math.min(1, hoursInCart / target)),
-    detail: item.coolingOffHours
+    detail: coolingOff
       ? coolingOffRemainingHours > 0
-        ? `Cooling off: ${formatHours(coolingOffRemainingHours)} left of ${formatHours(item.coolingOffHours)}`
-        : `Cooling-off period complete (${formatHours(item.coolingOffHours)})`
+        ? `Cooling off: ${formatHours(coolingOffRemainingHours)} left of ${formatHours(coolingOff)}`
+        : `Cooling-off period complete (${formatHours(coolingOff)})`
       : `In your cart for ${formatHours(hoursInCart)}`,
   };
 

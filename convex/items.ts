@@ -5,6 +5,7 @@ import { Id } from "./_generated/dataModel";
 import { cartForDevice, hydrateItem } from "./carts";
 import { merchantDomain } from "./lib/merchants";
 import { scrapeProduct } from "./lib/scrape";
+import { normalizeCoolingOff } from "./lib/confidence";
 
 export const get = query({
   args: { itemId: v.id("items"), now: v.number() },
@@ -37,6 +38,7 @@ export const add = mutation({
     if (!found) throw new Error("No cart for this device");
     return await ctx.db.insert("items", {
       ...fields,
+      coolingOffHours: normalizeCoolingOff(fields.coolingOffHours),
       cartId: found.cart._id,
       merchantDomain: merchantDomain(fields.url),
       addedAt: Date.now(),
@@ -67,6 +69,7 @@ export const addFromAgent = internalMutation({
     await ctx.db.patch(agentId, { lastUsedAt: Date.now() });
     return await ctx.db.insert("items", {
       ...fields,
+      coolingOffHours: normalizeCoolingOff(fields.coolingOffHours),
       merchantDomain: fields.merchantDomain ?? merchantDomain(fields.url),
       cartId: agent.cartId,
       agentId,
@@ -89,7 +92,7 @@ export const setCoolingOff = mutation({
   args: { deviceId: v.string(), itemId: v.id("items"), hours: v.optional(v.number()) },
   handler: async (ctx, { deviceId, itemId, hours }) => {
     await ownedItem(ctx, deviceId, itemId);
-    await ctx.db.patch(itemId, { coolingOffHours: hours });
+    await ctx.db.patch(itemId, { coolingOffHours: normalizeCoolingOff(hours) });
   },
 });
 

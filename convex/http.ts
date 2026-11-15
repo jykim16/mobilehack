@@ -43,6 +43,9 @@ http.route({
     } catch {
       return json({ error: "Body must be JSON" }, 400);
     }
+    if (typeof body !== "object" || body === null || Array.isArray(body)) {
+      return json({ error: "Body must be a JSON object" }, 400);
+    }
     const url = typeof body.url === "string" ? body.url.trim() : "";
     const rationale = typeof body.rationale === "string" ? body.rationale.trim() : "";
     if (!/^https?:\/\//.test(url)) return json({ error: "url (http/https) is required" }, 400);

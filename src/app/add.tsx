@@ -1,6 +1,6 @@
 import { useAction, useMutation } from "convex/react";
 import { router } from "expo-router";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { ActivityIndicator, KeyboardAvoidingView, Platform, Pressable, ScrollView, Text, View } from "react-native";
 import { api } from "../../convex/_generated/api";
 import { Button, Card, Field, Thumb } from "@/components/ui";
@@ -25,18 +25,34 @@ export default function AddScreen() {
   const [cooling, setCooling] = useState<number | undefined>(24);
   const [loading, setLoading] = useState(false);
   const [fetched, setFetched] = useState<string | null>(null);
+  const latestUrl = useRef("");
+
+  const changeUrl = (next: string) => {
+    setUrl(next);
+    latestUrl.current = "";
+    setLoading(false);
+    if (fetched) {
+      setTitle("");
+      setPrice("");
+      setImageUrl(undefined);
+      setFetched(null);
+    }
+  };
 
   const fetchDetails = async () => {
-    if (!/^https?:\/\//.test(url.trim())) return;
+    const requested = url.trim();
+    if (!/^https?:\/\//.test(requested) || requested === latestUrl.current) return;
+    latestUrl.current = requested;
     setLoading(true);
     try {
-      const p = await preview({ url: url.trim() });
-      if (p.title) setTitle(p.title);
-      if (p.price !== undefined) setPrice((p.price / 100).toFixed(2));
+      const p = await preview({ url: requested });
+      if (latestUrl.current !== requested) return;
+      setTitle(p.title ?? "");
+      setPrice(p.price !== undefined ? (p.price / 100).toFixed(2) : "");
       setImageUrl(p.imageUrl);
       setFetched(p.title || p.imageUrl || p.price ? "Filled in what we found. Edit anything." : "Couldn't read that page. Fill it in below.");
     } finally {
-      setLoading(false);
+      if (latestUrl.current === requested) setLoading(false);
     }
   };
 
@@ -62,7 +78,7 @@ export default function AddScreen() {
             label="Product link"
             placeholder="https://www.target.com/p/…"
             value={url}
-            onChangeText={setUrl}
+            onChangeText={changeUrl}
             onBlur={fetchDetails}
             autoCapitalize="none"
             autoCorrect={false}

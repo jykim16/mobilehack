@@ -7,7 +7,7 @@ import { api } from "../../convex/_generated/api";
 const convexUrl = process.env.EXPO_PUBLIC_CONVEX_URL;
 const convex = convexUrl ? new ConvexReactClient(convexUrl, { unsavedChangesWarning: false }) : null;
 
-type Session = { deviceId: string; voterName: string; setVoterName: (n: string) => void };
+type Session = { deviceId: string; voterId: string; voterName: string; setVoterName: (n: string) => void };
 const SessionContext = createContext<Session | null>(null);
 
 function randomId() {
@@ -16,6 +16,7 @@ function randomId() {
 
 function SessionBootstrap({ children }: { children: ReactNode }) {
   const [deviceId, setDeviceId] = useState<string | null>(null);
+  const [voterId, setVoterId] = useState("");
   const [voterName, setVoterNameState] = useState("");
   const ensure = useMutation(api.users.ensure);
 
@@ -26,6 +27,12 @@ function SessionBootstrap({ children }: { children: ReactNode }) {
         id = randomId();
         await AsyncStorage.setItem("deviceId", id);
       }
+      let vid = await AsyncStorage.getItem("voterId");
+      if (!vid) {
+        vid = randomId();
+        await AsyncStorage.setItem("voterId", vid);
+      }
+      setVoterId(vid);
       setVoterNameState((await AsyncStorage.getItem("voterName")) ?? "");
       await ensure({ deviceId: id });
       setDeviceId(id);
@@ -37,7 +44,7 @@ function SessionBootstrap({ children }: { children: ReactNode }) {
     setVoterNameState(n);
     AsyncStorage.setItem("voterName", n);
   };
-  return <SessionContext.Provider value={{ deviceId, voterName, setVoterName }}>{children}</SessionContext.Provider>;
+  return <SessionContext.Provider value={{ deviceId, voterId, voterName, setVoterName }}>{children}</SessionContext.Provider>;
 }
 
 export function AppProviders({ children }: { children: ReactNode }) {

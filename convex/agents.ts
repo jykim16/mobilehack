@@ -18,7 +18,7 @@ export const list = query({
       .query("agents")
       .withIndex("by_user", (q) => q.eq("userId", found.user._id))
       .collect();
-    return agents.map(({ keyHash: _h, ...a }) => a);
+    return agents.filter((a) => a.keyPrefix !== "demo").map(({ keyHash: _h, ...a }) => a);
   },
 });
 
