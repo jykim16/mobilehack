@@ -143,9 +143,8 @@ function PurchasesTab({ bottomInset }: { bottomInset: number }) {
                 <Text style={[styles.status, purchase.shipment?.status === 'delivered' && styles.delivered]}>
                   {statusLine(purchase.shipment)}
                 </Text>
-                <Text style={styles.orderMeta}>
-                  {formatPrice(quote.totalCents, quote.currency)} total · {quote.returnSummary}
-                </Text>
+                <Text style={styles.orderMeta}>{formatPrice(quote.totalCents, quote.currency)} total</Text>
+                <Text style={styles.orderMeta}>{quote.returnSummary}</Text>
               </View>
             </ItemCard>
           </View>

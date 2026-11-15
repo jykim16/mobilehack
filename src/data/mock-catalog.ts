@@ -111,7 +111,7 @@ function historyPoints(offer: Offer, override?: number[]): PricePoint[] {
     });
   }
   return prices.map((priceCents, i) => ({
-    observedAt: daysFromNow(-(prices.length - 1 - i) * 7),
+    observedAt: daysFromNow(-((prices.length - 1 - i) * 90) / (prices.length - 1)),
     priceCents,
     source: offer.retailerName,
     simulated: true,
