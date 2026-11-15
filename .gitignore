@@ -42,7 +42,6 @@ example
 /ios
 /android
 
-# Secrets (keep only shareable examples)
-.env
+# Secrets go in .env.local or .env.*; the committed .env holds public client config only
 .env.*
 !.env.example
