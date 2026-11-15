@@ -1,4 +1,4 @@
-import { useAction, useConvex, useMutation, useQueries, useQuery } from 'convex/react';
+import { useAction, useConvex, useMutation, useQueries, useQuery, type ConvexReactClient } from 'convex/react';
 import { ConvexError } from 'convex/values';
 import { createContext, use, useCallback, useEffect, useState, type ReactNode } from 'react';
 
@@ -102,6 +102,40 @@ async function placeOrder(
     throw new Error(outcomeMessages[outcome] ?? 'The order was not placed. Try again.');
   }
   if (request.status === 'failed' || request.order?.status === 'failed') throw new Error(request.error ?? 'The order failed. Try again.');
+  return request;
+}
+
+/**
+ * Approval only schedules the order; the retailer places it afterwards. Resolves once the order is placed and
+ * rejects when it fails or needs a new quote, so the card keeps its busy state until the real outcome.
+ */
+function placementOf(convex: ConvexReactClient, requestId: string) {
+  return new Promise<void>((resolve, reject) => {
+    const watch = convex.watchQuery(api.purchases.getPurchaseStatus, { requestId });
+    const finish = (error?: Error) => {
+      clearTimeout(timer);
+      unsubscribe();
+      if (error) reject(error);
+      else resolve();
+    };
+    const check = () => {
+      let request: PurchaseRequest | undefined;
+      try {
+        request = watch.localQueryResult();
+      } catch (e) {
+        finish(e instanceof Error ? e : new Error(String(e)));
+        return;
+      }
+      if (!request) return;
+      const order = request.order?.status;
+      if (request.status === 'ordered' || order === 'placed') finish();
+      else if (request.status === 'failed' || order === 'failed') finish(new Error(request.error ?? 'The order failed. Try again.'));
+      else if (order === 'requote_required') finish(new Error('The price changed. Try again.'));
+    };
+    const timer = setTimeout(() => finish(new Error('Still placing this order. Check Purchases before trying again.')), 180_000);
+    const unsubscribe = watch.onUpdate(check);
+    check();
+  });
 }
 
 const countOf = (items: CartItem[]) => items.reduce((sum, item) => sum + item.quantity, 0);
@@ -156,19 +190,22 @@ function LiveShopProvider({ children }: { children: ReactNode }) {
     loadDemoCart: async () => {
       await setupMyCart({});
     },
-    checkoutItem: (item) =>
-      placeOrder(
+    checkoutItem: async (item) => {
+      const request = await placeOrder(
         item,
         async () => {
           const pending = item.pendingRequest;
           if (pending && pending.expiresAt > Date.now()) {
             const request = await convex.query(api.purchases.getPurchaseStatus, { requestId: pending.requestId });
-            if (request.status === 'pending_approval' && request.quote) return toPending(request);
+            const matches = request.quantity === item.quantity && request.offerId === itemOffer(item)?.id;
+            if (matches && request.status === 'pending_approval' && request.quote) return toPending(request);
           }
           return toPending(await requestPurchase(purchaseArgs(item)));
         },
         ({ requestId, quoteVersion }, decision) => decidePurchase({ requestId, quoteVersion, decision })
-      ),
+      );
+      await placementOf(convex, request.requestId);
+    },
   };
 
   return <ShopContext value={value}>{children}</ShopContext>;

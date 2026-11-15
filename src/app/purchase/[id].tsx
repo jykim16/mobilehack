@@ -48,9 +48,9 @@ export default function PurchaseDetails() {
     : shipment && placedAt
       ? mockShipmentEvents(placedAt, quote.retailer, shipment)
       : [];
-  const { latest, label } = shipmentProgress(shipment, events);
+  const { newest, label } = shipmentProgress(shipment, events);
   const eta = shipment?.eta ? etaDate(shipment.eta) : null;
-  const deliveredOn = latest[latest.length - 1]?.occurredAt ?? eta;
+  const deliveredOn = newest?.occurredAt ?? eta;
   const confirmed = purchase.status === 'placed';
   const title = orderTitles[purchase.status] ?? label;
   const subtitle =

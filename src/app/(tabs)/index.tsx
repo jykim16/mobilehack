@@ -87,10 +87,19 @@ export default function CartScreen() {
   };
 
   const chooseAlternative = (add: Add, alternative: QueryAlternative) => {
+    const original = add.itemId;
     setAddError(null);
-    updateAdd(add.key, { itemId: null, seen: false, alternatives: [], replacing: add.itemId });
-    if (add.itemId) removeItem(add.itemId).catch(() => {});
-    track(add.key, async () => ({ itemId: await addItem(alternative.url), alternatives: [] }));
+    updateAdd(add.key, { itemId: null, seen: false, alternatives: [], replacing: original });
+    track(add.key, async () => {
+      const itemId = await addItem(alternative.url);
+      if (original) {
+        await removeItem(original).catch(() => {
+          updateAdd(add.key, { replacing: null });
+          setAddError("Couldn't remove the first match. Remove it from your cart.");
+        });
+      }
+      return { itemId, alternatives: [] };
+    });
   };
 
   const pinned = new Set(adds.flatMap((add) => [add.itemId, add.replacing]).filter((id): id is string => id !== null));

@@ -6,20 +6,21 @@ import { BrandColors, Radius } from '@/constants/theme';
 import type { Rating, Review, ReviewList, ReviewSource } from '@/data/types';
 import { formatCount } from '@/lib/format';
 
-const retailerSources = new Set<ReviewSource>(['amazon', 'bestbuy', 'other']);
-
-/** Retailer rating counts plus the social comments, e.g. "4.5 ★ · 29.6K reviews across 4 sources". */
-export function summaryLine({ bySource }: ReviewList, rating: Rating | null) {
-  const social = bySource.filter((entry) => !retailerSources.has(entry.source));
-  const counted = rating ? social : bySource;
-  const total = (rating?.count ?? 0) + counted.reduce((sum, entry) => sum + entry.count, 0);
-  const sourceCount = (rating?.retailers.length ?? 0) + counted.length;
+/**
+ * The headline rating comes from item.rating (retailer ratings summed). bySource counts only the rows in this
+ * response, so the review count reads as how many are shown, never as a total.
+ */
+export function summaryLine({ reviews, bySource }: ReviewList, rating: Rating | null) {
   const rated = bySource.filter((entry) => entry.average !== null);
   const ratedCount = rated.reduce((sum, entry) => sum + entry.count, 0);
-  const average =
-    rating?.average ?? (ratedCount ? rated.reduce((sum, entry) => sum + (entry.average ?? 0) * entry.count, 0) / ratedCount : null);
-  const sources = `${formatCount(total)} reviews across ${sourceCount} ${sourceCount === 1 ? 'source' : 'sources'}`;
-  return average !== null ? `${average.toFixed(1)} ★ · ${sources}` : sources;
+  const average = rating?.average ?? (ratedCount ? rated.reduce((sum, entry) => sum + (entry.average ?? 0) * entry.count, 0) / ratedCount : null);
+  return [
+    average !== null ? `${average.toFixed(1)} ★` : null,
+    rating ? `${formatCount(rating.count)} ratings` : null,
+    `${reviews.length} ${reviews.length === 1 ? 'review' : 'reviews'} shown`,
+  ]
+    .filter(Boolean)
+    .join(' · ');
 }
 
 const socialLogos: Partial<Record<ReviewSource, { icon: keyof typeof Ionicons.glyphMap; background: string; foreground: string }>> = {
