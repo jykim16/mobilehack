@@ -1,7 +1,7 @@
 import { ConvexError, v } from "convex/values";
 import type { Id } from "../_generated/dataModel";
 import { internal } from "../_generated/api";
-import { internalMutation, mutation, query } from "../_generated/server";
+import { internalMutation, mutation, query, type MutationCtx } from "../_generated/server";
 import { requireShopper } from "../lib/auth";
 import { hashToken } from "../lib/tokens";
 
@@ -14,26 +14,36 @@ import { hashToken } from "../lib/tokens";
 const PAIRING_CODE_TTL_MS = 10 * 60 * 1000;
 const PAIRING_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
+function newPairingCode(): string {
+  const bytes = new Uint8Array(6);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => PAIRING_ALPHABET[b % PAIRING_ALPHABET.length]).join("");
+}
+
+async function insertPairingCode(
+  ctx: MutationCtx,
+  shopperId: Id<"users">,
+  connectionId?: Id<"mcpTokens">,
+): Promise<{ code: string; expiresAt: number }> {
+  const code = newPairingCode();
+  const expiresAt = Date.now() + PAIRING_CODE_TTL_MS;
+  await ctx.db.insert("mcpPairingCodes", { code, shopperId, connectionId, expiresAt, used: false });
+  return { code, expiresAt };
+}
 export const createPairingCode = mutation({
   args: {},
   handler: async (ctx): Promise<{ code: string; expiresAt: number }> => {
-    const shopperId = await requireShopper(ctx);
-    const bytes = new Uint8Array(6);
-    crypto.getRandomValues(bytes);
-    const code = Array.from(bytes, (b) => PAIRING_ALPHABET[b % PAIRING_ALPHABET.length]).join("");
-    const expiresAt = Date.now() + PAIRING_CODE_TTL_MS;
-    await ctx.db.insert("mcpPairingCodes", { code, shopperId, expiresAt, used: false });
-    return { code, expiresAt };
+    return await insertPairingCode(ctx, await requireShopper(ctx));
   },
 });
 
 /** The Muse path: the app mints a bearer token for its own (anonymous) shopper and shows it once. */
 export const create = mutation({
   args: { label: v.optional(v.string()) },
-  handler: async (ctx, { label }): Promise<{ token: string }> => {
+  handler: async (ctx, { label }): Promise<{ token: string; pairingCode: string; pairingCodeExpiresAt: number }> => {
     const shopperId = await requireShopper(ctx);
     const token = "cart_ct_" + crypto.randomUUID().replace(/-/g, "") + crypto.randomUUID().replace(/-/g, "");
-    await ctx.db.insert("mcpTokens", {
+    const connectionId = await ctx.db.insert("mcpTokens", {
       shopperId,
       tokenHash: await hashToken(token),
       kind: "connection",
@@ -41,7 +51,8 @@ export const create = mutation({
       label: label ?? "Agent",
       createdAt: Date.now(),
     });
-    return { token };
+    const pairing = await insertPairingCode(ctx, shopperId, connectionId);
+    return { token, pairingCode: pairing.code, pairingCodeExpiresAt: pairing.expiresAt };
   },
 });
 
@@ -66,12 +77,25 @@ export const revokeConnection = mutation({
 /** Test-only: mint a pairing code for an existing shopper (the app mints its own through createPairingCode). */
 export const mintPairingCodeInternal = internalMutation({
   args: { shopperId: v.id("users") },
-  handler: async (ctx, { shopperId }): Promise<{ code: string }> => {
-    const bytes = new Uint8Array(6);
-    crypto.getRandomValues(bytes);
-    const code = Array.from(bytes, (b) => PAIRING_ALPHABET[b % PAIRING_ALPHABET.length]).join("");
-    await ctx.db.insert("mcpPairingCodes", { code, shopperId, expiresAt: Date.now() + PAIRING_CODE_TTL_MS, used: false });
-    return { code };
+  handler: async (ctx, { shopperId }): Promise<{ code: string; expiresAt: number }> => {
+    return await insertPairingCode(ctx, shopperId);
+  },
+});
+
+/** CLI-only: mint a connection token for an existing shopper, e.g. to test an agent against a real account. */
+export const mintConnectionForShopper = internalMutation({
+  args: { shopperId: v.id("users"), label: v.optional(v.string()) },
+  handler: async (ctx, { shopperId, label }): Promise<{ token: string }> => {
+    const token = "cart_ct_" + crypto.randomUUID().replace(/-/g, "") + crypto.randomUUID().replace(/-/g, "");
+    await ctx.db.insert("mcpTokens", {
+      shopperId,
+      tokenHash: await hashToken(token),
+      kind: "connection",
+      scope: "cart",
+      label: label ?? "CLI connection",
+      createdAt: Date.now(),
+    });
+    return { token };
   },
 });
 

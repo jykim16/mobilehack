@@ -10,6 +10,7 @@
 
 import type * as agent from "../agent.js";
 import type * as auth from "../auth.js";
+import type * as cache from "../cache.js";
 import type * as cart from "../cart.js";
 import type * as demo from "../demo.js";
 import type * as enrichment from "../enrichment.js";
@@ -18,6 +19,7 @@ import type * as firecrawl from "../firecrawl.js";
 import type * as http from "../http.js";
 import type * as keepa from "../keepa.js";
 import type * as lib_auth from "../lib/auth.js";
+import type * as lib_cache from "../lib/cache.js";
 import type * as lib_clientPayloads from "../lib/clientPayloads.js";
 import type * as lib_conditions from "../lib/conditions.js";
 import type * as lib_demoData from "../lib/demoData.js";
@@ -56,6 +58,7 @@ import type {
 declare const fullApi: ApiFromModules<{
   agent: typeof agent;
   auth: typeof auth;
+  cache: typeof cache;
   cart: typeof cart;
   demo: typeof demo;
   enrichment: typeof enrichment;
@@ -64,6 +67,7 @@ declare const fullApi: ApiFromModules<{
   http: typeof http;
   keepa: typeof keepa;
   "lib/auth": typeof lib_auth;
+  "lib/cache": typeof lib_cache;
   "lib/clientPayloads": typeof lib_clientPayloads;
   "lib/conditions": typeof lib_conditions;
   "lib/demoData": typeof lib_demoData;

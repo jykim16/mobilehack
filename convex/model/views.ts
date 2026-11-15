@@ -272,10 +272,22 @@ export async function cartItemView(
     .take(50);
   const pendingForItem = pending.find((r) => r.cartItemId === item._id);
 
+  const broken = sections.filter((s) => s.status === "failed").map((s) => s.section);
+  const noPrice = !offer || offer.priceCents <= 0 || offer.simulated;
+  const notice = noPrice
+    ? offer
+      ? "The retailer page could not be read, so there is no price to show. The link is saved and you can retry."
+      : "We could not read this listing yet. The link is saved and you can retry."
+    : broken.length > 0
+      ? `Part of this listing could not be read right now (${broken.join(", ")}). Everything shown above came from the page.`
+      : null;
+
   return {
     id: item._id,
     url: item.url,
     status: item.status,
+    notice,
+    canRetry: notice !== null && item.status === "active",
     quantity: item.quantity,
     reason: item.reason ?? null,
     addedBy: item.addedBy,

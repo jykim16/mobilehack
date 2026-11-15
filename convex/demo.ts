@@ -1,8 +1,10 @@
 import { ConvexError, v } from "convex/values";
-import { internalMutation, mutation, type MutationCtx } from "./_generated/server";
+import { internalMutation, internalQuery, mutation, type MutationCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { requireShopper } from "./lib/auth";
+import { canonicalKeyForUrl } from "./lib/urls";
+import { normalizedQuery } from "./lib/cache";
 import {
   AIRFLY_URL,
   HERO_ASIN,
@@ -308,3 +310,135 @@ export const createDemoShopper = internalMutation({
 
 export const resetPriceInternal = internalMutation({ args: {}, handler: async (ctx) => { await resetPrice(ctx); return null; } });
 
+/**
+ * Cache controls for tests, internal on purpose: these write rows that live
+ * shoppers read, so no client may call them. Drive them with `npx convex run`.
+ */
+export const seedCachedOffer = internalMutation({
+  args: {
+    url: v.string(),
+    priceCents: v.number(),
+    title: v.string(),
+    seller: v.optional(v.string()),
+    ageMs: v.optional(v.number()),
+  },
+  handler: async (ctx, { url, priceCents, title, seller, ageMs }) => {
+    const canonicalKey = canonicalKeyForUrl(url);
+    if (!canonicalKey) throw new ConvexError({ code: "INVALID_URL", message: "url must be an http(s) link." });
+    const offer = {
+      model: title,
+      variant: null,
+      retailer: null,
+      seller: seller ?? "Cached Seller",
+      condition: "New",
+      priceCents,
+      currency: "USD",
+      availability: "In stock",
+      starRating: 4.6,
+      ratingCount: 1200,
+      asinOrSku: null,
+      imageUrl: null,
+      evidence: "seeded cache row for the extraction-cache test",
+    };
+    const payload = JSON.stringify({ offer, variantMatches: true });
+    const fetchedAt = Date.now() - (ageMs ?? 0);
+    const row = await ctx.db
+      .query("extractionCache")
+      .withIndex("by_kind_and_key", (q) => q.eq("kind", "offer").eq("key", canonicalKey))
+      .unique();
+    if (row) {
+      await ctx.db.patch("extractionCache", row._id, {
+        payload,
+        fetchedAt,
+        source: "firecrawl",
+        simulated: false,
+        attempts: 0,
+        lastAttemptAt: fetchedAt,
+        pendingStartedAt: undefined,
+        invalidatedAt: undefined,
+        error: undefined,
+      });
+      return { key: canonicalKey, attempts: 0 };
+    }
+    await ctx.db.insert("extractionCache", {
+      kind: "offer",
+      key: canonicalKey,
+      payload,
+      fetchedAt,
+      source: "firecrawl",
+      simulated: false,
+      attempts: 0,
+      lastAttemptAt: fetchedAt,
+    });
+    return { key: canonicalKey, attempts: 0 };
+  },
+});
+
+export const seedCachedQueryResolution = internalMutation({
+  args: {
+    query: v.string(),
+    candidates: v.array(
+      v.object({
+        title: v.string(),
+        url: v.string(),
+        retailer: v.string(),
+        priceCents: v.union(v.number(), v.null()),
+      }),
+    ),
+    ageMs: v.optional(v.number()),
+  },
+  handler: async (ctx, { query, candidates, ageMs }) => {
+    const key = normalizedQuery(query);
+    const payload = JSON.stringify({ candidates });
+    const fetchedAt = Date.now() - (ageMs ?? 0);
+    const row = await ctx.db
+      .query("extractionCache")
+      .withIndex("by_kind_and_key", (q) => q.eq("kind", "query").eq("key", key))
+      .unique();
+    if (row) {
+      await ctx.db.patch("extractionCache", row._id, {
+        payload,
+        fetchedAt,
+        source: "exa",
+        attempts: 0,
+        lastAttemptAt: fetchedAt,
+        pendingStartedAt: undefined,
+        invalidatedAt: undefined,
+        error: undefined,
+      });
+      return { key, attempts: 0 };
+    }
+    await ctx.db.insert("extractionCache", {
+      kind: "query",
+      key,
+      payload,
+      fetchedAt,
+      source: "exa",
+      simulated: false,
+      attempts: 0,
+      lastAttemptAt: fetchedAt,
+    });
+    return { key, attempts: 0 };
+  },
+});
+
+export const cacheStats = internalQuery({
+  args: {
+    kind: v.union(v.literal("offer"), v.literal("comparison"), v.literal("query"), v.literal("reddit")),
+    key: v.string(),
+  },
+  handler: async (ctx, { kind, key }) => {
+    const row = await ctx.db
+      .query("extractionCache")
+      .withIndex("by_kind_and_key", (q) => q.eq("kind", kind).eq("key", key))
+      .unique();
+    if (!row) return null;
+    return {
+      attempts: row.attempts,
+      fetchedAt: row.fetchedAt,
+      hasPayload: Boolean(row.payload),
+      source: row.source,
+      error: row.error ?? null,
+    };
+  },
+});

@@ -218,9 +218,10 @@ const authorizeGet = httpAction(async (ctx, req) => {
 <ul><li>Save items and read their decision context</li><li>Ask you to approve purchases</li></ul>
 <p>It cannot approve purchases, and it never sees payment or shipping details. You approve every purchase in the Cart app.</p>
 <form method="post" action="/oauth/authorize">${hidden}
-<label for="code">Pairing code from the Cart app</label><input id="code" name="code" placeholder="ABC234" autocapitalize="characters" autocomplete="one-time-code" required>
-<button type="submit">Connect with code</button></form>
-<p class="note">Sign in to Cart, then open Connect an agent to get your code. It expires in 10 minutes.</p>`,
+<label for="code">Paste your Cart agent token (starts with cart_ct_)</label>
+<input id="code" name="code" placeholder="cart_ct_..." autocomplete="off" spellcheck="false" required>
+<button type="submit">Connect</button></form>
+<p class="note">A pairing code from the Cart app works here too. Both come from Connect an agent.</p>`,
   );
 });
 
@@ -229,10 +230,20 @@ const authorizePost = httpAction(async (ctx, req) => {
   const valid = await validateAuthorize(ctx, params);
   if (valid instanceof Response) return valid;
   const entered = (params.code ?? "").trim();
-  let shopperId: Id<"users"> | null = entered ? await ctx.runMutation(internal.mcp.store.consumePairingCode, { code: entered }) : null;
-  // Only a code minted by a signed-in app session may authorize a connection.
+  // A pasted agent token or a pairing code, told apart by prefix. Neither value is ever logged.
+  let shopperId: Id<"users"> | null = null;
+  let refusal: string | null = null;
+  if (entered.startsWith("cart_ct_")) {
+    const resolved = await ctx.runQuery(internal.mcp.store.resolveConnectionToken, { tokenHash: await hashToken(entered) });
+    if (resolved.status === "ok") shopperId = resolved.shopperId;
+    else if (resolved.status === "revoked") refusal = "That Cart agent token was revoked. Create a new one in the Cart app under Connect an agent.";
+    else refusal = "That Cart agent token is not recognized. Check it starts with cart_ct_ and copy the whole value.";
+  } else if (entered) {
+    shopperId = await ctx.runMutation(internal.mcp.store.consumePairingCode, { code: entered });
+    if (!shopperId) refusal = "That pairing code is invalid, already used, or expired. Get a new one in the Cart app and try again.";
+  }
   if (!shopperId) {
-    return htmlPage("Code not recognized", "<p>That pairing code is invalid or expired. Get a new one in the Cart app and try again.</p>", 400);
+    return htmlPage("Not connected", `<p>${escapeHtml(refusal ?? "Paste a Cart agent token or a pairing code.")}</p>`, 400);
   }
   const code = randomToken("cart_code_");
   await ctx.runMutation(internal.mcp.store.createAuthCode, {
