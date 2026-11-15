@@ -3,7 +3,7 @@ import type {
   Currency,
   DecideOutcome,
   Offer,
-  Order,
+  Order as BaseOrder,
   Price,
   PriceHistory,
   PricePoint,
@@ -21,7 +21,6 @@ export type {
   Currency,
   DecideOutcome,
   Offer,
-  Order,
   Price,
   PriceHistory,
   PricePoint,
@@ -30,6 +29,16 @@ export type {
   Rating,
   ShipmentStatus,
 };
+
+/**
+ * Order lifecycle status including Convex's `'awaiting_client'` state when a live
+ * WebKit/Chromium quote (`simulated: false`) is approved for client-side execution.
+ */
+export type OrderStatus = BaseOrder['status'] | 'awaiting_client';
+
+export interface Order extends Omit<BaseOrder, 'status'> {
+  status: OrderStatus;
+}
 
 /**
  * USPS-style carrier scan / milestone event, ordered oldest first (`occurredAt` ms).
@@ -46,13 +55,24 @@ export interface Shipment extends BaseShipment {
   events: ShipmentEvent[];
 }
 
-export interface PurchaseRequest extends Omit<BasePurchaseRequest, 'shipment'> {
+export interface PurchaseRequest extends Omit<BasePurchaseRequest, 'shipment' | 'order'> {
+  order: Order | null;
   shipment: Shipment | null;
 }
 
-export interface Purchase extends Omit<BasePurchase, 'shipment'> {
+export interface Purchase extends Omit<BasePurchase, 'shipment' | 'status'> {
+  status: OrderStatus;
   shipment: Shipment | null;
 }
+
+export type AmazonBrowserEngine = 'webkit' | 'chromium' | 'unsupported';
+
+export type CartRowMutationOperation =
+  | 'increment'
+  | 'decrement'
+  | 'delete'
+  | 'save_for_later'
+  | 'move_to_cart';
 
 export type DecidePurchaseOutcome =
   | DecideOutcome
@@ -212,8 +232,21 @@ export interface AmazonSyncOrdersResult {
   syncError?: string | null;
 }
 
+export interface AmazonCheckoutItemInput {
+  item: CartItem;
+  requestId?: string;
+  quoteVersion?: number;
+  orderRef?: string;
+  /**
+   * Defaults to `false` for explicit human one-tap checkout (`checkoutAmazonItem`).
+   * Pass `dryRun: true` in automated tests or dry-run quote previews so `#placeYourOrder` is never clicked.
+   */
+  dryRun?: boolean;
+}
+
 export interface AmazonSessionHookValue {
   status: AmazonSessionStatus;
+  browserEngine: AmazonBrowserEngine;
   shopperId: string | null;
   isSheetOpen: boolean;
   currentUrl: string;
@@ -230,6 +263,7 @@ export interface AmazonSessionHookValue {
   addToCart: (input: AmazonAddToCartInput) => Promise<AmazonAddToCartResult>;
   getCheckoutQuote: (input?: AmazonCheckoutQuoteInput) => Promise<AmazonCheckoutQuoteResult>;
   placeOrder: (input: AmazonPlaceOrderInput) => Promise<AmazonPlaceOrderResult>;
+  checkoutAmazonItem: (input: AmazonCheckoutItemInput) => Promise<AmazonPlaceOrderResult>;
   syncOrders: () => Promise<AmazonSyncOrdersResult>;
   flushPendingSync: () => Promise<{
     synced: number;
@@ -286,6 +320,7 @@ export interface AmazonCartAdapterValue {
     request: PurchaseRequest;
     orderResult?: AmazonPlaceOrderResult;
   }>;
+  checkoutAmazonItem: (input: AmazonCheckoutItemInput) => Promise<AmazonPlaceOrderResult>;
   refreshCart: () => Promise<CartItem[]>;
   refreshPurchases: () => Promise<Purchase[]>;
   resetSession: () => Promise<void>;

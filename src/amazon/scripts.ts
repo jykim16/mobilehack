@@ -367,6 +367,15 @@ export function buildScrapeCartScript(reqId: string): string {
       var asin = String(row.getAttribute('data-asin') || '').trim().toUpperCase();
       if (asin.length !== 10) continue;
       if (row.getAttribute('data-removed') === 'true') continue;
+      if (row.getAttribute('data-saved') === 'true') continue;
+      if (row.getAttribute('data-action') === 'save-for-later-msg') continue;
+      if (
+        row.querySelector &&
+        row.querySelector('.sc-list-item-removed-msg') &&
+        !row.querySelector('.sc-product-title, .a-truncate-full')
+      ) {
+        continue;
+      }
 
       var cartItemId = row.getAttribute('data-itemid') || null;
       var rawPriceAttr = row.getAttribute('data-price');
@@ -436,16 +445,66 @@ export function buildScrapeCartScript(reqId: string): string {
 export function buildMutateCartRowScript(
   reqId: string,
   asin: string,
-  operation: 'increment' | 'decrement' | 'delete',
+  operation: 'increment' | 'decrement' | 'delete' | 'save_for_later' | 'move_to_cart',
 ): string {
   return wrapStepScript(
     reqId,
     `
     var targetAsin = ${JSON.stringify(asin.toUpperCase())};
     var op = ${JSON.stringify(operation)};
-    var row = document.querySelector('.sc-list-item[data-asin="' + targetAsin + '"]');
-    if (!row) {
-      return { mutated: false, reason: 'item_not_in_cart' };
+    var row = null;
+
+    if (op === 'move_to_cart') {
+      var savedRoot = document.querySelector
+        ? document.querySelector('#sc-saved-cart, [data-name="Saved Items"], #savedCartViewForm')
+        : null;
+      if (savedRoot && typeof savedRoot.querySelector === 'function') {
+        row = savedRoot.querySelector('.sc-list-item[data-asin="' + targetAsin + '"]');
+      }
+      if (!row) {
+        return { mutated: false, reason: 'not_in_saved_items', asin: targetAsin };
+      }
+    } else {
+      var activeRoot = document.querySelector
+        ? document.querySelector('#sc-active-cart, [data-name="Active Items"], #activeCartViewForm')
+        : null;
+      var searchScope = activeRoot || document;
+      if (typeof searchScope.querySelectorAll === 'function') {
+        var candidates = Array.prototype.slice.call(
+          searchScope.querySelectorAll('.sc-list-item[data-asin="' + targetAsin + '"]')
+        );
+        for (var c = 0; c < candidates.length; c++) {
+          var cand = candidates[c];
+          if (cand.closest && cand.closest('#sc-saved-cart, [data-name="Saved Items"], #savedCartViewForm')) {
+            continue;
+          }
+          if (cand.getAttribute && (cand.getAttribute('data-removed') === 'true' || cand.getAttribute('data-saved') === 'true')) {
+            continue;
+          }
+          if (
+            cand.querySelector &&
+            cand.querySelector('.sc-list-item-removed-msg') &&
+            !cand.querySelector('.sc-product-title, .a-truncate-full')
+          ) {
+            continue;
+          }
+          row = cand;
+          break;
+        }
+      }
+      if (!row && typeof document.querySelector === 'function') {
+        var fallbackRow = document.querySelector('.sc-list-item[data-asin="' + targetAsin + '"]');
+        if (
+          fallbackRow &&
+          !(fallbackRow.closest && fallbackRow.closest('#sc-saved-cart, [data-name="Saved Items"], #savedCartViewForm')) &&
+          !(fallbackRow.getAttribute && fallbackRow.getAttribute('data-removed') === 'true')
+        ) {
+          row = fallbackRow;
+        }
+      }
+      if (!row) {
+        return { mutated: false, reason: 'item_not_in_cart', asin: targetAsin };
+      }
     }
 
     var control = null;
@@ -453,10 +512,18 @@ export function buildMutateCartRowScript(
       control = row.querySelector(
         'input[data-action="delete-active"], input[name^="submit.delete-active."], [data-action="delete"] input, input[value^="Delete"]'
       );
-      var rowQty = parseInt(String(row.getAttribute('data-quantity') || '1'), 10) || 1;
+      var rowQty = parseInt(String((row.getAttribute && row.getAttribute('data-quantity')) || '1'), 10) || 1;
       if (!control && rowQty === 1) {
         control = row.querySelector('button[data-action="a-stepper-decrement"]');
       }
+    } else if (op === 'save_for_later') {
+      control = row.querySelector(
+        'input[data-action="save-for-later"], input[name^="submit.save-for-later."], [data-action="save-for-later"] input, [data-action="save-for-later"] button, button[data-action="save-for-later"], input[value="Save for later"]'
+      );
+    } else if (op === 'move_to_cart') {
+      control = row.querySelector(
+        'input[data-action="move-to-cart"], input[name^="submit.move-to-cart."], [data-action="move-to-cart"] input, [data-action="move-to-cart"] button, button[data-action="move-to-cart"], input[value="Move to Cart"]'
+      );
     } else if (op === 'increment') {
       control = row.querySelector('button[data-action="a-stepper-increment"]');
     } else if (op === 'decrement') {
@@ -464,14 +531,24 @@ export function buildMutateCartRowScript(
     }
 
     if (!control) {
-      return { mutated: false, reason: 'control_not_found' };
+      return { mutated: false, reason: 'control_not_found', asin: targetAsin };
     }
 
-    control.scrollIntoView({ block: 'center' });
+    if (typeof control.scrollIntoView === 'function') {
+      control.scrollIntoView({ block: 'center' });
+    }
     control.click();
-    return { mutated: true };
+    return { mutated: true, operation: op, asin: targetAsin };
     `,
   );
+}
+
+export function buildSaveCartRowForLaterScript(reqId: string, asin: string): string {
+  return buildMutateCartRowScript(reqId, asin, 'save_for_later');
+}
+
+export function buildMoveSavedToCartScript(reqId: string, asin: string): string {
+  return buildMutateCartRowScript(reqId, asin, 'move_to_cart');
 }
 
 export function buildClickProceedToCheckoutScript(reqId: string): string {
@@ -900,8 +977,22 @@ export function buildScrapeOrderConfirmationScript(reqId: string): string {
     var isConfirmationSurface = (isThankYouUrl || hasThankYouHeading) && !hasAuthOrErrorBarrier;
 
     var orderIdMatch = isConfirmationSurface ? bodyText.match(/\\b(\\d{3}-\\d{7}-\\d{7})\\b/) : null;
+    var deliveryEstimate = null;
+    if (isConfirmationSurface) {
+      var deliveryNode = document.querySelector(
+        '#widget-purchaseSummary [data-testid*="delivery-date"], [data-testid*="delivery-date"], #widget-purchaseSummary .a-color-success, #widget-purchaseSummary .a-text-bold'
+      );
+      var nodeText = cleanText(deliveryNode);
+      if (nodeText && /(?:arriving|delivery|tomorrow|today|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|mon|tue|wed|thu|fri|sat|sun)/i.test(nodeText)) {
+        deliveryEstimate = nodeText;
+      } else {
+        var dm = bodyText.match(/((?:Arriving|Guaranteed delivery|Estimated delivery)\\s*:?\\s*[^.;\\n]{3,45})/i);
+        if (dm && dm[1]) deliveryEstimate = dm[1].trim();
+      }
+    }
     return {
       retailerOrderId: orderIdMatch ? orderIdMatch[1] : null,
+      deliveryEstimate: deliveryEstimate,
       isConfirmationSurface: isConfirmationSurface,
       hasAuthOrErrorBarrier: hasAuthOrErrorBarrier,
       currentUrl: href

@@ -499,7 +499,24 @@ export class ConvexSyncRetryQueue {
           };
         }
         if (this.jobs.get(key) === job) {
-          latestFailure = err instanceof Error ? err.message : String(err);
+          const message = err instanceof Error ? err.message : String(err);
+          const code =
+            typeof err === 'object' &&
+            err !== null &&
+            'data' in err &&
+            typeof (err as { data?: { code?: unknown } }).data?.code === 'string'
+              ? String((err as { data: { code: string } }).data.code)
+              : '';
+          // Historical Amazon orders scraped from Your Orders that were never placed through Cart
+          // return terminal NOT_FOUND on syncClientShipment; drop only those non-Cart shipment jobs.
+          if (
+            job.kind === 'shipment' &&
+            (code === 'NOT_FOUND' || /order not found/i.test(message))
+          ) {
+            this.jobs.delete(key);
+            continue;
+          }
+          latestFailure = message;
         }
       }
     }
@@ -548,6 +565,7 @@ export async function settleSubmittedOrderConfirmation(params: {
   isSessionCurrent?: () => boolean;
   readConfirmation: () => Promise<{
     retailerOrderId: string | null;
+    deliveryEstimate?: string | null;
     isConfirmationSurface?: boolean;
     hasAuthOrErrorBarrier?: boolean;
     currentUrl: string;
@@ -567,6 +585,7 @@ export async function settleSubmittedOrderConfirmation(params: {
 
   let confirmation: {
     retailerOrderId: string | null;
+    deliveryEstimate?: string | null;
     isConfirmationSurface?: boolean;
     hasAuthOrErrorBarrier?: boolean;
     currentUrl: string;
@@ -621,12 +640,20 @@ export async function settleSubmittedOrderConfirmation(params: {
 
   const placedAt = Date.now();
   const retailerOrderId = resolution.retailerOrderId;
+  const confirmedDeliveryEstimate =
+    typeof confirmation.deliveryEstimate === 'string' && confirmation.deliveryEstimate.trim().length > 0
+      ? confirmation.deliveryEstimate.trim()
+      : params.verifiedQuote.deliveryEstimate;
+  const effectiveQuote: Quote = {
+    ...params.verifiedQuote,
+    deliveryEstimate: confirmedDeliveryEstimate,
+  };
   const initialShipment: Shipment = {
     status: 'ordered',
     carrier: null,
     trackingNumber: null,
     trackingUrl: null,
-    eta: parseDeliveryEtaIso(params.verifiedQuote.deliveryEstimate, placedAt),
+    eta: parseDeliveryEtaIso(confirmedDeliveryEstimate, placedAt),
     events: buildShipmentEvents({
       status: 'ordered',
       headline: 'Order placed on Amazon',
@@ -655,7 +682,7 @@ export async function settleSubmittedOrderConfirmation(params: {
     orderRef: params.orderRef,
     retailerOrderId,
     placedAt,
-    quote: params.verifiedQuote,
+    quote: effectiveQuote,
     shipment: initialShipment,
     syncError: syncRes.lastSyncError,
   };
