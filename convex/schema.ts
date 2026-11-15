@@ -83,6 +83,36 @@ export default defineSchema({
     .index("by_canonicalKey", ["canonicalKey"])
     .index("by_productId", ["productId"]),
 
+  /**
+   * One row per upstream answer, keyed by what the call depends on: a canonical
+   * listing URL for an extraction, a product model for a comparison or a Reddit
+   * lookup, the normalized words for a query resolution. Shared across shoppers,
+   * so two adds of the same URL cost one scrape.
+   */
+  extractionCache: defineTable({
+    kind: v.union(
+      v.literal("offer"),
+      v.literal("comparison"),
+      v.literal("query"),
+      v.literal("reddit"),
+    ),
+    key: v.string(),
+    payload: v.optional(v.string()),
+    fetchedAt: v.number(),
+    source: v.string(),
+    simulated: v.boolean(),
+    attempts: v.number(),
+    lastAttemptAt: v.optional(v.number()),
+    pendingStartedAt: v.optional(v.number()),
+    /** Identifies the run that owns the lock, so a slow run cannot clear or
+     * overwrite what a later run wrote. */
+    pendingToken: v.optional(v.string()),
+    /** Set when a forced refresh asked for a fresh read; the payload and its real
+     * read time survive so a refusal can still serve it, honestly dated. */
+    invalidatedAt: v.optional(v.number()),
+    error: v.optional(v.string()),
+  }).index("by_kind_and_key", ["kind", "key"]),
+
   priceObservations: defineTable({
     offerId: v.id("offers"),
     priceCents: v.number(),
@@ -187,7 +217,8 @@ export default defineSchema({
     error: v.optional(v.string()),
   })
     .index("by_shopperId_and_status", ["shopperId", "status"])
-    .index("by_shopperId_and_idempotencyKey", ["shopperId", "idempotencyKey"]),
+    .index("by_shopperId_and_idempotencyKey", ["shopperId", "idempotencyKey"])
+    .index("by_cartItemId_and_status", ["cartItemId", "status"]),
 
   orders: defineTable({
     shopperId: v.id("users"),

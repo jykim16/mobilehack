@@ -26,11 +26,30 @@ const check = (label, ok, detail) => {
 const query = "Sony WH-1000XM5 wireless noise canceling headphones";
 const started = Date.now();
 const key = "query-add-" + Date.now();
-const added = await client.action(api.cart.addItemFromQuery, {
-  query,
-  idempotencyKey: key,
-  reason: "resolved from the cart's title field",
-});
+let added = null;
+let refused = null;
+try {
+  added = await client.action(api.cart.addItemFromQuery, {
+    query,
+    idempotencyKey: key,
+    reason: "resolved from the cart's title field",
+  });
+} catch (e) {
+  refused = e?.data?.code ?? e?.message ?? "UNKNOWN";
+}
+if (!added) {
+  console.log("   resolution refused:", refused);
+  check("a provider outage is reported as unavailable, not as no-match", refused === "UPSTREAM_UNAVAILABLE", refused);
+  let emptyCode = null;
+  try {
+    await client.action(api.cart.addItemFromQuery, { query: "   ", idempotencyKey: "query-add-empty-" + Date.now() });
+  } catch (e) {
+    emptyCode = e?.data?.code ?? e?.message;
+  }
+  check("an empty query still refuses with NO_MATCH", emptyCode === "NO_MATCH", emptyCode);
+  console.log(failures === 0 ? "\nADD-BY-QUERY CHECKS PASS (search provider unavailable; live resolution not exercised)" : `\n${failures} CHECK(S) FAILED`);
+  process.exit(failures === 0 ? 0 : 1);
+}
 const elapsed = Date.now() - started;
 console.log("   resolved:", JSON.stringify(added).slice(0, 400));
 check("it resolved to a concrete product URL", /^https?:\/\//.test(added.resolvedUrl), added.resolvedUrl);
