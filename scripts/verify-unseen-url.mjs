@@ -31,13 +31,13 @@ const { itemId } = await c.mutation(api.cart.addItem, { url: target, idempotency
 let item;
 let sections = {};
 let comparison = null;
-for (let i = 0; i < 120; i++) {
+for (let i = 0; i < 200; i++) {
   item = await c.query(api.cart.getItem, { itemId });
   sections = Object.fromEntries(item.sections.map((s) => [s.section, s]));
   comparison = item.comparison;
   const terminal = (s) => s && ["ready", "failed"].includes(s.status);
   const done = item.offer?.provenance?.method === "firecrawl" &&
-    ["categoryGuidance", "returnTerms", "retailerReviews", "priceHistory"].every((k) => terminal(sections[k])) &&
+    ["categoryGuidance", "returnTerms", "retailerReviews", "priceHistory", "reddit"].every((k) => terminal(sections[k])) &&
     comparison && ["completed", "empty", "failed"].includes(comparison.status);
   if (done) break;
   await sleep(3000);
@@ -65,6 +65,7 @@ console.log("   comparison:", JSON.stringify({
 
 check("product came from the page, not a seed", item.offer?.provenance?.method === "firecrawl", String(item.offer?.provenance?.method));
 check("the offer is not simulated", item.offer?.simulated === false);
+check("the product has an image from the listing", (item.product?.imageUrl ?? "").startsWith("https://"), String(item.product?.imageUrl).slice(0, 80));
 check("the offer has a real price", (item.offer?.priceCents ?? 0) > 0, String(item.offer?.priceCents));
 check("the product has no demoKey", item.offer?.simulated === false);
 check("category guidance is real", sections.categoryGuidance?.status === "ready" && sections.categoryGuidance?.simulated === false, sections.categoryGuidance?.status);
@@ -72,6 +73,27 @@ check("category guidance surfaces one overlooked criterion", (sections.categoryG
 check("return terms are real", sections.returnTerms?.status === "ready" && sections.returnTerms?.simulated === false, sections.returnTerms?.status);
 check("return terms carry structured details", sections.returnTerms?.details?.status === "confirmed" || sections.returnTerms?.details?.status === "unconfirmed");
 check("retailer reviews are real", sections.retailerReviews?.status === "ready", sections.retailerReviews?.status);
+check(
+  "the social section has real threads (direct fetch, else Exa)",
+  ["ready", "failed"].includes(sections.reddit?.status) &&
+    (sections.reddit?.status !== "ready" || (sections.reddit?.sources ?? []).length > 0),
+  sections.reddit?.status,
+);
+const redditRows = (await c.query(api.reviews.list, { cartItemId: itemId })).filter((r) => r.source === "reddit");
+const plausible = (ms) => typeof ms === "number" && ms > Date.parse("2005-01-01") && ms < Date.now() + 86_400_000;
+check(
+  "social rows never carry invented metadata",
+  redditRows.length > 0 &&
+    redditRows.every(
+      (r) =>
+        typeof r.url === "string" &&
+        r.url.includes("reddit.com") &&
+        (r.author === null || (typeof r.author === "string" && r.author.trim().length > 0)) &&
+        (r.postedAt === null || plausible(r.postedAt)) &&
+        r.text.trim().length > 0,
+    ),
+  JSON.stringify(redditRows.map((r) => ({ url: r.url.slice(0, 48), author: r.author, postedAt: r.postedAt }))).slice(0, 300),
+);
 check("price history recorded a real observation", (item.priceHistory?.observationCount ?? 0) > 0, String(item.priceHistory?.observationCount));
 check("no section fell back to seeded demo data", Object.values(sections).every((s) => s.simulated === false), JSON.stringify(Object.fromEntries(Object.entries(sections).map(([k, v]) => [k, v.simulated]))));
 check("the comparison resolved", comparison && ["completed", "empty", "failed"].includes(comparison.status), comparison?.status);

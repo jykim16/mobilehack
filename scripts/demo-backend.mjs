@@ -63,6 +63,14 @@ if (item.offer?.provenance?.method === "firecrawl") {
 } else {
   log("firecrawl refresh did not land in time; showing the seeded demo offer");
 }
+for (let i = 0; i < 45; i++) {
+  item = await client.query(api.cart.getItem, { itemId: added.itemId });
+  if (item.comparison?.status === "completed" || item.comparison?.status === "failed") break;
+  await sleep(2000);
+}
+log(
+  `cross-store comparison ${item.comparison?.status}: ${(item.comparison?.offers ?? []).map((o) => `${o.retailer} ${usd(o.priceCents)}`).join(", ") || "no other stores"}`,
+);
 const newCriterion = item.sections.find((s) => s.section === "categoryGuidance").highlights.find((h) => h.tone === "new_criterion");
 log("criterion you didn't ask about:", newCriterion?.label);
 log("enrichment:", item.enrichmentStatus, "| all-in now", usd(item.price.totalCents));
@@ -107,3 +115,24 @@ for (let i = 0; i < 40; i++) {
 }
 const purchases = await client.query(api.purchases.listPurchases, {});
 log("purchases tab:", purchases.map((p) => `${p.orderRef} ${usd(p.quote.totalCents)} ${p.shipment?.status} via ${p.shipment?.carrier}`).join(" | "));
+
+const sheet = await client.query(api.cart.getItem, { itemId: added.itemId });
+const final = await client.query(api.purchases.getPurchaseStatus, { requestId: req.requestId });
+const qs = d1.request.quote;
+console.log(
+  [
+    "\n=== APPROVAL SHEET ===",
+    `item      ${sheet.product.title}`,
+    `seller    ${qs.seller}${qs.simulated ? " (simulated)" : ""}`,
+    `variant   ${qs.variantLabel} · qty ${qs.quantity}`,
+    `subtotal  ${usd(qs.subtotalCents)}`,
+    `tax       ${usd(qs.taxCents)}`,
+    `shipping  ${usd(qs.shippingCents)}`,
+    `total     ${usd(qs.totalCents)}  (target ${usd(sheet.decision.targetCents)}, met ${sheet.decision.targetMet})`,
+    `reason    ${d1.request.reason}`,
+    `outcome   ${d1.outcome} · request ${final.status} · order ${d1.request.order?.orderRef}`,
+    `tracking  ${final.shipment?.carrier ?? "-"} ${final.shipment?.trackingNumber ?? ""} (${final.shipment?.status ?? "-"}) eta ${final.shipment?.eta ?? "-"}`,
+    `sections  ${sheet.sections.map((s) => `${s.section}:${s.status}${s.simulated ? "(demo)" : ""}`).join(" ")}`,
+    "======================\n",
+  ].join("\n"),
+);

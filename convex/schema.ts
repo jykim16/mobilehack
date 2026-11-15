@@ -121,6 +121,7 @@ export default defineSchema({
     summary: v.optional(v.string()),
     highlights: v.array(highlight),
     sources: v.array(source),
+    pendingRun: v.optional(v.string()),
     items: v.optional(
       v.array(
         v.object({
