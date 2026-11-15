@@ -16,7 +16,8 @@ const rowView = {
   source: v.string(),
   simulated: v.boolean(),
   attempts: v.number(),
-  pending: v.boolean(),
+  pendingStartedAt: v.union(v.number(), v.null()),
+  invalidatedAt: v.union(v.number(), v.null()),
   error: v.union(v.string(), v.null()),
 };
 
@@ -36,7 +37,8 @@ export const read = internalQuery({
       source: row.source,
       simulated: row.simulated,
       attempts: row.attempts,
-      pending: Boolean(row.pendingStartedAt && Date.now() - row.pendingStartedAt < SINGLE_FLIGHT_MS),
+      pendingStartedAt: row.pendingStartedAt ?? null,
+      invalidatedAt: row.invalidatedAt ?? null,
       error: row.error ?? null,
     };
   },
@@ -44,6 +46,10 @@ export const read = internalQuery({
 
 export const isFresh = (kindName: CacheKind, fetchedAt: number, now = Date.now()) =>
   fetchedAt > 0 && now - fetchedAt < CACHE_TTL_MS[kindName];
+
+/** A lock only blocks inside its window; an older one is treated as abandoned. */
+export const lockIsLive = (pendingStartedAt: number | null, now = Date.now()) =>
+  pendingStartedAt !== null && now - pendingStartedAt < SINGLE_FLIGHT_MS;
 
 /**
  * Single flight: one caller wins the right to call upstream for this key, and the
@@ -118,6 +124,7 @@ export const finish = internalMutation({
       attempts: row.attempts + 1,
       lastAttemptAt: now,
       pendingStartedAt: undefined,
+      invalidatedAt: undefined,
       error: undefined,
     });
     return null;
@@ -157,7 +164,10 @@ export const fail = internalMutation({
   },
 });
 
-/** Keeps the payload for a stale fallback but forces the next read to go upstream. */
+/**
+ * Forces the next read upstream while keeping the payload and the moment it was
+ * really read, so a refusal can still serve it with an honest date.
+ */
 export const invalidate = internalMutation({
   returns: v.null(),
   args: { kind, key: v.string() },
@@ -167,7 +177,10 @@ export const invalidate = internalMutation({
       .withIndex("by_kind_and_key", (q) => q.eq("kind", k).eq("key", key))
       .unique();
     if (!row) return null;
-    await ctx.db.patch("extractionCache", row._id, { fetchedAt: 0, pendingStartedAt: undefined });
+    await ctx.db.patch("extractionCache", row._id, {
+      invalidatedAt: Date.now(),
+      pendingStartedAt: undefined,
+    });
     return null;
   },
 });

@@ -131,10 +131,19 @@ export const addItemFromQuery = action({
       { query: words, force: refresh ?? false },
     );
     if (!resolved.ok || resolved.candidates.length === 0) {
-      throw new ConvexError({
-        code: "NO_MATCH",
-        message: `Couldn't find a product for "${words}". Try a more specific name or paste the link.`,
-      });
+      // A provider that is down is not a product that does not exist: say which.
+      const unavailable = resolved.error !== null && !/no product pages/i.test(resolved.error);
+      throw new ConvexError(
+        unavailable
+          ? {
+              code: "UPSTREAM_UNAVAILABLE",
+              message: `Product search is unavailable right now. Try again in a moment, or paste the link. (${resolved.error})`,
+            }
+          : {
+              code: "NO_MATCH",
+              message: `Couldn't find a product for "${words}". Try a more specific name or paste the link.`,
+            },
+      );
     }
     const top: Candidate = resolved.candidates[0];
     const added: { itemId: Id<"cartItems">; enrichmentStatus: EnrichmentStatus; deduplicated: boolean } =

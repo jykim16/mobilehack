@@ -311,11 +311,10 @@ export const createDemoShopper = internalMutation({
 export const resetPriceInternal = internalMutation({ args: {}, handler: async (ctx) => { await resetPrice(ctx); return null; } });
 
 /**
- * Demo/test controls for the extraction cache: seed a row as if we had read the
- * page `ageMs` ago, and read back what the cache did, so a test can prove a
- * second add cost no upstream call.
+ * Cache controls for tests, internal on purpose: these write rows that live
+ * shoppers read, so no client may call them. Drive them with `npx convex run`.
  */
-export const seedCachedOffer = mutation({
+export const seedCachedOffer = internalMutation({
   args: {
     url: v.string(),
     priceCents: v.number(),
@@ -353,10 +352,13 @@ export const seedCachedOffer = mutation({
         fetchedAt,
         source: "firecrawl",
         simulated: false,
+        attempts: 0,
+        lastAttemptAt: fetchedAt,
         pendingStartedAt: undefined,
+        invalidatedAt: undefined,
         error: undefined,
       });
-      return { key: canonicalKey, attempts: row.attempts };
+      return { key: canonicalKey, attempts: 0 };
     }
     await ctx.db.insert("extractionCache", {
       kind: "offer",
@@ -372,7 +374,7 @@ export const seedCachedOffer = mutation({
   },
 });
 
-export const seedCachedQueryResolution = mutation({
+export const seedCachedQueryResolution = internalMutation({
   args: {
     query: v.string(),
     candidates: v.array(
@@ -398,10 +400,13 @@ export const seedCachedQueryResolution = mutation({
         payload,
         fetchedAt,
         source: "exa",
+        attempts: 0,
+        lastAttemptAt: fetchedAt,
         pendingStartedAt: undefined,
+        invalidatedAt: undefined,
         error: undefined,
       });
-      return { key, attempts: row.attempts };
+      return { key, attempts: 0 };
     }
     await ctx.db.insert("extractionCache", {
       kind: "query",

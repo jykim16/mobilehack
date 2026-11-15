@@ -85,7 +85,7 @@ async function extractWithCache(
     : null;
   const payload = stored?.offer ?? null;
   const variantMatches = stored?.variantMatches ?? true;
-  const fresh = Boolean(payload) && !force && isFresh("offer", cached!.fetchedAt, now);
+  const fresh = Boolean(payload) && !force && !cached!.invalidatedAt && isFresh("offer", cached!.fetchedAt, now);
   if (fresh) {
     return {
       offer: payload,
@@ -578,6 +578,65 @@ export const start = internalMutation({
     }
     await ctx.db.patch("cartItems", cartItemId, { enrichmentStatus: "enriching" });
     if (env.FIRECRAWL_API_KEY) {
+      await ctx.scheduler.runAfter(200, internal.enrichment.enrichOfferFromWeb, { cartItemId });
+    }
+    return null;
+  },
+});
+
+/**
+ * Re-runs the sections an item still needs, mirroring start()'s scheduling: the
+ * reset rows are the ones start() skips, so they need their workers enqueued here.
+ */
+export const restartSections = internalMutation({
+  args: { cartItemId: v.id("cartItems") },
+  handler: async (ctx, { cartItemId }) => {
+    const item = await ctx.db.get("cartItems", cartItemId);
+    if (!item || !item.offerId) return null;
+    const isAmazon = !!item.url && /amazon\./i.test(item.url);
+    const rows = await ctx.db
+      .query("evidence")
+      .withIndex("by_cartItemId_and_section", (q) => q.eq("cartItemId", cartItemId))
+      .take(20);
+    for (const section of SECTION_NAMES) {
+      const row = rows.find((r) => r.section === section);
+      if (row && row.status === "ready") continue;
+      if (row) {
+        await ctx.db.patch("evidence", row._id, {
+          status: section === "priceHistory" && isAmazon ? "loading" : "pending",
+          attempts: 0,
+          error: undefined,
+          pendingRun: undefined,
+        });
+      } else {
+        await ctx.db.insert("evidence", {
+          shopperId: item.shopperId,
+          cartItemId,
+          section,
+          status: section === "priceHistory" && isAmazon ? "loading" : "pending",
+          attempts: 0,
+          scope: SECTION_SCOPE[section],
+          highlights: [],
+          sources: [],
+          simulated: false,
+        });
+      }
+      if (section === "priceHistory" && isAmazon) {
+        await ctx.scheduler.runAfter(
+          SECTION_DELAY_MS[section],
+          internal.enrichment.enrichHistoryFromKeepa,
+          { cartItemId },
+        );
+        continue;
+      }
+      await ctx.scheduler.runAfter(SECTION_DELAY_MS[section], internal.enrichment.runSection, {
+        cartItemId,
+        section,
+      });
+    }
+    await ctx.db.patch("cartItems", cartItemId, { enrichmentStatus: "enriching" });
+    if (env.FIRECRAWL_API_KEY) {
+      // Same listing refresh start() performs, so a retried item re-reads its page.
       await ctx.scheduler.runAfter(200, internal.enrichment.enrichOfferFromWeb, { cartItemId });
     }
     return null;

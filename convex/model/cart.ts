@@ -234,19 +234,6 @@ export async function retryItemFor(
     });
   }
 
-  const evidence = await ctx.db
-    .query("evidence")
-    .withIndex("by_cartItemId_and_section", (q) => q.eq("cartItemId", itemId))
-    .take(20);
-  for (const e of evidence) {
-    if (e.status === "ready") continue;
-    await ctx.db.patch("evidence", e._id, {
-      status: "pending",
-      attempts: 0,
-      error: undefined,
-      pendingRun: undefined,
-    });
-  }
 
   if (options.force) {
     // A forced refresh must go upstream even when the cache is still warm; the
@@ -261,7 +248,7 @@ export async function retryItemFor(
   await ctx.db.patch("cartItems", itemId, { enrichmentStatus });
   await ctx.scheduler.runAfter(
     0,
-    item.offerId ? internal.enrichment.start : internal.enrichment.resolveOffer,
+    item.offerId ? internal.enrichment.restartSections : internal.enrichment.resolveOffer,
     { cartItemId: itemId },
   );
   return { retried: true as const, enrichmentStatus };

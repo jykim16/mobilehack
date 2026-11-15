@@ -5,6 +5,7 @@
 import { ConvexHttpClient } from "convex/browser";
 import { anyApi } from "convex/server";
 import { readFileSync, existsSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 
 const api = anyApi;
 const fromEnvFile = () =>
@@ -21,11 +22,31 @@ const check = (label, ok, detail) => {
   console.log(`${ok ? "PASS" : "FAIL"}  ${label}${detail === undefined ? "" : `  (${detail})`}`);
 };
 
+// Cache rows are shared state, so they are seeded through the admin CLI against an
+// internal mutation rather than from a client anyone could call.
+function seed(fn, args) {
+  const out = execFileSync("npx", ["convex", "run", `demo:${fn}`, JSON.stringify(args)], {
+    encoding: "utf8",
+  });
+  const text = out.trim();
+  return JSON.parse(text.slice(text.indexOf("{")));
+}
+
 async function signIn() {
   const client = new ConvexHttpClient(url);
   const s = await client.action(api.auth.signIn, { provider: "anonymous" });
   client.setAuth(s.tokens.token);
   return client;
+}
+
+// A scrape is asynchronous: wait for the cache to record the attempt it made.
+async function waitForAttempts(client, key, atLeast) {
+  let stats = await client.query(api.demo.cacheStats, { kind: "offer", key });
+  for (let i = 0; i < 15 && (stats?.attempts ?? 0) < atLeast; i++) {
+    await sleep(2000);
+    stats = await client.query(api.demo.cacheStats, { kind: "offer", key });
+  }
+  return stats;
 }
 
 async function settled(client, itemId) {
@@ -43,12 +64,8 @@ const warmUrl = "https://www.walmart.com/ip/Extraction-Cache-Warm-Example/100000
 const staleUrl = "https://www.walmart.com/ip/Extraction-Cache-Stale-Example/100000002";
 
 // --- 1. A warm row is served with no upstream call -----------------------------
-const seeder = await signIn();
-const warm = await seeder.mutation(api.demo.seedCachedOffer, {
-  url: warmUrl,
-  priceCents: 27999,
-  title: "Cached Product, Warm Row",
-});
+const shopperForSeed = await signIn();
+const warm = seed("seedCachedOffer", { url: warmUrl, priceCents: 27999, title: "Cached Product, Warm Row" });
 const shopperA = await signIn();
 const addedWarm = await shopperA.mutation(api.cart.addItem, {
   url: warmUrl,
@@ -68,7 +85,7 @@ const warmStatsAfter = await shopperB.query(api.demo.cacheStats, { kind: "offer"
 check("a second shopper's add of the same URL makes zero provider calls", warmStatsAfter.attempts === 0, warmStatsAfter.attempts);
 
 // --- 3. A stale row is served, marked stale, when the provider refuses ---------
-const stale = await seeder.mutation(api.demo.seedCachedOffer, {
+const stale = seed("seedCachedOffer", {
   url: staleUrl,
   priceCents: 24999,
   title: "Cached Product, Stale Row",
@@ -80,7 +97,7 @@ const addedStale = await shopperC.mutation(api.cart.addItem, {
   idempotencyKey: "cache-stale-" + Date.now(),
 });
 const staleItem = await settled(shopperC, addedStale.itemId);
-const staleStats = await shopperC.query(api.demo.cacheStats, { kind: "offer", key: stale.key });
+const staleStats = await waitForAttempts(shopperC, stale.key, 1);
 const providerHealthy = staleItem.offer?.provenance?.note === null || staleItem.offer?.provenance?.note === undefined;
 check("a stale row still yields the price we read earlier", staleItem.offer?.priceCents === 24999 || !providerHealthy, staleItem.offer?.priceCents);
 check("the stale read was attempted once upstream", staleStats.attempts >= 1, staleStats.attempts);
@@ -97,14 +114,14 @@ if (!providerHealthy) {
 }
 
 // --- 4. A forced refresh does go upstream -------------------------------------
+const beforeRefresh = await shopperA.query(api.demo.cacheStats, { kind: "offer", key: warm.key });
 await shopperA.mutation(api.cart.refreshItem, { cartItemId: addedWarm.itemId });
-await sleep(4000);
-const afterRefresh = await shopperA.query(api.demo.cacheStats, { kind: "offer", key: warm.key });
+const afterRefresh = await waitForAttempts(shopperA, warm.key, beforeRefresh.attempts + 1);
 check("refreshItem forces a real provider call", afterRefresh.attempts >= 1, afterRefresh.attempts);
 
 // --- 5. A repeated query resolution costs nothing -----------------------------
 const words = "cached query resolution example headphones";
-const seededQuery = await seeder.mutation(api.demo.seedCachedQueryResolution, {
+const seededQuery = seed("seedCachedQueryResolution", {
   query: words,
   candidates: [
     {
@@ -130,6 +147,21 @@ check("the query resolved from the cache", queryAdd.resolvedUrl.includes("bestbu
 const queryStats = await shopperD.query(api.demo.cacheStats, { kind: "query", key: seededQuery.key });
 check("resolving from cache makes zero Exa calls", queryStats.attempts === 0, queryStats.attempts);
 check("the cached alternatives come back with it", queryAdd.alternatives.length === 1, queryAdd.alternatives.length);
+
+// The seeders must not be reachable from a signed-in client: they write rows that
+// every shopper reads.
+let seedReachable = null;
+try {
+  await shopperForSeed.mutation(api.demo.seedCachedOffer, {
+    url: "https://www.walmart.com/ip/Poison-Attempt/100000009",
+    priceCents: 100,
+    title: "Poison Attempt",
+  });
+  seedReachable = "callable";
+} catch (e) {
+  seedReachable = e?.data?.code ?? e?.message ?? "refused";
+}
+check("a client cannot seed the shared cache", seedReachable !== "callable", seedReachable);
 
 console.log(failures === 0 ? "\nALL EXTRACTION-CACHE CHECKS PASS" : `\n${failures} CHECK(S) FAILED`);
 process.exit(failures === 0 ? 0 : 1);

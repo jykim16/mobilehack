@@ -104,6 +104,9 @@ export default defineSchema({
     attempts: v.number(),
     lastAttemptAt: v.optional(v.number()),
     pendingStartedAt: v.optional(v.number()),
+    /** Set when a forced refresh asked for a fresh read; the payload and its real
+     * read time survive so a refusal can still serve it, honestly dated. */
+    invalidatedAt: v.optional(v.number()),
     error: v.optional(v.string()),
   }).index("by_kind_and_key", ["kind", "key"]),
 
