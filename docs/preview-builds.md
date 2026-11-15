@@ -76,8 +76,10 @@ Share the real dashboard/build links returned by Expo, not guessed URLs. A previ
 The existing `web.output: "server"` already works with Expo Hosting; no additional `eas.json` hosting profile is required. After Expo authentication/project linking, export and deploy:
 
 ```sh
-npx expo export --platform web && npx eas-cli@latest deploy --environment preview
+npx eas-cli@latest env:exec preview 'EXPO_NO_DOTENV=1 npx expo export --platform web' --non-interactive && npx eas-cli@latest deploy --environment preview
 ```
+
+The export runs inside the selected Expo environment and disables local dotenv overrides. `deploy --environment preview` alone only supplies server-side values; it cannot replace public URLs already inlined into the browser bundle. Create both preview variables before exporting.
 
 The first deployment asks for a preview subdomain; choose it rather than guessing a URL. Send the actual HTTPS link returned by the CLI. Teammates need only a phone browser and a Cart account. This is not a native-app test: the Amazon WebView integration is unavailable on web. Deploy the whole server export through Expo Hosting, not just `dist/client` to a static file host. Export again before each deployment. No hosting deployment has been created by this configuration change.
 
