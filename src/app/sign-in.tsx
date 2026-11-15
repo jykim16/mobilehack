@@ -4,6 +4,7 @@ import { KeyboardAvoidingView, Pressable, StyleSheet, Text, TextInput, View } fr
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { PillButton } from '@/components/pill-button';
+import { Wordmark } from '@/components/wordmark';
 import { Radius, Spacing, Type, useColors, useThemedStyles, type Palette } from '@/constants/theme';
 import { rememberAccountEmail } from '@/lib/session';
 
@@ -47,9 +48,7 @@ export default function SignInScreen() {
   return (
     <KeyboardAvoidingView style={styles.screen} behavior="padding">
       <View style={[styles.content, { paddingTop: insets.top + Spacing.xxxl }]}>
-        <Text style={styles.wordmark} accessibilityRole="header">
-          cart
-        </Text>
+        <Wordmark hop style={styles.wordmark} />
         <Text style={styles.title}>{flow === 'signUp' ? 'Create your account' : 'Welcome back'}</Text>
         <Text style={styles.muted}>One cart for every store, and for the agents you connect to it.</Text>
 
@@ -111,7 +110,7 @@ export default function SignInScreen() {
 const createStyles = (Colors: Palette) => StyleSheet.create({
   screen: { flex: 1, backgroundColor: Colors.background },
   content: { paddingHorizontal: Spacing.xxl, gap: Spacing.lg },
-  wordmark: { fontSize: 24, lineHeight: 30, fontWeight: '700', letterSpacing: -1, color: Colors.accent, marginBottom: Spacing.xl },
+  wordmark: { marginBottom: Spacing.xl },
   title: { ...Type.title, color: Colors.text },
   muted: { ...Type.secondary, color: Colors.textSecondary },
   form: { gap: Spacing.md, marginTop: Spacing.lg, marginBottom: Spacing.sm },
