@@ -208,6 +208,20 @@ export const consumePairingCode = internalMutation({
   },
 });
 
+/** What a pasted agent credential refers to. Distinguishes a revoked token from an unknown one. */
+export const resolveConnectionToken = internalQuery({
+  args: { tokenHash: v.string() },
+  handler: async (ctx, { tokenHash }) => {
+    const token = await ctx.db
+      .query("mcpTokens")
+      .withIndex("by_tokenHash", (q) => q.eq("tokenHash", tokenHash))
+      .unique();
+    if (!token || token.kind !== "connection") return { status: "unknown" as const };
+    if (token.revokedAt) return { status: "revoked" as const };
+    return { status: "ok" as const, shopperId: token.shopperId };
+  },
+});
+
 /** Hand every live token owned by one shopper to another (demo bridge). */
 export const repointShopper = internalMutation({
   args: { from: v.id("users"), to: v.id("users") },
