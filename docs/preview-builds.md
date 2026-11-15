@@ -2,7 +2,9 @@
 
 Use the `preview` profile for teammates trying Cart on their own phones. It bundles JavaScript into the app, so no Metro server, Expo Go, or developer tools are needed by testers. The `development` profile includes the development client and normally connects to Metro; `production` creates store builds, including iOS builds for TestFlight.
 
-## One-time Expo setup
+## Expo project setup
+
+Cart is linked to [`@weebaos-team/mobilehack`](https://expo.dev/accounts/weebaos-team/projects/mobilehack), project ID `9d32c379-0767-45c8-8f26-f110f2da97d3`. Its owner, update URL, and fingerprint runtime policy are committed in `app.json`. The public backend variables are configured in the Expo `preview` and `development` environments. The steps below describe the setup for maintainers; do not create a second project unless deliberately relinking Cart.
 
 1. Create an [Expo account](https://expo.dev/signup), optionally create an organization, and choose which account owns Cart.
 2. Create a personal access token under [Expo account settings → Access tokens](https://expo.dev/settings/access-tokens). Provide it to the build environment as `EXPO_TOKEN`, never in source control or chat. In Capy, use the project's Environment variables page so future build machines receive it; use the composer's environment variables dialog if an already-running thread also needs the token immediately.
@@ -55,13 +57,13 @@ The tracked root `.env` contains only `EXPO_PUBLIC_CONVEX_URL` and `EXPO_PUBLIC_
 
 For **SDK 55 and later**, `eas update` requires `--environment` and ignores local `.env` files. Missing remote values would produce Cart's mock/offline fallback. Use plain-text visibility for these public variables; secret visibility is unavailable to local update bundling. If builds later need different backends, change the corresponding Expo environment's values.
 
-`expo-updates` is installed and the release profiles name separate `preview` and `production` channels, but over-the-air updates are not enabled yet. After project initialization, run:
+`expo-updates` is configured with the real Expo project URL and a fingerprint runtime policy. The release profiles name separate `preview` and `production` channels. When intentionally linking a different Expo project, configure its update URL with:
 
 ```sh
 npx eas-cli@latest update:configure
 ```
 
-Commit the real `updates.url` and `extra.eas.projectId` generated in `app.json`, set `runtimeVersion` to `{ "policy": "fingerprint" }`, and retain the chosen owner. No placeholder ID or update URL is committed. Configure this **before** the first binary if testers should receive updates without another install.
+Commit the real `updates.url` and `extra.eas.projectId` generated in `app.json`, retain `runtimeVersion: { "policy": "fingerprint" }`, and retain the chosen owner. Configure this **before** building a binary so it can receive compatible updates without another install.
 
 After installing that binary, publish compatible JavaScript and asset updates with:
 
