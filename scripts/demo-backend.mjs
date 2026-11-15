@@ -69,7 +69,7 @@ for (let i = 0; i < 45; i++) {
   await sleep(2000);
 }
 log(
-  `cross-store comparison ${item.comparison?.status}: ${(item.comparison?.offers ?? []).map((o) => `${o.retailerName} ${usd(o.priceCents)}`).join(", ") || "no other stores"}`,
+  `cross-store comparison ${item.comparison?.status}: ${(item.comparison?.offers ?? []).map((o) => `${o.retailer} ${usd(o.priceCents)}`).join(", ") || "no other stores"}`,
 );
 const newCriterion = item.sections.find((s) => s.section === "categoryGuidance").highlights.find((h) => h.tone === "new_criterion");
 log("criterion you didn't ask about:", newCriterion?.label);
@@ -117,6 +117,7 @@ const purchases = await client.query(api.purchases.listPurchases, {});
 log("purchases tab:", purchases.map((p) => `${p.orderRef} ${usd(p.quote.totalCents)} ${p.shipment?.status} via ${p.shipment?.carrier}`).join(" | "));
 
 const sheet = await client.query(api.cart.getItem, { itemId: added.itemId });
+const final = await client.query(api.purchases.getPurchaseStatus, { requestId: req.requestId });
 const qs = d1.request.quote;
 console.log(
   [
@@ -129,8 +130,8 @@ console.log(
     `shipping  ${usd(qs.shippingCents)}`,
     `total     ${usd(qs.totalCents)}  (target ${usd(sheet.decision.targetCents)}, met ${sheet.decision.targetMet})`,
     `reason    ${d1.request.reason}`,
-    `outcome   ${d1.request.outcome} · order ${d1.request.order?.orderRef}`,
-    `tracking  ${sheet.shipment?.carrier ?? "-"} ${sheet.shipment?.trackingNumber ?? ""} (${sheet.shipment?.status ?? "-"})`,
+    `outcome   ${d1.outcome} · request ${final.status} · order ${d1.request.order?.orderRef}`,
+    `tracking  ${final.shipment?.carrier ?? "-"} ${final.shipment?.trackingNumber ?? ""} (${final.shipment?.status ?? "-"}) eta ${final.shipment?.eta ?? "-"}`,
     `sections  ${sheet.sections.map((s) => `${s.section}:${s.status}${s.simulated ? "(demo)" : ""}`).join(" ")}`,
     "======================\n",
   ].join("\n"),
