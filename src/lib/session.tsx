@@ -46,6 +46,10 @@ function AnonymousSignIn({ children }: { children: ReactNode }) {
     });
   }, [isLoading, isAuthenticated, signIn]);
 
+  useEffect(() => {
+    if (isAuthenticated) console.log('Signed in anonymously to Convex.');
+  }, [isAuthenticated]);
+
   const status: SessionStatus = isAuthenticated ? 'signed_in' : failed ? 'signed_out' : 'signing_in';
   return <SessionContext value={status}>{children}</SessionContext>;
 }

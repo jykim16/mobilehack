@@ -16,13 +16,15 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { PillButton } from '@/components/pill-button';
 import { ProductImage, RatingText } from '@/components/product-bits';
 import { Colors, Radius, Spacing, Type, tabularNumbers } from '@/constants/theme';
-import { useShop } from '@/data/shop-store';
 import type { ChatMessage, ChatSuggestion } from '@/data/assistant-api';
+import { useShop } from '@/data/shop-store';
 import { formatPrice } from '@/lib/format';
+import { useSession } from '@/lib/session';
 
 export default function ChatScreen() {
   const insets = useSafeAreaInsets();
   const { messages, assistantTyping, sendMessage, cartCount } = useShop();
+  const session = useSession();
   const [draft, setDraft] = useState('');
   const scrollRef = useRef<ScrollViewInstance>(null);
   const canSend = draft.trim().length > 0 && !assistantTyping;
@@ -35,7 +37,7 @@ export default function ChatScreen() {
 
   return (
     <KeyboardAvoidingView style={styles.screen} behavior="padding">
-      <View style={[styles.header, { paddingTop: insets.top + Spacing.sm }]}>
+      <View testID={`session-${session}`} style={[styles.header, { paddingTop: insets.top + Spacing.sm }]}>
         <Text style={styles.wordmark} accessibilityRole="header">
           cart
         </Text>
