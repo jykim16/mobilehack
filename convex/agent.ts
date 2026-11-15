@@ -1,6 +1,6 @@
 import { v } from "convex/values";
 import { internalAction, internalMutation, internalQuery } from "./_generated/server";
-import { addItemFor, getItemFor, listItemsFor } from "./model/cart";
+import { addItemFor, getItemFor, listItemsFor, removeItemFor } from "./model/cart";
 import { loadOwnedRequest, requestPurchaseFor, requestView } from "./model/purchases";
 import { requestPurchaseArgs } from "./purchases";
 
@@ -41,4 +41,10 @@ export const getPurchaseStatus = internalQuery({
   args: { shopperId: v.id("users"), requestId: v.id("purchaseRequests") },
   handler: async (ctx, { shopperId, requestId }) =>
     requestView(ctx, await loadOwnedRequest(ctx, shopperId, requestId)),
+});
+
+export const removeItem = internalMutation({
+  args: { shopperId: v.id("users"), cartItemId: v.id("cartItems") },
+  returns: v.object({ removed: v.boolean(), title: v.string() }),
+  handler: async (ctx, { shopperId, cartItemId }) => removeItemFor(ctx, shopperId, cartItemId),
 });

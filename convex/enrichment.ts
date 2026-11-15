@@ -2,8 +2,8 @@ import { v } from "convex/values";
 import { internalAction, internalMutation, internalQuery } from "./_generated/server";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
-import { env, type ActionCtx, type MutationCtx } from "./_generated/server";
-import { SECTION_NAMES, sectionName, highlight, source, type SectionName } from "./lib/validators";
+import { env, type ActionCtx, type MutationCtx, type QueryCtx } from "./_generated/server";
+import { SECTION_NAMES, sectionName, sectionStatus, highlight, source, type SectionName } from "./lib/validators";
 import {
   RETAILER_RETURN_TERMS,
   SEEDED_EVIDENCE,
@@ -892,9 +892,31 @@ async function produce(
   }
 }
 
+export const sectionState = internalQuery({
+  args: { cartItemId: v.id("cartItems"), section: sectionName },
+  returns: v.union(
+    v.null(),
+    v.object({
+      status: sectionStatus,
+      pendingRun: v.union(v.string(), v.null()),
+    }),
+  ),
+  handler: async (ctx, { cartItemId, section }) => {
+    const ev = await findSection(ctx, cartItemId, section);
+    if (!ev) return null;
+    return { status: ev.status, pendingRun: ev.pendingRun ?? null };
+  },
+});
+
 export const runSection = internalAction({
   args: { cartItemId: v.id("cartItems"), section: sectionName },
   handler: async (ctx, { cartItemId, section }) => {
+    // Terminal evidence is not rebuilt, and a section handed to an Exa run is that
+    // run's to publish: a late retry must not reset it to running.
+    const current = await ctx.runQuery(internal.enrichment.sectionState, { cartItemId, section });
+    if (current && (current.status === "ready" || current.status === "failed" || current.pendingRun)) {
+      return null;
+    }
     if (section === "priceHistory") {
       // A resolved Keepa series is the record; local observations must not replace it.
       const existing = await ctx.runQuery(internal.enrichment.sectionHistoryMode, {
@@ -930,6 +952,8 @@ export const runSection = internalAction({
       });
     } catch (e) {
       const error = e instanceof Error ? e.message : String(e);
+      const state = await ctx.runQuery(internal.enrichment.sectionState, { cartItemId, section });
+      if (state?.pendingRun) return null;
       const retry = attempt < MAX_ATTEMPTS;
       await ctx.runMutation(internal.enrichment.markFailedAttempt, { cartItemId, section, error, final: !retry });
       if (retry) {
@@ -940,7 +964,7 @@ export const runSection = internalAction({
   },
 });
 
-async function findSection(ctx: MutationCtx, cartItemId: Id<"cartItems">, section: SectionName) {
+async function findSection(ctx: QueryCtx | MutationCtx, cartItemId: Id<"cartItems">, section: SectionName) {
   return await ctx.db
     .query("evidence")
     .withIndex("by_cartItemId_and_section", (q) => q.eq("cartItemId", cartItemId).eq("section", section))
@@ -1036,6 +1060,9 @@ export const markFailedAttempt = internalMutation({
   handler: async (ctx, { cartItemId, section, error, final }) => {
     const ev = await findSection(ctx, cartItemId, section);
     if (!ev) return null;
+    // A published or already-failed section is terminal; a late attempt must not
+    // walk it back to pending.
+    if (ev.status === "ready" || ev.status === "failed") return null;
     await ctx.db.patch("evidence", ev._id, {
       // A queued Exa run keeps the section pending rather than failed.
       status: final && !ev.pendingRun ? "failed" : "pending",

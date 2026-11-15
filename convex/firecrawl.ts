@@ -82,6 +82,7 @@ export const extractOffer = internalAction({
         starRating: v.union(v.number(), v.null()),
         ratingCount: v.union(v.number(), v.null()),
         asinOrSku: v.union(v.string(), v.null()),
+        imageUrl: v.union(v.string(), v.null()),
         evidence: v.union(v.string(), v.null()),
       }),
       v.null(),

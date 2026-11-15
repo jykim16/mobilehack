@@ -79,7 +79,21 @@ check(
     (sections.reddit?.status !== "ready" || (sections.reddit?.sources ?? []).length > 0),
   sections.reddit?.status,
 );
-check("social rows never carry invented metadata", (sections.reddit?.highlights ?? []).length >= 0);
+const redditRows = (await c.query(api.reviews.list, { cartItemId: itemId })).filter((r) => r.source === "reddit");
+const plausible = (ms) => typeof ms === "number" && ms > Date.parse("2005-01-01") && ms < Date.now() + 86_400_000;
+check(
+  "social rows never carry invented metadata",
+  redditRows.length > 0 &&
+    redditRows.every(
+      (r) =>
+        typeof r.url === "string" &&
+        r.url.includes("reddit.com") &&
+        (r.author === null || (typeof r.author === "string" && r.author.trim().length > 0)) &&
+        (r.postedAt === null || plausible(r.postedAt)) &&
+        r.text.trim().length > 0,
+    ),
+  JSON.stringify(redditRows.map((r) => ({ url: r.url.slice(0, 48), author: r.author, postedAt: r.postedAt }))).slice(0, 300),
+);
 check("price history recorded a real observation", (item.priceHistory?.observationCount ?? 0) > 0, String(item.priceHistory?.observationCount));
 check("no section fell back to seeded demo data", Object.values(sections).every((s) => s.simulated === false), JSON.stringify(Object.fromEntries(Object.entries(sections).map(([k, v]) => [k, v.simulated]))));
 check("the comparison resolved", comparison && ["completed", "empty", "failed"].includes(comparison.status), comparison?.status);

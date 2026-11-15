@@ -691,3 +691,89 @@ export const setPendingRun = internalMutation({
     return null;
   },
 });
+
+const RETAILER_NAMES: Record<string, string> = {
+  "amazon.com": "Amazon",
+  "bestbuy.com": "Best Buy",
+  "walmart.com": "Walmart",
+  "target.com": "Target",
+  "bhphotovideo.com": "B&H Photo Video",
+  "adorama.com": "Adorama",
+  "newegg.com": "Newegg",
+  "costco.com": "Costco",
+};
+
+const priceFromText = (text: string | null): number | null => {
+  if (!text) return null;
+  const m = text.match(/\$\s?([0-9][0-9,]{0,6})(?:\.([0-9]{2}))?/);
+  if (!m) return null;
+  const cents = Math.round(Number(m[1].replace(/,/g, "") + "." + (m[2] ?? "00")) * 100);
+  return Number.isFinite(cents) && cents > 0 ? cents : null;
+};
+
+/**
+ * Resolves a free-text product query ("sony xm5") to concrete product URLs so the
+ * cart's title field can go through the same add pipeline as a pasted link.
+ */
+export const resolveProductQuery = internalAction({
+  args: { query: v.string() },
+  returns: v.object({
+    ok: v.boolean(),
+    error: v.union(v.string(), v.null()),
+    candidates: v.array(
+      v.object({
+        title: v.string(),
+        url: v.string(),
+        retailer: v.string(),
+        priceCents: v.union(v.number(), v.null()),
+      }),
+    ),
+  }),
+  handler: async (_ctx, { query }) => {
+    const key = env.EXA_API_KEY;
+    if (!key) return { ok: false, error: "EXA_API_KEY is not set", candidates: [] };
+    let res: Response;
+    try {
+      res = await fetch(EXA_SEARCH, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-api-key": key },
+        body: JSON.stringify({
+          query: query + " product page price",
+          numResults: 6,
+          type: "auto",
+          excludeDomains: ["reddit.com", "youtube.com", "wikipedia.org"],
+        }),
+      });
+    } catch (e) {
+      return { ok: false, error: `Exa search failed: ${e instanceof Error ? e.message : String(e)}`, candidates: [] };
+    }
+    const text = await res.text();
+    if (!res.ok) return { ok: false, error: `Exa search HTTP ${res.status}: ${text.slice(0, 160)}`, candidates: [] };
+    let body: any;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      return { ok: false, error: "Exa search returned non-JSON", candidates: [] };
+    }
+    const results: any[] = Array.isArray(body?.results) ? body.results : [];
+    const candidates = results
+      .filter((r) => typeof r?.url === "string" && /^https?:\/\//.test(r.url))
+      .map((r) => {
+        const host = new URL(r.url).hostname.replace(/^www\./, "");
+        const retailer = RETAILER_NAMES[host] ?? host;
+        const title = typeof r.title === "string" && r.title.trim() ? r.title.trim() : r.url;
+        return {
+          title,
+          url: r.url as string,
+          retailer,
+          priceCents: priceFromText(asString(r?.summary) ?? asString(r?.text)) ?? null,
+        };
+      })
+      .slice(0, 4);
+    return {
+      ok: candidates.length > 0,
+      error: candidates.length > 0 ? null : "Exa returned no product pages",
+      candidates,
+    };
+  },
+});
