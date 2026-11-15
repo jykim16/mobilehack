@@ -11,6 +11,14 @@
 import type * as agent from "../agent.js";
 import type * as auth from "../auth.js";
 import type * as cart from "../cart.js";
+import type * as chatAgent_api from "../chatAgent/api.js";
+import type * as chatAgent_checkpointer from "../chatAgent/checkpointer.js";
+import type * as chatAgent_graph from "../chatAgent/graph.js";
+import type * as chatAgent_internal from "../chatAgent/internal.js";
+import type * as chatAgent_llm from "../chatAgent/llm.js";
+import type * as chatAgent_runtime from "../chatAgent/runtime.js";
+import type * as chatAgent_tables from "../chatAgent/tables.js";
+import type * as chatAgent_validators from "../chatAgent/validators.js";
 import type * as demo from "../demo.js";
 import type * as enrichment from "../enrichment.js";
 import type * as http from "../http.js";
@@ -38,6 +46,7 @@ import type * as retail_index from "../retail/index.js";
 import type * as retail_pricing from "../retail/pricing.js";
 import type * as retail_simulatedAmazon from "../retail/simulatedAmazon.js";
 import type * as retail_simulatedStore from "../retail/simulatedStore.js";
+import type * as supermemory from "../supermemory.js";
 
 import type {
   ApiFromModules,
@@ -49,6 +58,14 @@ declare const fullApi: ApiFromModules<{
   agent: typeof agent;
   auth: typeof auth;
   cart: typeof cart;
+  "chatAgent/api": typeof chatAgent_api;
+  "chatAgent/checkpointer": typeof chatAgent_checkpointer;
+  "chatAgent/graph": typeof chatAgent_graph;
+  "chatAgent/internal": typeof chatAgent_internal;
+  "chatAgent/llm": typeof chatAgent_llm;
+  "chatAgent/runtime": typeof chatAgent_runtime;
+  "chatAgent/tables": typeof chatAgent_tables;
+  "chatAgent/validators": typeof chatAgent_validators;
   demo: typeof demo;
   enrichment: typeof enrichment;
   http: typeof http;
@@ -76,6 +93,7 @@ declare const fullApi: ApiFromModules<{
   "retail/pricing": typeof retail_pricing;
   "retail/simulatedAmazon": typeof retail_simulatedAmazon;
   "retail/simulatedStore": typeof retail_simulatedStore;
+  supermemory: typeof supermemory;
 }>;
 
 /**

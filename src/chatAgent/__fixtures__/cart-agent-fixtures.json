@@ -1,0 +1,674 @@
+{
+  "$schema_doc": "Canonical ChatMessage fixtures for Cart Agent (MOBI-11) & iOS Revyl (MOBI-5 / JON-16). Matches handoffs/cart-agent-contract.md and handoffs/api-contract.md.",
+  "threadId": "jthread_demo_xm5_01",
+  "fixturesByKind": {
+    "user_prompt": {
+      "id": "jmsg_01_user_prompt",
+      "threadId": "jthread_demo_xm5_01",
+      "role": "user",
+      "text": "I need wireless noise-cancelling headphones for long flights.",
+      "cards": [],
+      "status": "complete",
+      "createdAt": 1794775200000
+    },
+    "clarification_request_pending": {
+      "id": "jmsg_02_clarify_pending",
+      "threadId": "jthread_demo_xm5_01",
+      "role": "assistant",
+      "text": "Before I pull options into your cart, two quick checks so I match the right pair and target price:",
+      "cards": [
+        {
+          "kind": "clarification_request",
+          "clarificationId": "clar_xm5_01",
+          "status": "pending",
+          "questions": [
+            {
+              "id": "budget",
+              "prompt": "What's your target all-in budget (including tax & shipping)?",
+              "kind": "price_range",
+              "allowFreeform": true,
+              "priceRangePreset": {
+                "minCents": 15000,
+                "maxCents": 40000,
+                "stepCents": 2500,
+                "defaultMaxCents": 25000,
+                "currency": "USD",
+                "appliesTo": "all_in"
+              },
+              "options": [
+                {
+                  "id": "opt_budget_200",
+                  "label": "Under $200",
+                  "description": "Mid-range travel ANC",
+                  "value": "20000"
+                },
+                {
+                  "id": "opt_budget_250",
+                  "label": "Under $250 all-in",
+                  "description": "Flagship territory on sale",
+                  "value": "25000"
+                },
+                {
+                  "id": "opt_budget_350",
+                  "label": "$250–$350",
+                  "description": "Current flagship list price",
+                  "value": "35000"
+                },
+                {
+                  "id": "opt_budget_any",
+                  "label": "No strict cap",
+                  "description": "Show best overall",
+                  "value": "none"
+                }
+              ]
+            },
+            {
+              "id": "priority",
+              "prompt": "Beyond noise cancelling, what matters more on flights?",
+              "kind": "single_select",
+              "allowFreeform": true,
+              "options": [
+                {
+                  "id": "opt_prio_comfort",
+                  "label": "All-flight comfort",
+                  "description": "Low clamp force & light ear-cup heat over 6+ hours",
+                  "value": "Comfort on long flights"
+                },
+                {
+                  "id": "opt_prio_wired",
+                  "label": "Wired seatback audio",
+                  "description": "3.5mm / USB-C DAC listening quality & passive mode",
+                  "value": "Wired listening and audio quality"
+                },
+                {
+                  "id": "opt_prio_fold",
+                  "label": "Compact folding case",
+                  "description": "Smallest footprint in an under-seat bag",
+                  "value": "Compact folding case"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "status": "complete",
+      "createdAt": 1794775203000
+    },
+    "clarification_request_answered": {
+      "id": "jmsg_02_clarify_answered",
+      "threadId": "jthread_demo_xm5_01",
+      "role": "assistant",
+      "text": "Before I pull options into your cart, two quick checks so I match the right pair and target price:",
+      "cards": [
+        {
+          "kind": "clarification_request",
+          "clarificationId": "clar_xm5_01",
+          "status": "answered",
+          "questions": [
+            {
+              "id": "budget",
+              "prompt": "What's your target all-in budget (including tax & shipping)?",
+              "kind": "price_range",
+              "allowFreeform": true,
+              "priceRangePreset": {
+                "minCents": 15000,
+                "maxCents": 40000,
+                "stepCents": 2500,
+                "defaultMaxCents": 25000,
+                "currency": "USD",
+                "appliesTo": "all_in"
+              },
+              "options": [
+                {
+                  "id": "opt_budget_200",
+                  "label": "Under $200",
+                  "description": "Mid-range travel ANC",
+                  "value": "20000"
+                },
+                {
+                  "id": "opt_budget_250",
+                  "label": "Under $250 all-in",
+                  "description": "Flagship territory on sale",
+                  "value": "25000"
+                },
+                {
+                  "id": "opt_budget_350",
+                  "label": "$250–$350",
+                  "description": "Current flagship list price",
+                  "value": "35000"
+                },
+                {
+                  "id": "opt_budget_any",
+                  "label": "No strict cap",
+                  "description": "Show best overall",
+                  "value": "none"
+                }
+              ]
+            },
+            {
+              "id": "priority",
+              "prompt": "Beyond noise cancelling, what matters more on flights?",
+              "kind": "single_select",
+              "allowFreeform": true,
+              "options": [
+                {
+                  "id": "opt_prio_comfort",
+                  "label": "All-flight comfort",
+                  "description": "Low clamp force & light ear-cup heat over 6+ hours",
+                  "value": "Comfort on long flights"
+                },
+                {
+                  "id": "opt_prio_wired",
+                  "label": "Wired seatback audio",
+                  "description": "3.5mm / USB-C DAC listening quality & passive mode",
+                  "value": "Wired listening and audio quality"
+                },
+                {
+                  "id": "opt_prio_fold",
+                  "label": "Compact folding case",
+                  "description": "Smallest footprint in an under-seat bag",
+                  "value": "Compact folding case"
+                }
+              ]
+            }
+          ],
+          "answers": {
+            "budget": "25000",
+            "priority": "Comfort on long flights"
+          }
+        }
+      ],
+      "status": "complete",
+      "createdAt": 1794775203000
+    },
+    "cart_action": {
+      "id": "jmsg_03_cart_added",
+      "threadId": "jthread_demo_xm5_01",
+      "role": "assistant",
+      "text": "Saved the Sony WH-1000XM5 (Black) from Amazon to your cart with a $250.00 all-in target and pulled cross-store reviews, Reddit feedback, and price history.",
+      "cards": [
+        {
+          "kind": "cart_action",
+          "action": "added",
+          "itemId": "jitem_sony_xm5_01",
+          "productTitle": "Sony WH-1000XM5 Wireless Noise Canceling Headphones",
+          "variantLabel": "Black",
+          "retailerName": "Amazon",
+          "quantity": 1,
+          "priceCents": 27999,
+          "deduplicated": false,
+          "enrichmentStatus": "ready"
+        }
+      ],
+      "clientActions": [
+        {
+          "type": "amazon_sync_cart_add",
+          "url": "https://www.amazon.com/dp/B09XS7JWHH",
+          "asin": "B09XS7JWHH",
+          "variantLabel": "Black",
+          "quantity": 1
+        }
+      ],
+      "status": "complete",
+      "createdAt": 1794775215000
+    },
+    "product_evidence": {
+      "id": "jmsg_04_product_evidence",
+      "threadId": "jthread_demo_xm5_01",
+      "role": "assistant",
+      "text": "Sony WH-1000XM5 leads cabin ANC and low-clamp flight comfort across 18,940 Amazon + Best Buy reviews, with one catch worth knowing: it has no USB-C audio and sounds flat passively if the battery dies, though your Best Buy AirFly Pro already covers wireless seatback audio. Right now it's $303.13 all-in ($53.13 above your $250 target), so keep it in Cart until it drops back near its $229.99 low.",
+      "cards": [
+        {
+          "kind": "product_evidence",
+          "itemId": "jitem_sony_xm5_01",
+          "featuredSection": "categoryGuidance",
+          "item": {
+            "id": "jitem_sony_xm5_01",
+            "url": "https://www.amazon.com/dp/B09XS7JWHH",
+            "status": "active",
+            "quantity": 1,
+            "reason": "Top cabin ANC and featherweight 250g comfort for long flights; watching for $250 all-in target.",
+            "addedBy": "agent",
+            "addedAt": 1794775212000,
+            "enrichmentStatus": "ready",
+            "product": {
+              "id": "jprod_sony_xm5",
+              "title": "Sony WH-1000XM5 Wireless Noise Canceling Headphones",
+              "brand": "Sony",
+              "category": "Over-Ear Wireless Headphones",
+              "imageUrl": "https://m.media-amazon.com/images/I/51aXvjzcukL._AC_SL1500_.jpg",
+              "description": "Flagship over-ear wireless ANC headphones with 8-mic noise canceling and 30-hour battery life."
+            },
+            "variant": {
+              "id": "jvar_sony_xm5_black",
+              "label": "Black"
+            },
+            "offer": {
+              "id": "joffer_amazon_xm5_black",
+              "retailer": "amazon",
+              "retailerName": "Amazon",
+              "seller": "Amazon.com",
+              "url": "https://www.amazon.com/dp/B09XS7JWHH",
+              "variantId": "jvar_sony_xm5_black",
+              "variantLabel": "Black",
+              "priceCents": 27999,
+              "listPriceCents": 39999,
+              "shippingCents": 0,
+              "currency": "USD",
+              "deliveryEstimate": "Arrives Tue, Nov 18",
+              "returnSummary": "Free 30-day returns in original condition",
+              "rating": {
+                "average": 4.5,
+                "count": 14620
+              },
+              "inStock": true,
+              "simulated": true,
+              "updatedAt": 1794775214000
+            },
+            "offers": [
+              {
+                "id": "joffer_amazon_xm5_black",
+                "retailer": "amazon",
+                "retailerName": "Amazon",
+                "seller": "Amazon.com",
+                "url": "https://www.amazon.com/dp/B09XS7JWHH",
+                "variantId": "jvar_sony_xm5_black",
+                "variantLabel": "Black",
+                "priceCents": 27999,
+                "listPriceCents": 39999,
+                "shippingCents": 0,
+                "currency": "USD",
+                "deliveryEstimate": "Arrives Tue, Nov 18",
+                "returnSummary": "Free 30-day returns in original condition",
+                "rating": {
+                  "average": 4.5,
+                  "count": 14620
+                },
+                "inStock": true,
+                "simulated": true,
+                "updatedAt": 1794775214000
+              },
+              {
+                "id": "joffer_bestbuy_xm5_black",
+                "retailer": "bestbuy",
+                "retailerName": "Best Buy",
+                "seller": "Best Buy",
+                "url": "https://www.bestbuy.com/site/6505727.p",
+                "variantId": "jvar_sony_xm5_black",
+                "variantLabel": "Black",
+                "priceCents": 29999,
+                "listPriceCents": 39999,
+                "shippingCents": 0,
+                "currency": "USD",
+                "deliveryEstimate": "Pickup today or ships by Wed, Nov 19",
+                "returnSummary": "15-day standard return window",
+                "rating": {
+                  "average": 4.7,
+                  "count": 4320
+                },
+                "inStock": true,
+                "simulated": true,
+                "updatedAt": 1794775214000
+              }
+            ],
+            "rating": {
+              "average": 4.55,
+              "count": 18940,
+              "retailers": [
+                {
+                  "retailerName": "Amazon",
+                  "average": 4.5,
+                  "count": 14620
+                },
+                {
+                  "retailerName": "Best Buy",
+                  "average": 4.7,
+                  "count": 4320
+                }
+              ]
+            },
+            "price": {
+              "currentCents": 27999,
+              "listPriceCents": 39999,
+              "currency": "USD",
+              "subtotalCents": 27999,
+              "taxCents": 2314,
+              "shippingCents": 0,
+              "totalCents": 30313,
+              "estimated": true
+            },
+            "priceHistory": {
+              "points": [
+                {
+                  "observedAt": 1792183200000,
+                  "priceCents": 32999,
+                  "source": "Amazon price archive",
+                  "simulated": true
+                },
+                {
+                  "observedAt": 1793047200000,
+                  "priceCents": 22999,
+                  "source": "Amazon Prime deal",
+                  "simulated": true
+                },
+                {
+                  "observedAt": 1793911200000,
+                  "priceCents": 29800,
+                  "source": "Amazon price archive",
+                  "simulated": true
+                },
+                {
+                  "observedAt": 1794775212000,
+                  "priceCents": 27999,
+                  "source": "Amazon live check",
+                  "simulated": true
+                }
+              ],
+              "lowCents": 22999,
+              "highCents": 32999,
+              "currentCents": 27999
+            },
+            "decision": {
+              "priorities": [
+                "Comfort on long flights"
+              ],
+              "targetCents": 25000,
+              "targetAppliesTo": "all_in",
+              "targetMet": false,
+              "updatedAt": 1794775214000
+            },
+            "sections": [
+              {
+                "section": "categoryGuidance",
+                "status": "ready",
+                "checkedAt": 1794775214000,
+                "simulated": true,
+                "summary": "Strongest jet-engine ANC in class, though non-folding hinges and passive 3.5mm sound are key travel tradeoffs.",
+                "scope": "product",
+                "error": null,
+                "highlights": [
+                  {
+                    "label": "Wired listening and audio quality",
+                    "detail": "Includes a 3.5mm cable (no USB-C audio), and sounds hollow unpowered—keep battery charged for seatback jacks.",
+                    "tone": "new_criterion"
+                  },
+                  {
+                    "label": "Comfort on long flights",
+                    "detail": "250g frame with wide synthetic-leather pads avoids crown hotspots across 6–10 hour flights.",
+                    "tone": "positive"
+                  },
+                  {
+                    "label": "Case size in under-seat bags",
+                    "detail": "Cups rotate flat rather than folding inward, so the hard case is wider than QC Ultra.",
+                    "tone": "negative"
+                  }
+                ],
+                "sources": [
+                  {
+                    "title": "RTINGS Sony WH-1000XM5 Wireless Review",
+                    "url": "https://www.rtings.com/headphones/reviews/sony/wh-1000xm5-wireless",
+                    "publisher": "RTINGS"
+                  }
+                ]
+              },
+              {
+                "section": "returnTerms",
+                "status": "ready",
+                "checkedAt": 1794775214000,
+                "simulated": true,
+                "summary": "Amazon gives 30 days with free drop-off returns (vs. 15 days at Best Buy).",
+                "scope": "offer",
+                "error": null,
+                "highlights": [
+                  {
+                    "label": "30-day free return window",
+                    "detail": "Sold & shipped by Amazon.com; full refund if returned with case and cables within 30 days.",
+                    "tone": "positive"
+                  }
+                ],
+                "sources": [
+                  {
+                    "title": "Amazon Electronics Return Policy",
+                    "url": "https://www.amazon.com/gp/help/customer/display.html?nodeId=GKM69DUUYKQWKWX7",
+                    "publisher": "Amazon"
+                  }
+                ]
+              },
+              {
+                "section": "priceHistory",
+                "status": "ready",
+                "checkedAt": 1794775214000,
+                "simulated": true,
+                "summary": "$279.99 today ($303.13 est. all-in); hit $229.99 during last month's promo.",
+                "scope": "offer",
+                "error": null,
+                "highlights": [
+                  {
+                    "label": "$50 above recent 90-day low",
+                    "detail": "Drops to $229.99 ($249.00 all-in) during recurring Sony promos, which clears your $250 target.",
+                    "tone": "neutral"
+                  }
+                ],
+                "sources": [
+                  {
+                    "title": "CamelCamelCamel B09XS7JWHH History",
+                    "url": "https://camelcamelcamel.com/product/B09XS7JWHH",
+                    "publisher": "CamelCamelCamel"
+                  }
+                ]
+              },
+              {
+                "section": "retailerReviews",
+                "status": "ready",
+                "checkedAt": 1794775214000,
+                "simulated": true,
+                "summary": "4.55★ across 18,940 verified reviews on Amazon (4.5★) and Best Buy (4.7★).",
+                "scope": "product",
+                "error": null,
+                "highlights": [
+                  {
+                    "label": "Cabin engine drone erasure",
+                    "detail": "Frequent flyers consistently rate low-rumble cancellation and call mic clarity top-tier.",
+                    "tone": "positive"
+                  },
+                  {
+                    "label": "Auto-ANC sensitivity",
+                    "detail": "Some owners disable Speak-to-Chat in Sony Sound Connect so coughing doesn't pause audio.",
+                    "tone": "neutral"
+                  }
+                ],
+                "sources": [
+                  {
+                    "title": "Amazon Customer Reviews — Sony WH-1000XM5",
+                    "url": "https://www.amazon.com/dp/B09XS7JWHH#customerReviews",
+                    "publisher": "Amazon"
+                  },
+                  {
+                    "title": "Best Buy Verified Reviews — SKU 6505727",
+                    "url": "https://www.bestbuy.com/site/6505727.p",
+                    "publisher": "Best Buy"
+                  }
+                ]
+              },
+              {
+                "section": "reddit",
+                "status": "ready",
+                "checkedAt": 1794775214000,
+                "simulated": true,
+                "summary": "r/headphones & r/onebag praise long-haul comfort and mic quality; caution against stuffing loose without the case.",
+                "scope": "product",
+                "error": null,
+                "highlights": [
+                  {
+                    "label": "Plush pads, zero jaw fatigue",
+                    "detail": "Glasses wearers report noticeably softer seal pressure than XM4 on transatlantic flights.",
+                    "tone": "positive"
+                  },
+                  {
+                    "label": "Always use the shell case",
+                    "detail": "Swivel joint holds up well in the included case, less so tossed bare into a packed backpack.",
+                    "tone": "negative"
+                  }
+                ],
+                "sources": [
+                  {
+                    "title": "r/headphones — 1-year travel thread on WH-1000XM5",
+                    "url": "https://www.reddit.com/r/headphones/",
+                    "publisher": "Reddit"
+                  }
+                ]
+              }
+            ],
+            "pendingRequest": null
+          }
+        }
+      ],
+      "status": "complete",
+      "createdAt": 1794775217000
+    },
+    "price_history": {
+      "id": "jmsg_05_price_drop",
+      "threadId": "jthread_demo_xm5_01",
+      "role": "assistant",
+      "text": "Price drop on your Sony WH-1000XM5: Amazon fell from $279.99 to $229.99 ($249.00 all-in with $19.01 tax and free shipping), beating your $250.00 target.",
+      "cards": [
+        {
+          "kind": "price_history",
+          "itemId": "jitem_sony_xm5_01",
+          "productTitle": "Sony WH-1000XM5 Wireless Noise Canceling Headphones",
+          "variantLabel": "Black",
+          "retailerName": "Amazon",
+          "currentCents": 22999,
+          "allInTotalCents": 24900,
+          "lowCents": 22999,
+          "highCents": 32999,
+          "targetCents": 25000,
+          "targetAppliesTo": "all_in",
+          "targetMet": true,
+          "points": [
+            {
+              "observedAt": 1792183200000,
+              "priceCents": 32999,
+              "source": "Amazon price archive",
+              "simulated": true
+            },
+            {
+              "observedAt": 1793047200000,
+              "priceCents": 22999,
+              "source": "Amazon Prime deal",
+              "simulated": true
+            },
+            {
+              "observedAt": 1793911200000,
+              "priceCents": 29800,
+              "source": "Amazon price archive",
+              "simulated": true
+            },
+            {
+              "observedAt": 1794775212000,
+              "priceCents": 27999,
+              "source": "Amazon live check",
+              "simulated": true
+            },
+            {
+              "observedAt": 1794775500000,
+              "priceCents": 22999,
+              "source": "Amazon price drop",
+              "simulated": true
+            }
+          ],
+          "simulated": true
+        }
+      ],
+      "status": "complete",
+      "createdAt": 1794775502000
+    },
+    "checkout_approval": {
+      "id": "jmsg_06_checkout_approval",
+      "threadId": "jthread_demo_xm5_01",
+      "role": "assistant",
+      "text": "Locked an Amazon quote at $249.00 total ($229.99 + $19.01 tax, free shipping). Approve below to place the order, or keep it in Cart.",
+      "cards": [
+        {
+          "kind": "checkout_approval",
+          "requestId": "jreq_xm5_249_01",
+          "itemId": "jitem_sony_xm5_01",
+          "offerId": "joffer_amazon_xm5_black",
+          "quoteVersion": 1,
+          "expiresAt": 1794777310000,
+          "status": "pending_approval",
+          "reason": "Meets your $250.00 all-in target ($249.00 total) and top long-flight comfort priority.",
+          "amazonSignInRequired": false,
+          "quote": {
+            "retailer": "amazon",
+            "retailerName": "Amazon",
+            "seller": "Amazon.com",
+            "productTitle": "Sony WH-1000XM5 Wireless Noise Canceling Headphones",
+            "variantLabel": "Black",
+            "imageUrl": "https://m.media-amazon.com/images/I/51aXvjzcukL._AC_SL1500_.jpg",
+            "quantity": 1,
+            "unitPriceCents": 22999,
+            "subtotalCents": 22999,
+            "taxCents": 1901,
+            "shippingCents": 0,
+            "totalCents": 24900,
+            "currency": "USD",
+            "deliveryEstimate": "Arrives Tue, Nov 18",
+            "returnSummary": "Free 30-day returns in original condition",
+            "quotedAt": 1794775510000,
+            "simulated": true
+          }
+        }
+      ],
+      "status": "complete",
+      "createdAt": 1794775511000
+    },
+    "order_receipt": {
+      "id": "jmsg_07_order_receipt",
+      "threadId": "jthread_demo_xm5_01",
+      "role": "assistant",
+      "text": "Order placed (CART-XM5249DEMO) for $249.00 total. Tracking updates live under Purchases.",
+      "cards": [
+        {
+          "kind": "order_receipt",
+          "orderId": "jord_xm5_01",
+          "orderRef": "CART-XM5249DEMO",
+          "requestId": "jreq_xm5_249_01",
+          "itemId": "jitem_sony_xm5_01",
+          "status": "placed",
+          "simulated": true,
+          "quote": {
+            "retailer": "amazon",
+            "retailerName": "Amazon",
+            "seller": "Amazon.com",
+            "productTitle": "Sony WH-1000XM5 Wireless Noise Canceling Headphones",
+            "variantLabel": "Black",
+            "imageUrl": "https://m.media-amazon.com/images/I/51aXvjzcukL._AC_SL1500_.jpg",
+            "quantity": 1,
+            "unitPriceCents": 22999,
+            "subtotalCents": 22999,
+            "taxCents": 1901,
+            "shippingCents": 0,
+            "totalCents": 24900,
+            "currency": "USD",
+            "deliveryEstimate": "Arrives Tue, Nov 18",
+            "returnSummary": "Free 30-day returns in original condition",
+            "quotedAt": 1794775510000,
+            "simulated": true
+          },
+          "shipment": {
+            "status": "shipped",
+            "carrier": "UPS",
+            "trackingNumber": "1Z999AA10123456784",
+            "trackingUrl": "https://www.ups.com/track?tracknum=1Z999AA10123456784",
+            "eta": "2026-11-18",
+            "updatedAt": 1794775535000,
+            "simulated": true
+          }
+        }
+      ],
+      "status": "complete",
+      "createdAt": 1794775536000
+    }
+  }
+}

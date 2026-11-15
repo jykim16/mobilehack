@@ -1,6 +1,7 @@
 import { defineSchema, defineTable } from "convex/server";
 import { authTables } from "@convex-dev/auth/server";
 import { v } from "convex/values";
+import { chatAgentTables } from "./chatAgent/tables";
 import { mcpTables } from "./mcp/tables";
 import {
   actor,
@@ -158,4 +159,5 @@ export default defineSchema({
   }).index("by_orderRef", ["orderRef"]),
 
   ...mcpTables,
+  ...chatAgentTables,
 });
