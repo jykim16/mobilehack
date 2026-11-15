@@ -147,20 +147,24 @@ export async function removeItemFor(
 ) {
   const item = await loadOwnedItem(ctx, shopperId, itemId);
 
-  const requests = await ctx.db
-    .query("purchaseRequests")
-    .withIndex("by_shopperId_and_status", (q) => q.eq("shopperId", shopperId))
-    .take(200);
-  const mine = requests.filter((r) => r.cartItemId === itemId);
-  const committed = mine.find((r) => r.status === "approved" || r.status === "ordered");
-  if (committed || item.status === "purchased") {
-    throw new ConvexError({
-      code: "INVALID_STATE",
-      message: "This item is already being purchased; it can't be removed.",
-    });
+  for (const status of ["approved", "ordered"] as const) {
+    const committed = await ctx.db
+      .query("purchaseRequests")
+      .withIndex("by_cartItemId_and_status", (q) => q.eq("cartItemId", itemId).eq("status", status))
+      .first();
+    if (committed || item.status === "purchased") {
+      throw new ConvexError({
+        code: "INVALID_STATE",
+        message: "This item is already being purchased; it can't be removed.",
+      });
+    }
   }
-  for (const r of mine) {
-    if (r.status === "pending_approval" || r.status === "quoting") {
+  for (const status of ["pending_approval", "quoting"] as const) {
+    const live = await ctx.db
+      .query("purchaseRequests")
+      .withIndex("by_cartItemId_and_status", (q) => q.eq("cartItemId", itemId).eq("status", status))
+      .take(20);
+    for (const r of live) {
       await ctx.db.patch("purchaseRequests", r._id, {
         status: "expired",
         error: "The cart item was removed.",

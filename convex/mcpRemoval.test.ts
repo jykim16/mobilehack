@@ -69,17 +69,16 @@ function pendingRequest(t: Awaited<ReturnType<typeof seedCart>>["t"], shopperId:
 }
 
 describe("remove_cart_item", () => {
-  test("removes an owned item and reports its title", async () => {
+  test("removes an owned item", async () => {
     const { t, shopperId, itemId } = await seedCart();
-    const removed = await t.mutation(internal.mcp.removal.removeItem, { shopperId, itemId });
-    expect(removed.title).toBe("Sony WH-1000XM5");
+    await t.mutation(internal.agent.removeItem, { shopperId, cartItemId: itemId });
     const item = await t.run(async (ctx) => ctx.db.get("cartItems", itemId));
-    expect(item?.status).toBe("removed");
+    expect(item).toBeNull();
   });
 
   test("another shopper's item is not found", async () => {
     const { t, otherId, itemId } = await seedCart();
-    await expect(t.mutation(internal.mcp.removal.removeItem, { shopperId: otherId, itemId })).rejects.toMatchObject({
+    await expect(t.mutation(internal.agent.removeItem, { shopperId: otherId, cartItemId: itemId })).rejects.toMatchObject({
       data: { code: "NOT_FOUND" },
     });
   });
@@ -87,7 +86,7 @@ describe("remove_cart_item", () => {
   test("a pending request is expired with the item", async () => {
     const { t, shopperId, itemId, offerId } = await seedCart();
     const requestId = await pendingRequest(t, shopperId, itemId, offerId, "pending_approval");
-    await t.mutation(internal.mcp.removal.removeItem, { shopperId, itemId });
+    await t.mutation(internal.agent.removeItem, { shopperId, cartItemId: itemId });
     const request = await t.run(async (ctx) => ctx.db.get("purchaseRequests", requestId));
     expect(request?.status).toBe("expired");
   });
@@ -111,7 +110,7 @@ describe("remove_cart_item", () => {
       }
     });
     await pendingRequest(t, shopperId, itemId, offerId, "ordered");
-    await expect(t.mutation(internal.mcp.removal.removeItem, { shopperId, itemId })).rejects.toMatchObject({
+    await expect(t.mutation(internal.agent.removeItem, { shopperId, cartItemId: itemId })).rejects.toMatchObject({
       data: { code: "INVALID_STATE" },
     });
   });
@@ -119,7 +118,7 @@ describe("remove_cart_item", () => {
   test.each(["approved", "ordered"] as const)("refuses while the request is %s", async (status) => {
     const { t, shopperId, itemId, offerId } = await seedCart();
     await pendingRequest(t, shopperId, itemId, offerId, status);
-    await expect(t.mutation(internal.mcp.removal.removeItem, { shopperId, itemId })).rejects.toBeInstanceOf(ConvexError);
+    await expect(t.mutation(internal.agent.removeItem, { shopperId, cartItemId: itemId })).rejects.toBeInstanceOf(ConvexError);
     const item = await t.run(async (ctx) => ctx.db.get("cartItems", itemId));
     expect(item?.status).toBe("active");
   });

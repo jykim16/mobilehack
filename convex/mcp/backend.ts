@@ -33,7 +33,7 @@ export async function requestPurchase(
 }
 
 export async function removeItem(ctx: ActionCtx, shopperId: Id<"users">, itemId: Id<"cartItems">) {
-  return await ctx.runMutation(internal.mcp.removal.removeItem, { shopperId, itemId });
+  return await ctx.runMutation(internal.agent.removeItem, { shopperId, cartItemId: itemId });
 }
 
 export async function getPurchaseStatus(ctx: ActionCtx, shopperId: Id<"users">, requestId: Id<"purchaseRequests">) {

@@ -187,8 +187,11 @@ export async function callTool(ctx: ActionCtx, shopperId: Id<"users">, name: str
       return { ...request, message: PENDING_MESSAGE };
     }
     case "remove_cart_item": {
-      const removed = await backend.removeItem(ctx, shopperId, str(args, "itemId", true) as Id<"cartItems">);
-      return { removed: true, itemId: removed.itemId, title: removed.title };
+      const itemId = str(args, "itemId", true) as Id<"cartItems">;
+      const item = await backend.getItem(ctx, shopperId, itemId);
+      if (!item) throw new ToolInputError("No Cart item with that ID for this shopper.");
+      await backend.removeItem(ctx, shopperId, itemId);
+      return { removed: true, itemId, title: item.product?.title ?? item.url };
     }
     case "get_purchase_status":
       return await backend.getPurchaseStatus(ctx, shopperId, str(args, "requestId", true) as Id<"purchaseRequests">);
