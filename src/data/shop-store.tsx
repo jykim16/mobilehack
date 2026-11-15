@@ -124,7 +124,7 @@ function LiveShopProvider({ children }: { children: ReactNode }) {
   const value: ShopState = {
     live: true,
     ready: items !== undefined && purchases !== undefined,
-    error: session === 'signed_out' ? "Couldn't sign in to Cart. Check your connection and reopen the app." : null,
+    error: null,
     items: items ?? [],
     purchases: purchases ?? [],
     purchasedItems,
