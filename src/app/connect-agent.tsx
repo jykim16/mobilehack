@@ -141,10 +141,11 @@ function ConnectAgent({ mcpUrl, bottomInset }: { mcpUrl: string; bottomInset: nu
   );
 }
 
-const PAIRING_CODE_TTL_MS = 10 * 60 * 1000;
+const PAIRING_CODE_LIFETIME_MS = 10 * 60 * 1000 - 5000;
 const monospace = Platform.select({ ios: 'Menlo', android: 'monospace', default: 'ui-monospace, Menlo, monospace' });
 
 function PairingCode({ signedIn }: { signedIn: boolean }) {
+  const Colors = useColors();
   const styles = useThemedStyles(createStyles);
   const createPairingCode = useMutation(api.agentConnections.createPairingCode);
   const [pairing, setPairing] = useState<{ code: string; expiresAt: number } | null>(null);
@@ -156,9 +157,10 @@ function PairingCode({ signedIn }: { signedIn: boolean }) {
     setRequesting(true);
     setError(null);
     try {
-      const { code, expiresAt } = await createPairingCode({});
-      setNow(Date.now());
-      setPairing({ code, expiresAt: Math.min(expiresAt, Date.now() + PAIRING_CODE_TTL_MS) });
+      const { code } = await createPairingCode({});
+      const receivedAt = Date.now();
+      setNow(receivedAt);
+      setPairing({ code, expiresAt: receivedAt + PAIRING_CODE_LIFETIME_MS });
     } catch (e) {
       setPairing(null);
       setError(errorMessage(e));
@@ -190,11 +192,16 @@ function PairingCode({ signedIn }: { signedIn: boolean }) {
           <Text style={styles.note}>Enter this code when Muse asks to connect to Cart</Text>
           <View style={styles.codeFooter}>
             <CopyButton value={pairing.code} />
-            <Text style={styles.muted}>
-              {requesting
-                ? 'Getting a new code…'
-                : `Expires in ${Math.floor(remaining / 60)}:${String(remaining % 60).padStart(2, '0')}`}
-            </Text>
+            <View style={styles.codeStatus}>
+              <Text style={styles.muted}>
+                {requesting
+                  ? 'Getting a new code…'
+                  : `Expires in ${Math.floor(remaining / 60)}:${String(remaining % 60).padStart(2, '0')}`}
+              </Text>
+              <Pressable accessibilityRole="button" hitSlop={8} disabled={requesting} onPress={request}>
+                {({ pressed }) => <Text style={[styles.newCode, pressed && { color: Colors.text }]}>New code</Text>}
+              </Pressable>
+            </View>
           </View>
         </>
       ) : (
@@ -249,6 +256,8 @@ const createStyles = (Colors: Palette) => StyleSheet.create({
   copy: { alignSelf: 'flex-start' },
   code: { fontFamily: monospace, fontSize: 34, lineHeight: 42, fontWeight: '600', letterSpacing: 6, color: Colors.text },
   codeFooter: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  codeStatus: { alignItems: 'flex-end', gap: 2 },
+  newCode: { ...Type.secondary, fontWeight: '600', color: Colors.accent },
   input: {
     ...Type.body,
     fontSize: 16,
