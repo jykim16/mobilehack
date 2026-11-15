@@ -214,6 +214,7 @@ export interface AmazonSyncOrdersResult {
 
 export interface AmazonSessionHookValue {
   status: AmazonSessionStatus;
+  shopperId: string | null;
   isSheetOpen: boolean;
   currentUrl: string;
   challenge: AmazonAuthChallenge;
@@ -223,6 +224,8 @@ export interface AmazonSessionHookValue {
   openBrowserSheet: (initialUrl?: string) => void;
   closeBrowserSheet: () => void;
   ensureSignedIn: () => Promise<boolean>;
+  resetSession: () => Promise<void>;
+  signOut: () => Promise<void>;
   checkSession: () => Promise<AmazonSessionCheckResult>;
   addToCart: (input: AmazonAddToCartInput) => Promise<AmazonAddToCartResult>;
   getCheckoutQuote: (input?: AmazonCheckoutQuoteInput) => Promise<AmazonCheckoutQuoteResult>;
@@ -285,6 +288,7 @@ export interface AmazonCartAdapterValue {
   }>;
   refreshCart: () => Promise<CartItem[]>;
   refreshPurchases: () => Promise<Purchase[]>;
+  resetSession: () => Promise<void>;
   flushPendingSync: () => Promise<{
     synced: number;
     remaining: number;

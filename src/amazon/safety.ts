@@ -469,6 +469,11 @@ export class OrderSubmissionLedger {
     return this.entries.get(orderRef);
   }
 
+  clear(): void {
+    this.entries.clear();
+    this.observedHistoricalOrderIds.clear();
+  }
+
   noteObservedOrderIds(orderIds: Iterable<string>): void {
     for (const id of orderIds) {
       if (AMAZON_ORDER_ID_RE.test(id)) {

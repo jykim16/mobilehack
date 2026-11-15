@@ -1129,3 +1129,38 @@ export function buildScrapeProgressTrackerScript(reqId: string): string {
     `,
   );
 }
+
+/**
+ * Expire accessible document cookies across Amazon domains/paths and clear Web Storage
+ * without ever reading or logging cookie values (CREW.md invariant #2).
+ */
+export function buildClearWebViewSessionScript(reqId: string): string {
+  return wrapStepScript(
+    reqId,
+    `
+    var clearedCookies = 0;
+    try {
+      var rawPairs = String(document.cookie || '').split(';');
+      var paths = ['/', '/gp', '/ap', '/checkout'];
+      var domains = ['', 'www.amazon.com', '.amazon.com'];
+      for (var i = 0; i < rawPairs.length; i++) {
+        var eqIdx = rawPairs[i].indexOf('=');
+        var name = (eqIdx === -1 ? rawPairs[i] : rawPairs[i].slice(0, eqIdx)).trim();
+        if (!name) continue;
+        clearedCookies += 1;
+        for (var p = 0; p < paths.length; p++) {
+          for (var d = 0; d < domains.length; d++) {
+            var domainAttr = domains[d] ? '; domain=' + domains[d] : '';
+            document.cookie = name + '=; expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0; path=' + paths[p] + domainAttr;
+          }
+        }
+      }
+    } catch (_) {}
+
+    try { if (window.localStorage) window.localStorage.clear(); } catch (_) {}
+    try { if (window.sessionStorage) window.sessionStorage.clear(); } catch (_) {}
+
+    return { clearedCookies: clearedCookies };
+    `,
+  );
+}

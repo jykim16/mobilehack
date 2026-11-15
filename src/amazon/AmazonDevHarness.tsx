@@ -10,6 +10,8 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { type Palette, Radius, Spacing, Type, useColors, useThemedStyles } from '@/constants/theme';
+
 import { useAmazonCartAdapter, useAmazonSession } from './AmazonBrowserProvider';
 import { extractAsin, formatCents, formatRelativeSyncTime } from './asin';
 import type { AmazonAddToCartResult, AmazonCheckoutQuoteResult } from './types';
@@ -33,6 +35,8 @@ export interface AmazonDevHarnessProps {
 
 export function AmazonDevHarness({ defaultExpanded = false }: AmazonDevHarnessProps) {
   const insets = useSafeAreaInsets();
+  const colors = useColors();
+  const styles = useThemedStyles(createHarnessStyles);
   const session = useAmazonSession();
   const adapter = useAmazonCartAdapter();
 
@@ -184,7 +188,7 @@ export function AmazonDevHarness({ defaultExpanded = false }: AmazonDevHarnessPr
                       pressed && styles.pressed,
                     ]}>
                     {isAdding ? (
-                      <ActivityIndicator size="small" color="#0A0A0C" />
+                      <ActivityIndicator size="small" color={colors.onStrong} />
                     ) : (
                       <Text style={styles.primaryActionLabel}>Add</Text>
                     )}
@@ -266,7 +270,7 @@ export function AmazonDevHarness({ defaultExpanded = false }: AmazonDevHarnessPr
                 pressed && styles.pressed,
               ]}>
               {activeAction === 'quote' ? (
-                <ActivityIndicator size="small" color="#0A0A0C" />
+                <ActivityIndicator size="small" color={colors.onStrong} />
               ) : (
                 <Text style={styles.primaryActionLabel}>Quote Checkout (Dry Run)</Text>
               )}
@@ -355,7 +359,7 @@ export function AmazonDevHarness({ defaultExpanded = false }: AmazonDevHarnessPr
                 pressed && styles.pressed,
               ]}>
               {activeAction === 'orders' ? (
-                <ActivityIndicator size="small" color="#F4F4F6" />
+                <ActivityIndicator size="small" color={colors.text} />
               ) : (
                 <Text style={styles.secondaryButtonLabel}>Sync Orders</Text>
               )}
@@ -392,237 +396,236 @@ export function AmazonDevHarness({ defaultExpanded = false }: AmazonDevHarnessPr
   );
 }
 
-const styles = StyleSheet.create({
-  fabWrapper: {
-    position: 'absolute',
-    right: 16,
-    zIndex: 900,
-  },
-  fabButton: {
-    backgroundColor: '#18181D',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#2C2C35',
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 20,
-  },
-  fabLabel: {
-    color: '#F4F4F6',
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  fullScreen: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    zIndex: 950,
-    backgroundColor: '#0A0A0C',
-  },
-  topBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 18,
-    paddingVertical: 14,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#1F1F24',
-  },
-  topBarLeft: {
-    flex: 1,
-    gap: 2,
-  },
-  topBarActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-  title: {
-    fontSize: 19,
-    fontWeight: '700',
-    color: '#F4F4F6',
-    letterSpacing: -0.3,
-  },
-  metaLine: {
-    fontSize: 12,
-    color: '#8E8E93',
-  },
-  secondaryButton: {
-    backgroundColor: '#18181E',
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: 16,
-  },
-  secondaryButtonLabel: {
-    color: '#F4F4F6',
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  plainClose: {
-    paddingVertical: 6,
-    paddingHorizontal: 4,
-  },
-  plainCloseLabel: {
-    color: '#A1A1AA',
-    fontSize: 14,
-    fontWeight: '500',
-  },
-  scroll: {
-    flex: 1,
-  },
-  scrollContent: {
-    paddingHorizontal: 18,
-    paddingTop: 18,
-    gap: 24,
-  },
-  section: {
-    gap: 10,
-  },
-  sectionHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  sectionHeading: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#A1A1AA',
-  },
-  sectionCaption: {
-    fontSize: 13,
-    color: '#A1A1AA',
-  },
-  card: {
-    backgroundColor: '#141418',
-    borderRadius: 16,
-    padding: 14,
-    gap: 10,
-  },
-  emptyCard: {
-    backgroundColor: '#141418',
-    borderRadius: 16,
-    padding: 16,
-  },
-  cardRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-  cartItemRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 12,
-  },
-  productThumb: {
-    width: 60,
-    height: 60,
-    borderRadius: 10,
-    backgroundColor: '#FFFFFF',
-  },
-  productThumbPlaceholder: {
-    width: 60,
-    height: 60,
-    borderRadius: 10,
-    backgroundColor: '#1F1F26',
-  },
-  cardInfo: {
-    flex: 1,
-    gap: 4,
-  },
-  cardTitle: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: '#F4F4F6',
-    lineHeight: 20,
-  },
-  cardMuted: {
-    fontSize: 13,
-    color: '#8E8E93',
-    lineHeight: 18,
-  },
-  priceRow: {
-    flexDirection: 'row',
-    alignItems: 'baseline',
-    gap: 6,
-    marginTop: 2,
-  },
-  priceValue: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#F4F4F6',
-  },
-  strikePrice: {
-    fontSize: 13,
-    color: '#63636A',
-    textDecorationLine: 'line-through',
-  },
-  primaryAction: {
-    backgroundColor: '#F4F4F6',
-    minWidth: 68,
-    height: 36,
-    paddingHorizontal: 16,
-    borderRadius: 18,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  fullPrimaryButton: {
-    backgroundColor: '#F4F4F6',
-    height: 46,
-    borderRadius: 23,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: 4,
-  },
-  primaryActionLabel: {
-    color: '#0A0A0C',
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  secondaryFullButton: {
-    backgroundColor: '#1E1E26',
-    height: 40,
-    borderRadius: 20,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: 4,
-  },
-  disabledAction: {
-    opacity: 0.5,
-  },
-  pressed: {
-    opacity: 0.7,
-  },
-  quoteSummary: {
-    gap: 6,
-    paddingTop: 6,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: '#23232B',
-  },
-  quoteLine: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  quoteTotalLine: {
-    paddingTop: 6,
-    marginTop: 2,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: '#23232B',
-  },
-  quoteAmount: {
-    fontSize: 13,
-    color: '#E4E4E7',
-    fontWeight: '500',
-  },
-  errorCard: {
-    backgroundColor: '#2A1418',
-    borderRadius: 14,
-    padding: 12,
-  },
-  errorText: {
-    color: '#FCA5A5',
-    fontSize: 13,
-    lineHeight: 18,
-  },
-});
+function createHarnessStyles(colors: Palette) {
+  return StyleSheet.create({
+    fabWrapper: {
+      position: 'absolute',
+      right: Spacing.lg,
+      zIndex: 900,
+    },
+    fabButton: {
+      backgroundColor: colors.surface,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.hairline,
+      paddingHorizontal: Spacing.md,
+      paddingVertical: Spacing.sm,
+      borderRadius: Radius.pill,
+    },
+    fabLabel: {
+      ...Type.secondary,
+      color: colors.text,
+      fontWeight: '600',
+    },
+    fullScreen: {
+      position: 'absolute',
+      top: 0,
+      left: 0,
+      right: 0,
+      bottom: 0,
+      zIndex: 950,
+      backgroundColor: colors.background,
+    },
+    topBar: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      paddingHorizontal: Spacing.lg,
+      paddingVertical: Spacing.md,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: colors.hairline,
+    },
+    topBarLeft: {
+      flex: 1,
+      gap: 2,
+    },
+    topBarActions: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: Spacing.md,
+    },
+    title: {
+      ...Type.headline,
+      color: colors.text,
+    },
+    metaLine: {
+      ...Type.secondary,
+      color: colors.textSecondary,
+    },
+    secondaryButton: {
+      backgroundColor: colors.control,
+      paddingHorizontal: Spacing.md,
+      paddingVertical: 7,
+      borderRadius: Radius.pill,
+    },
+    secondaryButtonLabel: {
+      ...Type.secondary,
+      color: colors.text,
+      fontWeight: '600',
+    },
+    plainClose: {
+      paddingVertical: 6,
+      paddingHorizontal: Spacing.xs,
+    },
+    plainCloseLabel: {
+      ...Type.body,
+      color: colors.textSecondary,
+      fontWeight: '500',
+    },
+    scroll: {
+      flex: 1,
+    },
+    scrollContent: {
+      paddingHorizontal: Spacing.lg,
+      paddingTop: Spacing.lg,
+      gap: Spacing.xxl,
+    },
+    section: {
+      gap: Spacing.sm,
+    },
+    sectionHeaderRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+    },
+    sectionHeading: {
+      ...Type.secondary,
+      fontWeight: '600',
+      color: colors.textSecondary,
+    },
+    sectionCaption: {
+      ...Type.secondary,
+      color: colors.textSecondary,
+    },
+    card: {
+      backgroundColor: colors.surface,
+      borderRadius: Radius.tile,
+      padding: Spacing.md,
+      gap: Spacing.sm,
+    },
+    emptyCard: {
+      backgroundColor: colors.surface,
+      borderRadius: Radius.tile,
+      padding: Spacing.lg,
+    },
+    cardRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: Spacing.md,
+    },
+    cartItemRow: {
+      flexDirection: 'row',
+      alignItems: 'flex-start',
+      gap: Spacing.md,
+    },
+    productThumb: {
+      width: 60,
+      height: 60,
+      borderRadius: Spacing.sm,
+      backgroundColor: colors.imageTile,
+    },
+    productThumbPlaceholder: {
+      width: 60,
+      height: 60,
+      borderRadius: Spacing.sm,
+      backgroundColor: colors.control,
+    },
+    cardInfo: {
+      flex: 1,
+      gap: Spacing.xs,
+    },
+    cardTitle: {
+      ...Type.body,
+      fontWeight: '600',
+      color: colors.text,
+    },
+    cardMuted: {
+      ...Type.secondary,
+      color: colors.textSecondary,
+    },
+    priceRow: {
+      flexDirection: 'row',
+      alignItems: 'baseline',
+      gap: 6,
+      marginTop: 2,
+    },
+    priceValue: {
+      ...Type.body,
+      fontWeight: '700',
+      color: colors.text,
+    },
+    strikePrice: {
+      ...Type.secondary,
+      color: colors.textTertiary,
+      textDecorationLine: 'line-through',
+    },
+    primaryAction: {
+      backgroundColor: colors.strong,
+      minWidth: 68,
+      height: 36,
+      paddingHorizontal: Spacing.lg,
+      borderRadius: Radius.pill,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    fullPrimaryButton: {
+      backgroundColor: colors.strong,
+      height: 46,
+      borderRadius: Radius.pill,
+      alignItems: 'center',
+      justifyContent: 'center',
+      marginTop: Spacing.xs,
+    },
+    primaryActionLabel: {
+      ...Type.secondary,
+      color: colors.onStrong,
+      fontWeight: '600',
+    },
+    secondaryFullButton: {
+      backgroundColor: colors.control,
+      height: 40,
+      borderRadius: Radius.pill,
+      alignItems: 'center',
+      justifyContent: 'center',
+      marginTop: Spacing.xs,
+    },
+    disabledAction: {
+      opacity: 0.5,
+    },
+    pressed: {
+      opacity: 0.7,
+    },
+    quoteSummary: {
+      gap: 6,
+      paddingTop: 6,
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: colors.hairline,
+    },
+    quoteLine: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+    },
+    quoteTotalLine: {
+      paddingTop: 6,
+      marginTop: 2,
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: colors.hairline,
+    },
+    quoteAmount: {
+      ...Type.secondary,
+      color: colors.text,
+      fontWeight: '500',
+    },
+    errorCard: {
+      backgroundColor: colors.control,
+      borderRadius: Radius.tile,
+      padding: Spacing.md,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.hairline,
+    },
+    errorText: {
+      ...Type.secondary,
+      color: colors.text,
+    },
+  });
+}
