@@ -33,6 +33,12 @@ export const getItem = query({
 });
 
 export const updateDecision = mutation({
+  returns: v.object({
+    priorities: v.array(v.string()),
+    targetCents: v.optional(v.number()),
+    targetAppliesTo: v.optional(targetAppliesTo),
+    updatedAt: v.number(),
+  }),
   args: {
     itemId: v.id("cartItems"),
     priorities: v.array(v.string()),
@@ -43,11 +49,13 @@ export const updateDecision = mutation({
 });
 
 export const setQuantity = mutation({
+  returns: v.null(),
   args: { itemId: v.id("cartItems"), quantity: v.number() },
   handler: async (ctx, { itemId, quantity }) => setQuantityFor(ctx, await requireShopper(ctx), itemId, quantity),
 });
 
 export const removeItem = mutation({
+  returns: v.null(),
   args: { itemId: v.id("cartItems") },
   handler: async (ctx, { itemId }) => removeItemFor(ctx, await requireShopper(ctx), itemId),
 });

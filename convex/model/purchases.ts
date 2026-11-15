@@ -38,6 +38,12 @@ export async function createRequestFor(
   if (!offer || offer.productId !== item.productId) {
     throw new ConvexError({ code: "OFFER_MISMATCH", message: "offerId is not an offer for this item." });
   }
+  if (!offer.inStock || offer.priceCents <= 0) {
+    throw new ConvexError({
+      code: "OFFER_UNAVAILABLE",
+      message: "This offer has no purchasable price right now.",
+    });
+  }
   if (!Number.isInteger(args.quantity) || args.quantity < 1 || args.quantity > 10) {
     throw new ConvexError({ code: "INVALID_QUANTITY", message: "quantity must be 1-10." });
   }
@@ -81,13 +87,8 @@ export async function requestPurchaseFor(
   };
 }
 
-function effectiveStatus(req: Doc<"purchaseRequests">, now: number) {
-  if ((req.status === "pending_approval" || req.status === "quoting") && now > req.expiresAt) return "expired" as const;
-  return req.status;
-}
-
+/** Status as persisted; expiry is written by the scheduled `purchases.expire` mutation. */
 export async function requestView(ctx: QueryCtx, req: Doc<"purchaseRequests">) {
-  const now = Date.now();
   const order = await ctx.db
     .query("orders")
     .withIndex("by_purchaseRequestId", (q) => q.eq("purchaseRequestId", req._id))
@@ -102,7 +103,7 @@ export async function requestView(ctx: QueryCtx, req: Doc<"purchaseRequests">) {
     requestId: req._id,
     itemId: req.cartItemId,
     offerId: req.offerId,
-    status: effectiveStatus(req, now),
+    status: req.status,
     requestedBy: req.requestedBy,
     reason: req.reason,
     quantity: req.quantity,
@@ -143,15 +144,13 @@ export async function loadOwnedRequest(ctx: QueryCtx, shopperId: Id<"users">, re
 }
 
 export async function listPendingFor(ctx: QueryCtx, shopperId: Id<"users">) {
-  const now = Date.now();
   const reqs = await ctx.db
     .query("purchaseRequests")
     .withIndex("by_shopperId_and_status", (q) => q.eq("shopperId", shopperId).eq("status", "pending_approval"))
     .order("desc")
     .take(50);
-  const live = reqs.filter((r) => r.expiresAt > now);
   return await Promise.all(
-    live.map(async (r) => {
+    reqs.map(async (r) => {
       const view = await requestView(ctx, r);
       const item = await ctx.db.get("cartItems", r.cartItemId);
       return { ...view, decision: item?.decision ?? null };
@@ -195,11 +194,33 @@ export async function decideFor(
   }
   if (req.status !== "pending_approval" || !req.quote) return await result("invalid_state");
   if (args.quoteVersion !== req.quoteVersion) return await result("stale_quote");
+  const item = await ctx.db.get("cartItems", req.cartItemId);
+  if (!item || item.status !== "active") {
+    await ctx.db.patch("purchaseRequests", req._id, {
+      status: "failed",
+      error: "This item is no longer in the cart.",
+    });
+    return await result("invalid_state");
+  }
   if (now > req.expiresAt) {
     await ctx.db.patch("purchaseRequests", req._id, { status: "expired" });
     return await result("expired");
   }
 
+  const competing = await ctx.db
+    .query("purchaseRequests")
+    .withIndex("by_shopperId_and_status", (q) =>
+      q.eq("shopperId", shopperId).eq("status", "pending_approval"),
+    )
+    .take(50);
+  for (const other of competing) {
+    if (other._id !== req._id && other.cartItemId === req.cartItemId) {
+      await ctx.db.patch("purchaseRequests", other._id, {
+        status: "expired",
+        error: "Another purchase request for this item was approved.",
+      });
+    }
+  }
   await ctx.db.patch("purchaseRequests", req._id, { status: "approved", decidedAt: now });
   const existingOrder = await ctx.db
     .query("orders")

@@ -20,6 +20,7 @@ export function offerView(offer: Doc<"offers">, variantLabel: string | null) {
     returnSummary: offer.returnSummary,
     rating: offer.rating ?? null,
     inStock: offer.inStock,
+    purchasable: offer.inStock && offer.priceCents > 0,
     simulated: offer.simulated,
     updatedAt: offer.updatedAt,
   };

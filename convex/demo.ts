@@ -78,6 +78,7 @@ export const seedCatalog = internalMutation({
 
 /** Seeds the catalog and puts the second-retailer item (Best Buy AirFly Pro) in the caller's cart. */
 export const setupMyCart = mutation({
+  returns: v.object({ heroUrl: v.string(), airflyItemId: v.id("cartItems") }),
   args: {},
   handler: async (ctx) => {
     const shopperId = await requireShopper(ctx);
@@ -110,6 +111,11 @@ async function advance(ctx: MutationCtx) {
 
 /** DEMO CONTROL: writes the later (lower) price observation for the hero offer. */
 export const advancePrice = mutation({
+  returns: v.object({
+    offerId: v.id("offers"),
+    priceCents: v.number(),
+    observedAt: v.number(),
+  }),
   args: {},
   handler: async (ctx) => {
     await requireShopper(ctx);
@@ -132,6 +138,7 @@ async function resetPrice(ctx: MutationCtx) {
 
 /** DEMO CONTROL: restores the hero price and clears the caller's cart, requests, and orders. */
 export const resetDemo = mutation({
+  returns: v.null(),
   args: {},
   handler: async (ctx) => {
     const shopperId = await requireShopper(ctx);
@@ -169,11 +176,3 @@ export const resetDemo = mutation({
 
 export const resetPriceInternal = internalMutation({ args: {}, handler: async (ctx) => { await resetPrice(ctx); return null; } });
 
-/** For CLI demos: creates a shopper row to pass as shopperId to internal agent functions. */
-export const createDemoShopper = internalMutation({
-  args: { name: v.optional(v.string()) },
-  handler: async (ctx, { name }) => {
-    await ensureCatalog(ctx);
-    return await ctx.db.insert("users", { name: name ?? "Demo shopper", isAnonymous: true });
-  },
-});

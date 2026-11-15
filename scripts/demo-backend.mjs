@@ -9,10 +9,12 @@ import { readFileSync, existsSync } from "node:fs";
 
 const api = anyApi;
 const DEFAULT_URL = "https://hearty-skunk-641.convex.cloud";
-let url = process.env.EXPO_PUBLIC_CONVEX_URL ?? DEFAULT_URL;
-if (!url && existsSync(".env.local")) {
-  url = readFileSync(".env.local", "utf8").match(/^EXPO_PUBLIC_CONVEX_URL=(.+)$/m)?.[1]?.trim();
-}
+const fromEnvFile = () =>
+  existsSync(".env.local")
+    ? readFileSync(".env.local", "utf8").match(/^EXPO_PUBLIC_CONVEX_URL=(.+)$/m)?.[1]?.trim()
+    : undefined;
+let url =
+  process.argv[2] ?? process.env.CONVEX_URL ?? process.env.EXPO_PUBLIC_CONVEX_URL ?? fromEnvFile() ?? DEFAULT_URL;
 if (!url) throw new Error("Set EXPO_PUBLIC_CONVEX_URL");
 const client = new ConvexHttpClient(url);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

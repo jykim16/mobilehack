@@ -42,6 +42,17 @@ export const listPendingApprovals = query({
 });
 
 export const decidePurchase = mutation({
+  returns: v.object({
+    outcome: v.union(
+      v.literal("approved"),
+      v.literal("already_approved"),
+      v.literal("deferred"),
+      v.literal("stale_quote"),
+      v.literal("expired"),
+      v.literal("invalid_state"),
+    ),
+    request: v.any(),
+  }),
   args: {
     requestId: v.id("purchaseRequests"),
     quoteVersion: v.number(),
@@ -112,20 +123,17 @@ export const resolveQuote = internalAction({
       return null;
     }
     const fresh = await getAdapter(ctx, offer.retailer).getQuote({ offer, quantity: req.quantity });
-    await ctx.runMutation(internal.purchases.setQuote, { requestId, quote: fresh, expectStatus: "quoting" });
+    await ctx.runMutation(internal.purchases.setQuote, { requestId, quote: fresh, onlyWhileQuoting: true });
     return null;
   },
 });
 
 export const setQuote = internalMutation({
-  args: {
-    requestId: v.id("purchaseRequests"),
-    quote,
-    expectStatus: v.union(v.literal("quoting"), v.literal("approved")),
-  },
-  handler: async (ctx, { requestId, quote, expectStatus }) => {
+  args: { requestId: v.id("purchaseRequests"), quote, onlyWhileQuoting: v.boolean() },
+  handler: async (ctx, { requestId, quote, onlyWhileQuoting }) => {
     const req = await ctx.db.get("purchaseRequests", requestId);
-    if (!req || req.status !== expectStatus) return null;
+    if (!req) return null;
+    if (onlyWhileQuoting ? req.status !== "quoting" : req.status !== "approved") return null;
     const expiresAt = Date.now() + QUOTE_TTL_MS;
     await ctx.db.patch("purchaseRequests", requestId, {
       status: "pending_approval",

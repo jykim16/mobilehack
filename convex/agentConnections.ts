@@ -12,7 +12,8 @@ import { hashToken } from "./lib/tokens";
  * The raw token is returned once and never stored.
  */
 export const create = action({
-  args: { label: v.optional(v.string()) },
+  returns: v.object({ connectionId: v.id("agentConnections"), token: v.string() }),
+  args: { label: v.string() },
   handler: async (ctx, { label }): Promise<{ connectionId: Id<"agentConnections">; token: string }> => {
     const shopperId = await requireShopper(ctx);
     const bytes = crypto.getRandomValues(new Uint8Array(24));
@@ -20,7 +21,7 @@ export const create = action({
     const connectionId: Id<"agentConnections"> = await ctx.runMutation(internal.agentConnections.insert, {
       shopperId,
       tokenHash: await hashToken(token),
-      label: label ?? "Agent",
+      label,
     });
     return { connectionId, token };
   },
@@ -32,13 +33,16 @@ export const insert = internalMutation({
 });
 
 export const list = query({
+  returns: v.array(
+    v.object({ connectionId: v.id("agentConnections"), label: v.string(), createdAt: v.number() }),
+  ),
   args: {},
   handler: async (ctx) => {
     const shopperId = await requireShopper(ctx);
     const rows = await ctx.db
       .query("agentConnections")
       .withIndex("by_shopperId", (q) => q.eq("shopperId", shopperId))
-      .take(50);
+      .take(200);
     return rows
       .filter((r) => !r.revokedAt)
       .map((r) => ({ connectionId: r._id, label: r.label, createdAt: r.createdAt }));
@@ -46,6 +50,7 @@ export const list = query({
 });
 
 export const revoke = mutation({
+  returns: v.null(),
   args: { connectionId: v.id("agentConnections") },
   handler: async (ctx, { connectionId }) => {
     const shopperId = await requireShopper(ctx);

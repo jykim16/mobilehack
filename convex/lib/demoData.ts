@@ -273,6 +273,21 @@ export const SEEDED_EVIDENCE: Record<string, Partial<Record<SectionName, Section
   },
 };
 
+/**
+ * Offer-scoped demo evidence, keyed `<demoKey>:<retailer>`. Only offered for the
+ * retailer it describes, so one product's Amazon return terms and ratings never
+ * stand in for a Best Buy offer on the same product.
+ */
+export const SEEDED_OFFER_EVIDENCE: Record<string, Partial<Record<SectionName, SectionResult>>> = {
+  "hero-xm5:amazon": {
+    returnTerms: SEEDED_EVIDENCE["hero-xm5"].returnTerms!,
+    retailerReviews: SEEDED_EVIDENCE["hero-xm5"].retailerReviews!,
+  },
+  "airfly-pro:bestbuy": {
+    retailerReviews: SEEDED_EVIDENCE["airfly-pro"].retailerReviews!,
+  },
+};
+
 export const RETAILER_RETURN_TERMS: Record<string, SectionResult> = {
   amazon: SEEDED_EVIDENCE["hero-xm5"].returnTerms!,
   bestbuy: {

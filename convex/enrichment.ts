@@ -1,9 +1,15 @@
 import { v } from "convex/values";
 import { internalAction, internalMutation, internalQuery } from "./_generated/server";
 import { internal } from "./_generated/api";
-import type { Doc } from "./_generated/dataModel";
-import { SECTION_NAMES, sectionName, highlight, source, evidenceScope, type SectionName } from "./lib/validators";
-import { RETAILER_RETURN_TERMS, SEEDED_EVIDENCE, type SectionResult } from "./lib/demoData";
+import type { Doc, Id } from "./_generated/dataModel";
+import type { MutationCtx } from "./_generated/server";
+import { SECTION_NAMES, sectionName, highlight, source, type SectionName } from "./lib/validators";
+import {
+  RETAILER_RETURN_TERMS,
+  SEEDED_EVIDENCE,
+  SEEDED_OFFER_EVIDENCE,
+  type SectionResult,
+} from "./lib/demoData";
 import { fetchOpenGraph, titleFromUrl } from "./lib/opengraph";
 import { canonicalKeyForUrl, retailerFromHost } from "./lib/urls";
 
@@ -120,7 +126,7 @@ export const attachOffer = internalMutation({
         currency: "USD",
         deliveryEstimate: "Delivery estimate unavailable",
         returnSummary: RETAILER_RETURN_TERMS[retailer]?.summary ?? "See retailer for return terms.",
-        inStock: true,
+        inStock: args.priceCents !== undefined && args.priceCents > 0,
         simulated: args.priceCents === undefined,
         updatedAt: now,
       });
@@ -233,7 +239,11 @@ async function produce(
   ctxData: { product: Doc<"products">; offer: Doc<"offers">; observations: Doc<"priceObservations">[] },
 ): Promise<SectionResult> {
   const { product, offer, observations } = ctxData;
-  const seeded = product.demoKey ? SEEDED_EVIDENCE[product.demoKey]?.[section] : undefined;
+  const seeded = !product.demoKey
+    ? undefined
+    : SECTION_SCOPE[section] === "offer"
+      ? SEEDED_OFFER_EVIDENCE[`${product.demoKey}:${offer.retailer}`]?.[section]
+      : SEEDED_EVIDENCE[product.demoKey]?.[section];
   switch (section) {
     case "priceHistory":
       return priceHistoryResult(offer, observations);
@@ -296,8 +306,12 @@ export const runSection = internalAction({
     const data = await ctx.runQuery(internal.enrichment.getSectionContext, { cartItemId });
     if (!data) return null;
     try {
-      const result = await produce(section, data);
-      await ctx.runMutation(internal.enrichment.publishSection, { cartItemId, section, ...result });
+      const { scope: _scope, ...result } = await produce(section, data);
+      await ctx.runMutation(internal.enrichment.publishSection, {
+        cartItemId,
+        section,
+        ...result,
+      });
     } catch (e) {
       const error = e instanceof Error ? e.message : String(e);
       const retry = attempt < MAX_ATTEMPTS;
@@ -310,11 +324,11 @@ export const runSection = internalAction({
   },
 });
 
-async function findSection(ctx: { db: any }, cartItemId: any, section: SectionName) {
-  return (await ctx.db
+async function findSection(ctx: MutationCtx, cartItemId: Id<"cartItems">, section: SectionName) {
+  return await ctx.db
     .query("evidence")
-    .withIndex("by_cartItemId_and_section", (q: any) => q.eq("cartItemId", cartItemId).eq("section", section))
-    .unique()) as Doc<"evidence"> | null;
+    .withIndex("by_cartItemId_and_section", (q) => q.eq("cartItemId", cartItemId).eq("section", section))
+    .unique();
 }
 
 export const markRunning = internalMutation({
@@ -332,7 +346,6 @@ export const publishSection = internalMutation({
   args: {
     cartItemId: v.id("cartItems"),
     section: sectionName,
-    scope: evidenceScope,
     summary: v.string(),
     highlights: v.array(highlight),
     sources: v.array(source),
@@ -343,6 +356,7 @@ export const publishSection = internalMutation({
     if (!ev) return null;
     await ctx.db.patch("evidence", ev._id, {
       ...result,
+      scope: SECTION_SCOPE[section],
       status: "ready",
       checkedAt: Date.now(),
       error: undefined,
@@ -367,11 +381,11 @@ export const markFailedAttempt = internalMutation({
   },
 });
 
-async function recomputeStatus(ctx: { db: any }, cartItemId: any) {
-  const all = (await ctx.db
+async function recomputeStatus(ctx: MutationCtx, cartItemId: Id<"cartItems">) {
+  const all = await ctx.db
     .query("evidence")
-    .withIndex("by_cartItemId_and_section", (q: any) => q.eq("cartItemId", cartItemId))
-    .take(10)) as Doc<"evidence">[];
+    .withIndex("by_cartItemId_and_section", (q) => q.eq("cartItemId", cartItemId))
+    .take(10);
   const done = all.filter((e) => e.status === "ready" || e.status === "failed");
   if (done.length < SECTION_NAMES.length) return;
   const enrichmentStatus = all.every((e) => e.status === "ready") ? "ready" : "partial";

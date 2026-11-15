@@ -142,7 +142,7 @@ export const markRequote = internalMutation({
     await ctx.runMutation(internal.purchases.setQuote, {
       requestId: order.purchaseRequestId,
       quote,
-      expectStatus: "approved",
+      onlyWhileQuoting: false,
     });
     return null;
   },

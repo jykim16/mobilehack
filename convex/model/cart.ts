@@ -146,5 +146,19 @@ export async function setQuantityFor(
 export async function removeItemFor(ctx: MutationCtx, shopperId: Id<"users">, itemId: Id<"cartItems">) {
   await loadOwnedItem(ctx, shopperId, itemId);
   await ctx.db.patch("cartItems", itemId, { status: "removed" });
+  const pending = await ctx.db
+    .query("purchaseRequests")
+    .withIndex("by_shopperId_and_status", (q) =>
+      q.eq("shopperId", shopperId).eq("status", "pending_approval"),
+    )
+    .take(50);
+  for (const req of pending) {
+    if (req.cartItemId === itemId) {
+      await ctx.db.patch("purchaseRequests", req._id, {
+        status: "expired",
+        error: "The cart item was removed.",
+      });
+    }
+  }
   return null;
 }

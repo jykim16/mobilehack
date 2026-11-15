@@ -11,10 +11,12 @@ import { readFileSync, existsSync } from "node:fs";
 
 const api = anyApi;
 const DEFAULT_URL = "https://hearty-skunk-641.convex.cloud";
-let url = process.argv[2] ?? process.env.CONVEX_URL ?? process.env.EXPO_PUBLIC_CONVEX_URL ?? DEFAULT_URL;
-if (!url && existsSync(".env.local")) {
-  url = readFileSync(".env.local", "utf8").match(/^EXPO_PUBLIC_CONVEX_URL=(.+)$/m)?.[1]?.trim();
-}
+const fromEnvFile = () =>
+  existsSync(".env.local")
+    ? readFileSync(".env.local", "utf8").match(/^EXPO_PUBLIC_CONVEX_URL=(.+)$/m)?.[1]?.trim()
+    : undefined;
+let url =
+  process.argv[2] ?? process.env.CONVEX_URL ?? process.env.EXPO_PUBLIC_CONVEX_URL ?? fromEnvFile() ?? DEFAULT_URL;
 if (!url) throw new Error("Pass a Convex URL or set EXPO_PUBLIC_CONVEX_URL");
 console.log("target:", url);
 
@@ -122,6 +124,44 @@ check("stale quoteVersion -> stale_quote", stale.outcome === "stale_quote", stal
 check("stale quoteVersion -> zero orders", (await ordersFor(alice, req.requestId)) === 0);
 const stillPending = await alice.query(api.purchases.getPurchaseStatus, { requestId: req.requestId });
 check("stale quoteVersion -> request still pending", stillPending.status === "pending_approval", stillPending.status);
+
+// 5. removing an item invalidates its pending request
+item = await heroReady(alice, runId + 3);
+await alice.mutation(api.demo.advancePrice, {});
+req = await requestFor(alice, item, runId + 3, "removed");
+await alice.mutation(api.cart.removeItem, { itemId: item.id });
+const afterRemove = await alice.mutation(api.purchases.decidePurchase, {
+  requestId: req.requestId,
+  quoteVersion: req.quoteVersion,
+  decision: "approve",
+});
+await sleep(2000);
+check("removed item -> approval refused", afterRemove.outcome === "invalid_state", afterRemove.outcome);
+check("removed item -> zero orders", (await ordersFor(alice, req.requestId)) === 0);
+
+// 6. a second pending request for the same item cannot buy it twice
+item = await heroReady(alice, runId + 4);
+await alice.mutation(api.demo.advancePrice, {});
+const first = await requestFor(alice, item, runId + 4, "twin-a");
+const second = await requestFor(alice, item, runId + 4, "twin-b");
+const won = await alice.mutation(api.purchases.decidePurchase, {
+  requestId: first.requestId,
+  quoteVersion: first.quoteVersion,
+  decision: "approve",
+});
+const loser = await alice.mutation(api.purchases.decidePurchase, {
+  requestId: second.requestId,
+  quoteVersion: second.quoteVersion,
+  decision: "approve",
+});
+await sleep(3000);
+check("competing request -> first approved", won.outcome === "approved", won.outcome);
+check("competing request -> second refused", loser.outcome !== "approved", loser.outcome);
+check(
+  "two requests for one item -> one order",
+  (await ordersFor(alice, first.requestId)) + (await ordersFor(alice, second.requestId)) === 1,
+  "first " + (await ordersFor(alice, first.requestId)) + ", second " + (await ordersFor(alice, second.requestId)),
+);
 
 // 4. ownership
 const mallory = await newShopper();
