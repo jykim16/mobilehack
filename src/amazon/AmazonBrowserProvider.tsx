@@ -19,12 +19,13 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { WebView, type WebViewMessageEvent, type WebViewNavigation } from 'react-native-webview';
 
-import { Colors, Spacing, Type } from '@/constants/theme';
+import { type Palette, Spacing, Type, useThemedStyles } from '@/constants/theme';
 
 import {
   AMAZON_CART_URL,
   AMAZON_ORDERS_URL,
   AMAZON_SIGNIN_URL,
+  AMAZON_SIGNOUT_URL,
   amazonOfferListingUrl,
   buildShipmentEvents,
   canonicalAmazonProductUrl,
@@ -43,8 +44,10 @@ import {
   computeLiveCartQuantityPlan,
   ConvexSyncRetryQueue,
   executeIdempotentAddItem,
+  resetAmazonSessionStores,
   selectVerifiedAddedCartItem,
   settleSubmittedOrderConfirmation,
+  shouldResetAmazonSessionOnShopperChange,
   verifyFinalCartRowQuantity,
 } from './reconcile-sync';
 import {
@@ -59,6 +62,7 @@ import {
 import {
   AMAZON_PAGE_BOOTSTRAP_JS,
   buildAodAddToCartScript,
+  buildClearWebViewSessionScript,
   buildClickProceedToCheckoutScript,
   buildInspectCheckoutReviewScript,
   buildMutateCartRowScript,
@@ -252,17 +256,32 @@ function delay(ms: number): Promise<void> {
 export interface AmazonBrowserProviderProps {
   children: React.ReactNode;
   /**
+   * Optional authenticated shopper identity (`userId` / subject).
+   * When `shopperId` transitions from a non-null ID to `null` (sign-out) or to a different
+   * shopper ID (account switch), `resetSession()` automatically wipes Amazon WebKit cookies,
+   * cached orders, cart items, and pending sync state.
+   */
+  shopperId?: string | null;
+  /**
    * Optional 5-line bridge to Convex client-sync mutations (`MOBI-9`):
    * `attachClientQuote`, `recordClientPlacement`, and `syncClientShipment`.
    */
   convexSync?: ConvexAmazonSyncClient;
 }
 
-export function AmazonBrowserProvider({ children, convexSync }: AmazonBrowserProviderProps) {
+export function AmazonBrowserProvider({
+  children,
+  shopperId = null,
+  convexSync,
+}: AmazonBrowserProviderProps) {
   const insets = useSafeAreaInsets();
   const dimensions = useWindowDimensions();
+  const styles = useThemedStyles(createProviderStyles);
   const webViewRef = useRef<NativeWebViewInstance | null>(null);
   const convexSyncRef = useRef<ConvexAmazonSyncClient | undefined>(convexSync);
+  const sessionEpochRef = useRef(0);
+  const resettingRef = useRef(false);
+  const prevShopperIdRef = useRef<string | null | undefined>(shopperId);
 
   const [isSignedIn, setIsSignedIn] = useState(false);
   const [busyCount, setBusyCount] = useState(0);
@@ -352,11 +371,13 @@ export function AmazonBrowserProvider({ children, convexSync }: AmazonBrowserPro
         setCurrentUrl(url);
         currentUrlRef.current = url;
       }
-      setChallenge(nextChallenge);
-      challengeRef.current = nextChallenge;
-      setIsSignedIn(signedIn);
-      isSignedInRef.current = signedIn;
-      if (signedIn) {
+      const effectiveSignedIn = resettingRef.current ? false : signedIn;
+      const effectiveChallenge = resettingRef.current && signedIn ? 'signin' : nextChallenge;
+      setChallenge(effectiveChallenge);
+      challengeRef.current = effectiveChallenge;
+      setIsSignedIn(effectiveSignedIn);
+      isSignedInRef.current = effectiveSignedIn;
+      if (effectiveSignedIn) {
         settleSignInWaiters(true);
       }
 
@@ -365,7 +386,7 @@ export function AmazonBrowserProvider({ children, convexSync }: AmazonBrowserPro
           if (waiter.predicate(url)) {
             clearTimeout(waiter.timer);
             pageWaitersRef.current.delete(waiter);
-            waiter.resolve({ url, signedIn, challenge: nextChallenge });
+            waiter.resolve({ url, signedIn: effectiveSignedIn, challenge: effectiveChallenge });
           }
         }
       }
@@ -488,6 +509,9 @@ export function AmazonBrowserProvider({ children, convexSync }: AmazonBrowserPro
   }, []);
 
   const syncCartRowsToState = useCallback((rows: ScrapedAmazonCartRow[], syncedAt: number): CartItem[] => {
+    if (resettingRef.current) {
+      return [];
+    }
     const existingByAsin = new Map<string, CartItem>();
     for (const item of itemsRef.current) {
       const asin = extractAsin(item.url);
@@ -511,6 +535,86 @@ export function AmazonBrowserProvider({ children, convexSync }: AmazonBrowserPro
   const flushPendingSync = useCallback(() => {
     return syncQueue.flush(convexSyncRef.current);
   }, [syncQueue]);
+
+  const resetSession = useCallback(async (): Promise<void> => {
+    sessionEpochRef.current += 1;
+    resettingRef.current = true;
+    setIsSheetOpen(false);
+    settleSignInWaiters(false);
+
+    const empty = resetAmazonSessionStores({
+      ledger: submissionLedgerRef.current,
+      syncQueue,
+      idempotencyMap: idempotencyMapRef.current,
+      productCache: productCacheRef.current,
+    });
+
+    setIsSignedIn(empty.isSignedIn);
+    isSignedInRef.current = empty.isSignedIn;
+    setChallenge(empty.challenge);
+    challengeRef.current = empty.challenge;
+    setItems(empty.items);
+    itemsRef.current = empty.items;
+    setPurchases(empty.purchases);
+    purchasesRef.current = empty.purchases;
+    setPurchasedItems(empty.purchasedItems);
+    purchasedItemsRef.current = empty.purchasedItems;
+    setPendingRequests(empty.pendingRequests);
+    pendingRequestsRef.current = empty.pendingRequests;
+    setLastSyncedAt(empty.lastSyncedAt);
+    lastSyncedAtRef.current = empty.lastSyncedAt;
+    setLastSyncError(empty.lastSyncError);
+    setPendingSyncCount(empty.pendingSyncCount);
+
+    await enqueueCommand(async () => {
+      try {
+        const nativeView = webViewRef.current as unknown as {
+          clearCache?: (includeDiskFiles: boolean) => void;
+          clearHistory?: () => void;
+        } | null;
+        nativeView?.clearCache?.(true);
+        nativeView?.clearHistory?.();
+
+        if (Platform.OS !== 'web' && webViewRef.current) {
+          await evalStep((reqId) => buildClearWebViewSessionScript(reqId), 6_000).catch(
+            () => undefined,
+          );
+          await navigateTo(AMAZON_SIGNOUT_URL, 10_000).catch(() => undefined);
+          await evalStep((reqId) => buildClearWebViewSessionScript(reqId), 6_000).catch(
+            () => undefined,
+          );
+          await navigateTo(AMAZON_SIGNIN_URL, 10_000).catch(() => undefined);
+        }
+      } finally {
+        resettingRef.current = false;
+        setIsSignedIn(false);
+        isSignedInRef.current = false;
+        setChallenge('signin');
+        challengeRef.current = 'signin';
+        setCurrentUrl(AMAZON_SIGNIN_URL);
+        currentUrlRef.current = AMAZON_SIGNIN_URL;
+      }
+    });
+  }, [enqueueCommand, evalStep, navigateTo, settleSignInWaiters, syncQueue]);
+
+  useEffect(() => {
+    const prev = prevShopperIdRef.current;
+    prevShopperIdRef.current = shopperId;
+    const hasRetained =
+      isSignedInRef.current ||
+      itemsRef.current.length > 0 ||
+      purchasesRef.current.length > 0 ||
+      pendingRequestsRef.current.length > 0;
+    if (
+      shouldResetAmazonSessionOnShopperChange({
+        prevShopperId: prev,
+        nextShopperId: shopperId,
+        hasRetainedSessionData: hasRetained,
+      })
+    ) {
+      void resetSession();
+    }
+  }, [resetSession, shopperId]);
 
   const openBrowserSheet = useCallback((initialUrl?: string) => {
     setIsSheetOpen(true);
@@ -1201,7 +1305,17 @@ export function AmazonBrowserProvider({ children, convexSync }: AmazonBrowserPro
   );
 
   const syncOrders = useCallback((): Promise<AmazonSyncOrdersResult> => {
+    const startEpoch = sessionEpochRef.current;
     return enqueueCommand(async () => {
+      if (sessionEpochRef.current !== startEpoch || resettingRef.current) {
+        return {
+          ok: false,
+          requiresSignIn: true,
+          purchases: [],
+          syncedAt: Date.now(),
+          error: 'Amazon session was reset.',
+        };
+      }
       await navigateTo(AMAZON_ORDERS_URL);
       const scraped = await evalStep<{
         signedIn: boolean;
@@ -1220,6 +1334,16 @@ export function AmazonBrowserProvider({ children, convexSync }: AmazonBrowserPro
           trackingUrl: string | null;
         }[];
       }>((reqId) => buildScrapeYourOrdersScript(reqId));
+
+      if (sessionEpochRef.current !== startEpoch || resettingRef.current) {
+        return {
+          ok: false,
+          requiresSignIn: true,
+          purchases: [],
+          syncedAt: Date.now(),
+          error: 'Amazon session was reset.',
+        };
+      }
 
       const syncedAt = Date.now();
       setLastSyncedAt(syncedAt);
@@ -1870,9 +1994,13 @@ export function AmazonBrowserProvider({ children, convexSync }: AmazonBrowserPro
   const status: AmazonSessionStatus =
     busyCount > 0 ? 'busy' : isSignedIn ? 'connected' : 'signed_out';
 
+  const normalizedShopperId =
+    typeof shopperId === 'string' && shopperId.trim().length > 0 ? shopperId.trim() : null;
+
   const sessionValue = useMemo<AmazonSessionHookValue>(
     () => ({
       status,
+      shopperId: normalizedShopperId,
       isSheetOpen,
       currentUrl,
       challenge,
@@ -1882,6 +2010,8 @@ export function AmazonBrowserProvider({ children, convexSync }: AmazonBrowserPro
       openBrowserSheet,
       closeBrowserSheet,
       ensureSignedIn,
+      resetSession,
+      signOut: resetSession,
       checkSession,
       addToCart,
       getCheckoutQuote,
@@ -1891,6 +2021,7 @@ export function AmazonBrowserProvider({ children, convexSync }: AmazonBrowserPro
     }),
     [
       status,
+      normalizedShopperId,
       isSheetOpen,
       currentUrl,
       challenge,
@@ -1900,6 +2031,7 @@ export function AmazonBrowserProvider({ children, convexSync }: AmazonBrowserPro
       openBrowserSheet,
       closeBrowserSheet,
       ensureSignedIn,
+      resetSession,
       checkSession,
       addToCart,
       getCheckoutQuote,
@@ -1928,6 +2060,7 @@ export function AmazonBrowserProvider({ children, convexSync }: AmazonBrowserPro
       decidePurchase,
       refreshCart,
       refreshPurchases,
+      resetSession,
       flushPendingSync,
     }),
     [
@@ -1948,6 +2081,7 @@ export function AmazonBrowserProvider({ children, convexSync }: AmazonBrowserPro
       decidePurchase,
       refreshCart,
       refreshPurchases,
+      resetSession,
       flushPendingSync,
     ],
   );
@@ -2036,54 +2170,56 @@ export function useAmazonCartAdapter(): AmazonCartAdapterValue {
   return ctx.adapter;
 }
 
-const styles = StyleSheet.create({
-  root: {
-    flex: 1,
-  },
-  sheetOverlay: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    zIndex: 9999,
-    backgroundColor: Colors.background,
-  },
-  sheetHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: Spacing.md,
-    paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.md,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: Colors.hairline,
-    backgroundColor: Colors.background,
-  },
-  sheetSubtitle: {
-    ...Type.secondary,
-    flex: 1,
-    color: Colors.textSecondary,
-  },
-  closeButton: {
-    paddingVertical: 6,
-    paddingHorizontal: Spacing.xs,
-  },
-  closeButtonPressed: {
-    opacity: 0.6,
-  },
-  closeButtonLabel: {
-    ...Type.body,
-    fontWeight: '600',
-    color: Colors.text,
-  },
-  loadingBar: {
-    height: 2,
-    backgroundColor: Colors.accent,
-  },
-  webViewFrame: {
-    flex: 1,
-    backgroundColor: Colors.surface,
-  },
-  webView: {
-    flex: 1,
-  },
-});
+function createProviderStyles(colors: Palette) {
+  return StyleSheet.create({
+    root: {
+      flex: 1,
+    },
+    sheetOverlay: {
+      position: 'absolute',
+      top: 0,
+      left: 0,
+      zIndex: 9999,
+      backgroundColor: colors.background,
+    },
+    sheetHeader: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      gap: Spacing.md,
+      paddingHorizontal: Spacing.lg,
+      paddingVertical: Spacing.md,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: colors.hairline,
+      backgroundColor: colors.background,
+    },
+    sheetSubtitle: {
+      ...Type.secondary,
+      flex: 1,
+      color: colors.textSecondary,
+    },
+    closeButton: {
+      paddingVertical: 6,
+      paddingHorizontal: Spacing.xs,
+    },
+    closeButtonPressed: {
+      opacity: 0.6,
+    },
+    closeButtonLabel: {
+      ...Type.body,
+      fontWeight: '600',
+      color: colors.text,
+    },
+    loadingBar: {
+      height: 2,
+      backgroundColor: colors.accent,
+    },
+    webViewFrame: {
+      flex: 1,
+      backgroundColor: colors.surface,
+    },
+    webView: {
+      flex: 1,
+    },
+  });
+}

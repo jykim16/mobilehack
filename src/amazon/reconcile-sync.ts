@@ -335,6 +335,12 @@ export class ConvexSyncRetryQueue {
     return this.lastError;
   }
 
+  clear(): void {
+    this.jobs.clear();
+    this.lastError = null;
+    this.emit();
+  }
+
   private emit(): void {
     this.onStateChange?.({
       pendingCount: this.jobs.size,
@@ -579,5 +585,71 @@ export async function settleSubmittedOrderConfirmation(params: {
     quote: params.verifiedQuote,
     shipment: initialShipment,
     syncError: syncRes.lastSyncError,
+  };
+}
+
+/**
+ * Decide whether a change in authenticated app `shopperId` must reset the persistent Amazon
+ * WebView session, cached orders, cart state, and sync queues.
+ *
+ * - Switching from a non-empty `prevShopperId` to `null`/`undefined` (sign-out) or to a different
+ *   `nextShopperId` (account switch) ALWAYS triggers a full reset.
+ * - Hydrating from `null`/`undefined` to a `nextShopperId` triggers a reset only if pre-auth
+ *   Amazon session/cart/order state was already present, avoiding redundant sign-out navigations
+ *   on clean cold launches.
+ */
+export function shouldResetAmazonSessionOnShopperChange(params: {
+  prevShopperId: string | null | undefined;
+  nextShopperId: string | null | undefined;
+  hasRetainedSessionData?: boolean;
+}): boolean {
+  const prev = typeof params.prevShopperId === 'string' ? params.prevShopperId.trim() : '';
+  const next = typeof params.nextShopperId === 'string' ? params.nextShopperId.trim() : '';
+  if (prev === next) return false;
+  if (prev.length > 0) {
+    return true;
+  }
+  return Boolean(params.hasRetainedSessionData && next.length > 0);
+}
+
+export interface ResettableAmazonStores<TCacheValue = unknown> {
+  ledger: OrderSubmissionLedger;
+  syncQueue: ConvexSyncRetryQueue;
+  idempotencyMap: Map<string, string>;
+  productCache: Map<string, TCacheValue>;
+}
+
+/**
+ * Synchronously wipe all in-memory idempotency, ledger, product metadata, and Convex retry stores
+ * during `resetSession()` / shopper sign-out and return a clean empty state snapshot.
+ */
+export function resetAmazonSessionStores<TCacheValue = unknown>(
+  stores: ResettableAmazonStores<TCacheValue>,
+): {
+  isSignedIn: false;
+  challenge: 'none';
+  items: CartItem[];
+  purchases: Purchase[];
+  purchasedItems: Record<string, CartItem>;
+  pendingRequests: PurchaseRequest[];
+  lastSyncedAt: null;
+  lastSyncError: null;
+  pendingSyncCount: 0;
+} {
+  stores.ledger.clear();
+  stores.syncQueue.clear();
+  stores.idempotencyMap.clear();
+  stores.productCache.clear();
+
+  return {
+    isSignedIn: false,
+    challenge: 'none',
+    items: [],
+    purchases: [],
+    purchasedItems: {},
+    pendingRequests: [],
+    lastSyncedAt: null,
+    lastSyncError: null,
+    pendingSyncCount: 0,
   };
 }

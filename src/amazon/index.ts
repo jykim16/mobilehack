@@ -9,6 +9,7 @@ export {
   AMAZON_CART_URL,
   AMAZON_ORDERS_URL,
   AMAZON_SIGNIN_URL,
+  AMAZON_SIGNOUT_URL,
   amazonOfferListingUrl,
   buildShipmentEvents,
   canonicalAmazonProductUrl,
@@ -43,8 +44,11 @@ export {
   executeIdempotentAddItem,
   type LiveQuantityMutationPlan,
   type PendingConvexSyncJob,
+  resetAmazonSessionStores,
+  type ResettableAmazonStores,
   selectVerifiedAddedCartItem,
   settleSubmittedOrderConfirmation,
+  shouldResetAmazonSessionOnShopperChange,
   verifyFinalCartRowQuantity,
 } from './reconcile-sync';
 export {

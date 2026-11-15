@@ -47,6 +47,8 @@ export function amazonOfferListingUrl(asin: string): string {
 
 export const AMAZON_CART_URL = 'https://www.amazon.com/gp/cart/view.html';
 export const AMAZON_ORDERS_URL = 'https://www.amazon.com/your-orders/orders';
+export const AMAZON_SIGNOUT_URL =
+  'https://www.amazon.com/gp/flex/sign-out.html?action=sign-out&path=%2Fgp%2Fyourstore%2Fhome';
 export const AMAZON_SIGNIN_URL =
   'https://www.amazon.com/ap/signin?openid.pape.max_auth_age=0&openid.return_to=https%3A%2F%2Fwww.amazon.com%2Fgp%2Fcart%2Fview.html&openid.identity=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select&openid.assoc_handle=anywhere_v2_us&openid.mode=checkid_setup&language=en_US&openid.claimed_id=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select&openid.ns=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0';
 

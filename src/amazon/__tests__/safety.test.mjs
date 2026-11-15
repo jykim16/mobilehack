@@ -24,6 +24,7 @@ import {
 } from '../safety.ts';
 import {
   buildAodAddToCartScript,
+  buildClearWebViewSessionScript,
   buildInspectCheckoutReviewScript,
   buildMutateCartRowScript,
   buildScrapeCartScript,
@@ -51,8 +52,10 @@ const {
   computeLiveCartQuantityPlan,
   ConvexSyncRetryQueue,
   executeIdempotentAddItem,
+  resetAmazonSessionStores,
   selectVerifiedAddedCartItem,
   settleSubmittedOrderConfirmation,
+  shouldResetAmazonSessionOnShopperChange,
   verifyFinalCartRowQuantity,
 } = await import('../reconcile-sync.ts');
 
@@ -1358,4 +1361,161 @@ test('(h.10) shouldStartFreshSignInNavigation preserves active /ap/mfa, /ap/cvf,
     }),
     true,
   );
+});
+
+// ============================================================================
+// (i) Shopper Account Scoping & resetSession() / signOut() Isolation (JON-31)
+// ============================================================================
+
+test('(i.1) shouldResetAmazonSessionOnShopperChange triggers on sign-out and account switch without cold-boot churn', () => {
+  // Same shopper ID -> no reset
+  assert.equal(
+    shouldResetAmazonSessionOnShopperChange({
+      prevShopperId: 'user_A',
+      nextShopperId: 'user_A',
+      hasRetainedSessionData: true,
+    }),
+    false,
+  );
+
+  // Clean cold-boot auth hydration (null -> user_A) with no prior Amazon data -> no reset
+  assert.equal(
+    shouldResetAmazonSessionOnShopperChange({
+      prevShopperId: null,
+      nextShopperId: 'user_A',
+      hasRetainedSessionData: false,
+    }),
+    false,
+  );
+
+  // Sign-out (user_A -> null) -> MUST reset
+  assert.equal(
+    shouldResetAmazonSessionOnShopperChange({
+      prevShopperId: 'user_A',
+      nextShopperId: null,
+      hasRetainedSessionData: false,
+    }),
+    true,
+  );
+
+  // Direct account switch (user_A -> user_B) -> MUST reset
+  assert.equal(
+    shouldResetAmazonSessionOnShopperChange({
+      prevShopperId: 'user_A',
+      nextShopperId: 'user_B',
+      hasRetainedSessionData: true,
+    }),
+    true,
+  );
+
+  // Pre-auth anonymous Amazon session followed by sign-in (null -> user_B) -> MUST reset
+  assert.equal(
+    shouldResetAmazonSessionOnShopperChange({
+      prevShopperId: null,
+      nextShopperId: 'user_B',
+      hasRetainedSessionData: true,
+    }),
+    true,
+  );
+});
+
+test('(i.2) resetAmazonSessionStores + buildClearWebViewSessionScript wipe ledger, retry queue, caches, and WebView storage/cookies', async () => {
+  const ledger = new OrderSubmissionLedger();
+  ledger.recordPlaced('CART-OLD-USER-A', '114-1234567-7654321', 1_700_000_000_000);
+
+  let latestSnap = { pendingCount: 0, lastSyncError: null };
+  const syncQueue = new ConvexSyncRetryQueue((snap) => {
+    latestSnap = snap;
+  });
+  await syncQueue.enqueuePlacement(
+    {
+      orderRef: 'CART-OLD-USER-A',
+      retailerOrderId: '114-1234567-7654321',
+      placedAt: 1_700_000_000_000,
+    },
+    {
+      recordClientPlacement: async () => {
+        throw new Error('Backend error before sign-out');
+      },
+    },
+  );
+  assert.equal(syncQueue.pendingCount, 1);
+  assert.equal(syncQueue.lastSyncError, 'Backend error before sign-out');
+
+  const idempotencyMap = new Map([['idem-1', 'amz-item-B09XS7JWHH']]);
+  const productCache = new Map([['B09XS7JWHH', { title: 'Sony WH-1000XM5' }]]);
+
+  const empty = resetAmazonSessionStores({
+    ledger,
+    syncQueue,
+    idempotencyMap,
+    productCache,
+  });
+
+  assert.equal(empty.isSignedIn, false);
+  assert.deepEqual(empty.items, []);
+  assert.deepEqual(empty.purchases, []);
+  assert.deepEqual(empty.purchasedItems, {});
+  assert.deepEqual(empty.pendingRequests, []);
+  assert.equal(empty.lastSyncedAt, null);
+  assert.equal(empty.lastSyncError, null);
+  assert.equal(ledger.get('CART-OLD-USER-A'), undefined);
+  assert.equal(syncQueue.pendingCount, 0);
+  assert.equal(syncQueue.lastSyncError, null);
+  assert.equal(latestSnap.pendingCount, 0);
+  assert.equal(latestSnap.lastSyncError, null);
+  assert.equal(idempotencyMap.size, 0);
+  assert.equal(productCache.size, 0);
+
+  // Verify buildClearWebViewSessionScript expires accessible cookies and clears Web Storage without returning values
+  const expiredWrites = [];
+  let localCleared = false;
+  let sessionCleared = false;
+
+  const docMock = {
+    get cookie() {
+      return 'csm-hit=tb:123; skin=noskin';
+    },
+    set cookie(val) {
+      expiredWrites.push(val);
+    },
+    querySelector: () => null,
+    querySelectorAll: () => [],
+  };
+
+  const sandboxMessages = [];
+  const context = vm.createContext({
+    console,
+    Date,
+    Math,
+    document: docMock,
+    location: { pathname: '/', href: 'https://www.amazon.com/' },
+    window: {
+      localStorage: {
+        clear: () => {
+          localCleared = true;
+        },
+      },
+      sessionStorage: {
+        clear: () => {
+          sessionCleared = true;
+        },
+      },
+      ReactNativeWebView: {
+        postMessage: (raw) => sandboxMessages.push(JSON.parse(raw)),
+      },
+    },
+  });
+  context.window.document = docMock;
+
+  vm.runInContext(buildClearWebViewSessionScript('req-clear-session'), context);
+  await new Promise((r) => setTimeout(r, 10));
+
+  assert.equal(sandboxMessages.length, 1);
+  assert.equal(sandboxMessages[0].ok, true);
+  assert.equal(sandboxMessages[0].data.clearedCookies, 2);
+  assert.equal(localCleared, true);
+  assert.equal(sessionCleared, true);
+  assert.ok(expiredWrites.length >= 2);
+  assert.ok(expiredWrites.every((w) => w.includes('Max-Age=0') && !w.includes('tb:123')));
 });
