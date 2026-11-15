@@ -1,4 +1,4 @@
-# Open Connect an agent from the Cart menu and create a bearer token.
+# Open Connect an agent from Account and create a bearer token.
 test:
   metadata:
     name: cart-connect-agent
@@ -20,7 +20,7 @@ test:
     - type: instructions
       step_description: "On the Create your account screen, enter {{shopper_email}} as the email and {{password}} as the password, then tap Create account."
     - type: instructions
-      step_description: "Tap the Cart button, then tap the more button (three dots) at the top right and choose Connect an agent."
+      step_description: "Tap the Account tab in the bottom tab bar, then tap Connect an agent."
     - type: validation
       step_description: "The Connect an agent screen shows an MCP server URL and an Agent name field."
     - type: instructions

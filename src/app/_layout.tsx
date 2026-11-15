@@ -1,6 +1,7 @@
 import { DarkTheme, DefaultTheme, Stack, ThemeProvider } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useColorScheme } from 'react-native';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
 import { useColors } from '@/constants/theme';
 import { ShopProvider } from '@/data/shop-store';
@@ -14,34 +15,27 @@ export default function RootLayout() {
     colors: { ...base.colors, background: Colors.background, card: Colors.background, primary: Colors.accent },
   };
   return (
-    <ThemeProvider value={theme}>
-      <SessionProvider>
-        <ShopProvider>
-          <StatusBar style="auto" />
-          <RootStack />
-        </ShopProvider>
-      </SessionProvider>
-    </ThemeProvider>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <ThemeProvider value={theme}>
+        <SessionProvider>
+          <ShopProvider>
+            <StatusBar style="auto" />
+            <RootStack />
+          </ShopProvider>
+        </SessionProvider>
+      </ThemeProvider>
+    </GestureHandlerRootView>
   );
 }
 
 function RootStack() {
   const Colors = useColors();
-  const sheetOptions = {
-    presentation: 'formSheet',
-    sheetGrabberVisible: true,
-    sheetCornerRadius: 24,
-    contentStyle: { backgroundColor: Colors.sheet },
-  } as const;
   const needsSignIn = useSession() === 'signed_out';
   return (
     <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: Colors.background } }}>
       <Stack.Protected guard={!needsSignIn}>
-        <Stack.Screen name="index" />
-        <Stack.Screen name="cart" />
+        <Stack.Screen name="(tabs)" />
         <Stack.Screen name="connect-agent" />
-        <Stack.Screen name="price-history/[id]" options={{ ...sheetOptions, sheetAllowedDetents: [0.82] }} />
-        <Stack.Screen name="checkout" options={{ ...sheetOptions, sheetAllowedDetents: [0.75] }} />
         <Stack.Screen name="item/[id]" options={{ presentation: 'fullScreenModal' }} />
         <Stack.Screen name="purchase/[id]" options={{ presentation: 'fullScreenModal' }} />
         <Stack.Screen name="reviews/[id]" options={{ presentation: 'modal', contentStyle: { backgroundColor: Colors.sheet } }} />

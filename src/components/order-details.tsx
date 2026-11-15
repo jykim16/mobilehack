@@ -24,11 +24,26 @@ export function CloseButton() {
   );
 }
 
-export function DetailSection({ title, children }: { title: string; children: ReactNode }) {
+export function DetailSection({
+  title,
+  action,
+  children,
+}: {
+  title: string;
+  action?: { label: string; onPress: () => void };
+  children: ReactNode;
+}) {
   const styles = useThemedStyles(createStyles);
   return (
     <View style={styles.section}>
-      <Text style={styles.sectionTitle}>{title}</Text>
+      <View style={styles.sectionHeader}>
+        <Text style={styles.sectionTitle}>{title}</Text>
+        {action && (
+          <Pressable accessibilityRole="button" hitSlop={8} onPress={action.onPress}>
+            {({ pressed }) => <Text style={[styles.sectionAction, pressed && styles.sectionActionPressed]}>{action.label}</Text>}
+          </Pressable>
+        )}
+      </View>
       {children}
     </View>
   );
@@ -121,7 +136,10 @@ const createStyles = (Colors: Palette) => StyleSheet.create({
     justifyContent: 'center',
   },
   section: { backgroundColor: Colors.surface, borderRadius: Radius.card, padding: Spacing.lg, gap: Spacing.lg },
+  sectionHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   sectionTitle: { ...Type.headline, color: Colors.text },
+  sectionAction: { ...Type.body, color: Colors.textSecondary },
+  sectionActionPressed: { color: Colors.text },
   rows: { gap: Spacing.md },
   row: { flexDirection: 'row', justifyContent: 'space-between', gap: Spacing.lg },
   rowLabel: { ...Type.body, color: Colors.textSecondary, flexShrink: 1 },

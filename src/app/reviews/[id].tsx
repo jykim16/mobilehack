@@ -5,11 +5,11 @@ import { useState } from 'react';
 import { ActivityIndicator, FlatList, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { RetailerLogo } from '@/components/product-bits';
-import { BrandColors, Radius, Spacing, Type, tabularNumbers, useColors, useThemedStyles, type Palette } from '@/constants/theme';
+import { reviewMeta, SourceLogo, summaryLine } from '@/components/review-bits';
+import { Radius, Spacing, Type, tabularNumbers, useColors, useThemedStyles, type Palette } from '@/constants/theme';
 import { useItem, useReviews } from '@/data/shop-store';
-import type { Rating, Review, ReviewList, ReviewSource } from '@/data/types';
-import { formatCount, formatPostedDate } from '@/lib/format';
+import type { Review, ReviewList, ReviewSource } from '@/data/types';
+import { formatPostedDate } from '@/lib/format';
 
 type Filter = 'all' | ReviewSource;
 
@@ -89,22 +89,6 @@ export default function ReviewsSheet() {
   );
 }
 
-const retailerSources = new Set<ReviewSource>(['amazon', 'bestbuy', 'other']);
-
-/** Retailer rating counts plus the social comments, e.g. "4.5 ★ · 29.6K reviews across 4 sources". */
-function summaryLine({ bySource }: ReviewList, rating: Rating | null) {
-  const social = bySource.filter((entry) => !retailerSources.has(entry.source));
-  const counted = rating ? social : bySource;
-  const total = (rating?.count ?? 0) + counted.reduce((sum, entry) => sum + entry.count, 0);
-  const sourceCount = (rating?.retailers.length ?? 0) + counted.length;
-  const rated = bySource.filter((entry) => entry.average !== null);
-  const ratedCount = rated.reduce((sum, entry) => sum + entry.count, 0);
-  const average =
-    rating?.average ?? (ratedCount ? rated.reduce((sum, entry) => sum + (entry.average ?? 0) * entry.count, 0) / ratedCount : null);
-  const sources = `${formatCount(total)} reviews across ${sourceCount} ${sourceCount === 1 ? 'source' : 'sources'}`;
-  return average !== null ? `${average.toFixed(1)} ★ · ${sources}` : sources;
-}
-
 function sourceFilters({ reviews, bySource }: ReviewList) {
   return bySource
     .filter((entry) => reviews.some((review) => review.source === entry.source))
@@ -114,38 +98,11 @@ function sourceFilters({ reviews, bySource }: ReviewList) {
     });
 }
 
-const socialLogos: Partial<Record<ReviewSource, { icon: keyof typeof Ionicons.glyphMap; background: string; foreground: string }>> = {
-  reddit: { icon: 'logo-reddit', background: BrandColors.reddit, foreground: BrandColors.onBrand },
-  x: { icon: 'logo-x', background: BrandColors.onBrand, foreground: BrandColors.x },
-  youtube: { icon: 'logo-youtube', background: BrandColors.youtube, foreground: BrandColors.onBrand },
-};
-
-const scoreUnits: Partial<Record<ReviewSource, string>> = { reddit: 'upvotes', x: 'likes', youtube: 'likes' };
-
-function SourceLogo({ review }: { review: Review }) {
-  const styles = useThemedStyles(createStyles);
-  const social = socialLogos[review.source];
-  if (!social) {
-    const retailer = review.source === 'other' ? review.sourceName.toLowerCase().replace(/\W/g, '') : review.source;
-    return <RetailerLogo retailer={retailer} retailerName={review.sourceName} size={28} />;
-  }
-  return (
-    <View style={[styles.logo, { backgroundColor: social.background }]}>
-      <Ionicons name={social.icon} size={16} color={social.foreground} />
-    </View>
-  );
-}
-
 function ReviewRow({ review }: { review: Review }) {
   const Colors = useColors();
   const styles = useThemedStyles(createStyles);
   const [expanded, setExpanded] = useState(false);
-  const meta = [
-    review.author ? review.sourceName : null,
-    review.rating !== null ? `${review.rating} ★` : review.score !== null ? `${formatCount(review.score)} ${scoreUnits[review.source] ?? 'helpful'}` : null,
-  ]
-    .filter(Boolean)
-    .join(' · ');
+  const meta = reviewMeta(review);
 
   return (
     <View style={styles.row}>
@@ -216,7 +173,6 @@ const createStyles = (Colors: Palette) => StyleSheet.create({
   authorRow: { flexDirection: 'row', justifyContent: 'space-between', gap: Spacing.md },
   author: { ...Type.body, fontWeight: '600', color: Colors.text, flexShrink: 1 },
   date: { ...Type.secondary, color: Colors.textSecondary },
-  logo: { width: 28, height: 28, borderRadius: Radius.pill, alignItems: 'center', justifyContent: 'center' },
   text: { ...Type.body, color: Colors.text },
   link: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-start', gap: 2 },
   linkText: { ...Type.secondary, color: Colors.textSecondary },

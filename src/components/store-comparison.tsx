@@ -3,7 +3,7 @@ import { useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { RetailerLogo } from '@/components/product-bits';
-import { Colors, Spacing, Type, tabularNumbers } from '@/constants/theme';
+import { Spacing, Type, tabularNumbers, useColors, useThemedStyles, type Palette } from '@/constants/theme';
 import type { PriceComparison } from '@/data/types';
 import { formatAgo, formatPrice } from '@/lib/format';
 
@@ -12,8 +12,8 @@ const pending = new Set<PriceComparison['status']>(['running', 'verifying']);
 const retailerKey = (retailer: string) => retailer.toLowerCase().replace(/\W/g, '');
 
 /**
- * Verified listings at other stores, with refused candidates muted beside their reason. It loads on its
- * own after the rest of the sheet, so it only ever shows a quiet progress line while the lookup runs.
+ * Listings other stores reported for the same product, with refused candidates muted beside their reason.
+ * The lookup finishes after the rest of the sheet, so while it runs it only shows a quiet progress line.
  */
 export function StoreComparison({
   comparison,
@@ -24,6 +24,8 @@ export function StoreComparison({
   savedPriceCents: number | null;
   demo: boolean;
 }) {
+  const Colors = useColors();
+  const styles = useThemedStyles(createStyles);
   const [now] = useState(Date.now);
   const checking = pending.has(comparison.status);
   const priced = comparison.offers.filter((offer) => offer.priceCents !== null);
@@ -39,7 +41,7 @@ export function StoreComparison({
           offer.condition,
           offer.availability,
           offer.shippingCents ? `+${formatPrice(offer.shippingCents, offer.currency ?? 'USD')} shipping` : null,
-          offer.verifiedAt ? `Checked ${formatAgo(offer.verifiedAt, now)}` : null,
+          offer.checkedAt ? `Reported ${formatAgo(offer.checkedAt, now)}` : null,
         ]
           .filter(Boolean)
           .join(' · ');
@@ -91,7 +93,7 @@ export function StoreComparison({
   );
 }
 
-const styles = StyleSheet.create({
+const createStyles = (Colors: Palette) => StyleSheet.create({
   rows: { gap: Spacing.lg },
   row: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
   pressed: { opacity: 0.6 },

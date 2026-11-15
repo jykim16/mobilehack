@@ -1,43 +1,31 @@
-import { router } from 'expo-router';
 import type { ReactNode } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
-import { PillButton } from '@/components/pill-button';
-import { ProductImage, RatingText } from '@/components/product-bits';
+import { ProductImage } from '@/components/product-bits';
 import { Spacing, Type, useThemedStyles, type Palette } from '@/constants/theme';
-import type { Rating } from '@/data/types';
 
+/** Image, title, and variant with screen-specific details beside them; tapping the body opens the detail sheet. */
 export function ItemCard({
-  itemId,
   title,
   subtitle,
   imageUrl,
-  rating,
-  actionLabel,
-  actionVariant,
-  actionDisabled,
-  onAction,
   onOpen,
   children,
+  footer,
 }: {
-  itemId: string;
   title: string;
   subtitle: string | null;
   imageUrl: string | null | undefined;
-  rating: Rating | null;
-  actionLabel: string;
-  actionVariant: 'strong' | 'secondary';
-  actionDisabled?: boolean;
-  onAction: () => void;
   onOpen: () => void;
   children?: ReactNode;
+  footer?: ReactNode;
 }) {
   const styles = useThemedStyles(createStyles);
   return (
     <View style={styles.container}>
       <Pressable
-        accessible={false}
-        testID={`item-${itemId}`}
+        accessibilityRole="button"
+        accessibilityLabel={`${title}, details`}
         onPress={onOpen}
         style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}>
         <ProductImage imageUrl={imageUrl} size={88} />
@@ -50,22 +38,10 @@ export function ItemCard({
               {subtitle}
             </Text>
           )}
-          <RatingText
-            rating={rating}
-            onPress={() => router.push({ pathname: '/reviews/[id]', params: { id: itemId } })}
-          />
           {children}
         </View>
       </Pressable>
-      <View style={styles.footer}>
-        <Pressable
-          accessibilityRole="button"
-          hitSlop={12}
-          onPress={() => router.push({ pathname: '/price-history/[id]', params: { id: itemId } })}>
-          {({ pressed }) => <Text style={[styles.priceHistory, pressed && styles.pressed]}>Price history</Text>}
-        </Pressable>
-        <PillButton label={actionLabel} variant={actionVariant} size="small" disabled={actionDisabled} onPress={onAction} />
-      </View>
+      {footer}
     </View>
   );
 }
@@ -77,7 +53,4 @@ const createStyles = (Colors: Palette) => StyleSheet.create({
   details: { flex: 1, gap: 2 },
   title: { ...Type.headline, fontSize: 16, lineHeight: 21, color: Colors.text },
   variant: { ...Type.secondary, color: Colors.textSecondary },
-  footer: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  priceHistory: { ...Type.body, color: Colors.textSecondary },
-  pressed: { color: Colors.text },
 });

@@ -3,10 +3,14 @@ import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from 'react-nat
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { CloseButton, DetailSection, PaymentRows, ReceiptRows } from '@/components/order-details';
-import { ProductImage, RatingText, RetailerLogo } from '@/components/product-bits';
-import { Radius, Spacing, Type, useColors, useThemedStyles, type Palette } from '@/constants/theme';
-import { useItem, usePurchaseRequest } from '@/data/shop-store';
-import { formatShortDate } from '@/lib/format';
+import { PriceHistoryChart } from '@/components/price-history-chart';
+import { PriceText, ProductImage, RatingText, RetailerLogo } from '@/components/product-bits';
+import { ReviewPreview } from '@/components/review-preview';
+import { StoreComparison } from '@/components/store-comparison';
+import { Spacing, Type, useColors, useThemedStyles, type Palette } from '@/constants/theme';
+import { itemComparison, itemOffer, useItem, usePurchaseRequest } from '@/data/shop-store';
+import type { CartItem, Offer, Price, PriceHistory } from '@/data/types';
+import { formatPrice, formatShortDate } from '@/lib/format';
 
 export default function ItemDetails() {
   const Colors = useColors();
@@ -25,7 +29,12 @@ export default function ItemDetails() {
     );
   }
 
-  const { offer, price } = item;
+  const { priceHistory } = item;
+  const offer = itemOffer(item);
+  const price = offer ? estimate(item, offer) : null;
+  const store = offer ?? item.offer;
+  const availability = item.offerAvailability?.note;
+  const { comparison, demo } = itemComparison(item);
 
   return (
     <View style={[styles.screen, { paddingTop: insets.top + Spacing.sm }]}>
@@ -33,23 +42,54 @@ export default function ItemDetails() {
         <CloseButton />
       </View>
       <ScrollView contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + Spacing.xxxl }]}>
-        <View style={styles.hero}>
-          <ProductImage imageUrl={item.product?.imageUrl} size={240} />
+        <View style={styles.product}>
+          <ProductImage imageUrl={item.product?.imageUrl} size={88} />
+          <View style={styles.productText}>
+            <Text style={styles.title} numberOfLines={3}>
+              {item.product?.title ?? item.url}
+            </Text>
+            {item.variant && <Text style={styles.muted}>{item.variant.label}</Text>}
+            {store && (
+              <View style={styles.retailer}>
+                <RetailerLogo retailer={store.retailer} retailerName={store.retailerName} size={18} />
+                <Text style={styles.muted} numberOfLines={1}>
+                  {store.retailerName} · {store.deliveryEstimate}
+                </Text>
+              </View>
+            )}
+            <RatingText rating={item.rating} onPress={() => router.push({ pathname: '/reviews/[id]', params: { id: item.id } })} />
+          </View>
         </View>
 
-        <View style={styles.titleBlock}>
-          <Text style={styles.title}>{item.product?.title ?? item.url}</Text>
-          {item.variant && <Text style={styles.muted}>{item.variant.label}</Text>}
-          {offer && (
-            <View style={styles.retailer}>
-              <RetailerLogo retailer={offer.retailer} retailerName={offer.retailerName} size={20} />
-              <Text style={styles.muted}>
-                {offer.retailerName} · {offer.deliveryEstimate}
-              </Text>
+        {availability && <Text style={styles.muted}>{availability}</Text>}
+
+        {offer && (
+          <DetailSection title="Price history">
+            <View>
+              <PriceText priceCents={offer.priceCents} listPriceCents={offer.listPriceCents} />
+              {priceHistory && !priceHistory.trackingSinceAdded && <Text style={styles.muted}>{historyLine(priceHistory)}</Text>}
             </View>
-          )}
-          <RatingText rating={item.rating} onPress={() => router.push({ pathname: '/reviews/[id]', params: { id: item.id } })} />
-        </View>
+            {priceHistory?.trackingSinceAdded ? (
+              <Text style={styles.muted}>Tracking since added. Cart charts this price as it changes.</Text>
+            ) : priceHistory && priceHistory.points.length >= 2 ? (
+              <PriceHistoryChart
+                points={priceHistory.points}
+                sampled={priceHistory.sampled ?? false}
+                caption={priceHistory.sampled ? 'Sampled from Keepa' : (priceHistory.seriesLabel ?? null)}
+              />
+            ) : (
+              <Text style={styles.muted}>Not enough price history yet.</Text>
+            )}
+          </DetailSection>
+        )}
+
+        <ReviewPreview item={item} />
+
+        {comparison && (
+          <DetailSection title="Other stores">
+            <StoreComparison comparison={comparison} savedPriceCents={offer?.priceCents ?? null} demo={demo} />
+          </DetailSection>
+        )}
 
         {(quote || price) && (
           <DetailSection title="Purchase details">
@@ -81,7 +121,7 @@ export default function ItemDetails() {
             <Text style={styles.footnote}>
               {quote
                 ? `Quoted by ${quote.retailerName} ${formatShortDate(quote.quotedAt)}.`
-                : 'Estimate. The final total is confirmed when you review the order.'}
+                : 'Estimate. The final total is set when you check out.'}
             </Text>
           </DetailSection>
         )}
@@ -90,10 +130,37 @@ export default function ItemDetails() {
           <PaymentRows />
         </DetailSection>
 
-        {offer && <Text style={styles.footnote}>{offer.returnSummary}</Text>}
+        {store && <Text style={styles.footnote}>{store.returnSummary}</Text>}
       </ScrollView>
     </View>
   );
+}
+
+/** The saved estimate when Cart prices the saved offer; for a swapped-in new offer, the same tax rate applied to its price. */
+function estimate(item: CartItem, offer: Offer): Price | null {
+  const saved = item.price;
+  if (!saved) return null;
+  if (offer.id === item.offer?.id) return saved;
+  const subtotalCents = offer.priceCents * item.quantity;
+  const taxCents = saved.subtotalCents > 0 ? Math.round((subtotalCents * saved.taxCents) / saved.subtotalCents) : 0;
+  return {
+    ...saved,
+    currentCents: offer.priceCents,
+    listPriceCents: offer.listPriceCents,
+    subtotalCents,
+    taxCents,
+    shippingCents: offer.shippingCents,
+    totalCents: subtotalCents + taxCents + offer.shippingCents,
+  };
+}
+
+function historyLine({ points, lowCents, highCents, currentCents, note }: PriceHistory) {
+  if (points.length < 2) return '';
+  const days = Math.round((points[points.length - 1].observedAt - points[0].observedAt) / 86_400_000);
+  if (lowCents === null || highCents === null) return note ?? `${points.length} prices over ${days} days`;
+  if (currentCents <= lowCents) return `Lowest price in ${days} days`;
+  if (highCents > currentCents) return `${formatPrice(highCents - currentCents)} below its ${days}-day high`;
+  return `At its ${days}-day high`;
 }
 
 const createStyles = (Colors: Palette) => StyleSheet.create({
@@ -101,10 +168,10 @@ const createStyles = (Colors: Palette) => StyleSheet.create({
   loading: { alignItems: 'center', justifyContent: 'center' },
   header: { flexDirection: 'row', paddingHorizontal: Spacing.lg, paddingBottom: Spacing.sm },
   content: { paddingHorizontal: Spacing.lg, paddingTop: Spacing.sm, gap: Spacing.xxl },
-  hero: { alignItems: 'center', backgroundColor: Colors.imageTile, borderRadius: Radius.card, paddingVertical: Spacing.lg },
-  titleBlock: { gap: Spacing.xs },
-  title: { ...Type.title, color: Colors.text },
+  product: { flexDirection: 'row', gap: Spacing.lg },
+  productText: { flex: 1, gap: 2 },
+  title: { ...Type.headline, color: Colors.text },
   muted: { ...Type.secondary, color: Colors.textSecondary },
-  retailer: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, marginVertical: Spacing.xs },
+  retailer: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, marginVertical: 2 },
   footnote: { ...Type.secondary, color: Colors.textTertiary },
 });

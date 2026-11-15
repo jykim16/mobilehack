@@ -1,4 +1,4 @@
-# Open a purchase and check the shipment tracking timeline.
+# Check out an item, open the purchase, and check the shipment tracking timeline.
 test:
   metadata:
     name: cart-purchase-tracking
@@ -20,7 +20,7 @@ test:
     - type: module_import
       module: "cart-sign-up"
     - type: instructions
-      step_description: "Tap Buy on the first item card, then tap Approve on the Review order sheet."
+      step_description: "Tap Checkout on the first item card, wait for the Ordered message, then tap the Purchases tab."
     - type: validation
       step_description: "The Purchases tab shows the purchased item."
     - type: manual

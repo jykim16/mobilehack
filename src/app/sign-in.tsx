@@ -5,6 +5,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { PillButton } from '@/components/pill-button';
 import { Radius, Spacing, Type, useColors, useThemedStyles, type Palette } from '@/constants/theme';
+import { rememberAccountEmail } from '@/lib/session';
 
 type Flow = 'signUp' | 'signIn';
 
@@ -34,7 +35,9 @@ export default function SignInScreen() {
     setBusy(true);
     setError(null);
     try {
-      await signIn('password', { email: email.trim().toLowerCase(), password, flow });
+      const normalized = email.trim().toLowerCase();
+      await signIn('password', { email: normalized, password, flow });
+      await rememberAccountEmail(normalized);
     } catch (e) {
       setError(authError(e, flow));
       setBusy(false);
