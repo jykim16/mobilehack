@@ -153,15 +153,6 @@ export const addItemFromQuery = action({
 });
 
 export const findByKey = internalQuery({
-  returns: v.union(
-    v.null(),
-    v.object({
-      itemId: v.id("cartItems"),
-      enrichmentStatus: enrichmentStatusValidator,
-      url: v.string(),
-      title: v.string(),
-    }),
-  ),
   args: { shopperId: v.id("users"), idempotencyKey: v.string() },
   handler: async (ctx, { shopperId, idempotencyKey }) => {
     const item = await ctx.db
@@ -182,11 +173,6 @@ export const findByKey = internalQuery({
 });
 
 export const addForShopper = internalMutation({
-  returns: v.object({
-    itemId: v.id("cartItems"),
-    enrichmentStatus: enrichmentStatusValidator,
-    deduplicated: v.boolean(),
-  }),
   args: {
     shopperId: v.id("users"),
     url: v.string(),

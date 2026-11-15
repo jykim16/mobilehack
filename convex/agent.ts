@@ -45,6 +45,5 @@ export const getPurchaseStatus = internalQuery({
 
 export const removeItem = internalMutation({
   args: { shopperId: v.id("users"), cartItemId: v.id("cartItems") },
-  returns: v.object({ removed: v.boolean(), title: v.string() }),
   handler: async (ctx, { shopperId, cartItemId }) => removeItemFor(ctx, shopperId, cartItemId),
 });

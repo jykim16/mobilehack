@@ -23,10 +23,11 @@ const check = (label, ok, detail) => {
   console.log(`${ok ? "PASS" : "FAIL"}  ${label}${detail === undefined ? "" : `  (${detail})`}`);
 };
 
+const query = "Sony WH-1000XM5 wireless noise canceling headphones";
 const started = Date.now();
 const key = "query-add-" + Date.now();
 const added = await client.action(api.cart.addItemFromQuery, {
-  query: "Sony WH-1000XM5 wireless noise canceling headphones",
+  query,
   idempotencyKey: key,
   reason: "resolved from the cart's title field",
 });
@@ -43,10 +44,10 @@ check(
     added.alternatives.every((a) => typeof a.title === "string" && /^https?:\/\//.test(a.url) && typeof a.retailer === "string"),
   String(added.alternatives?.length),
 );
-check("it took real time rather than faking a fast success", elapsed > 400, `${elapsed}ms`);
+check("the answer is a page, not the query echoed back", added.resolvedTitle !== query && !added.resolvedUrl.includes(encodeURIComponent(query.slice(0, 12))), `${elapsed}ms`);
 
 const again = await client.action(api.cart.addItemFromQuery, {
-  query: "Sony WH-1000XM5 wireless noise canceling headphones",
+  query,
   idempotencyKey: key,
 });
 check("the same idempotencyKey returns the same item", again.itemId === added.itemId, again.itemId === added.itemId);
@@ -55,7 +56,7 @@ const cart = await client.query(api.cart.listItems, {});
 check("the item is in the shopper's cart", cart.some((c) => c.id === added.itemId), cart.length + " items");
 
 const strangerUrlCheck = await client.action(api.cart.addItemFromQuery, {
-  query: "Sony WH-1000XM5 wireless noise canceling headphones",
+  query,
   idempotencyKey: "query-add-stranger-" + Date.now(),
 });
 check("another key on the same words resolves to the same product page", strangerUrlCheck.resolvedUrl === added.resolvedUrl, strangerUrlCheck.resolvedUrl);

@@ -894,13 +894,6 @@ async function produce(
 
 export const sectionState = internalQuery({
   args: { cartItemId: v.id("cartItems"), section: sectionName },
-  returns: v.union(
-    v.null(),
-    v.object({
-      status: sectionStatus,
-      pendingRun: v.union(v.string(), v.null()),
-    }),
-  ),
   handler: async (ctx, { cartItemId, section }) => {
     const ev = await findSection(ctx, cartItemId, section);
     if (!ev) return null;

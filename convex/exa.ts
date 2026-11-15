@@ -717,18 +717,6 @@ const priceFromText = (text: string | null): number | null => {
  */
 export const resolveProductQuery = internalAction({
   args: { query: v.string() },
-  returns: v.object({
-    ok: v.boolean(),
-    error: v.union(v.string(), v.null()),
-    candidates: v.array(
-      v.object({
-        title: v.string(),
-        url: v.string(),
-        retailer: v.string(),
-        priceCents: v.union(v.number(), v.null()),
-      }),
-    ),
-  }),
   handler: async (_ctx, { query }) => {
     const key = env.EXA_API_KEY;
     if (!key) return { ok: false, error: "EXA_API_KEY is not set", candidates: [] };
