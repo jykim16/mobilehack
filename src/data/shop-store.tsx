@@ -8,8 +8,9 @@ import * as assistantApi from './assistant-api';
 import type { ChatMessage } from './assistant-api';
 import * as cartApi from './cart-api';
 import { api } from './convex-api';
+import { mockComparison } from './mock-comparison';
 import { mockReviews } from './mock-reviews';
-import type { CartItem, DecideOutcome, Purchase, PurchaseRequest, Quote, ReviewList } from './types';
+import type { CartItem, DecideOutcome, PriceComparison, Purchase, PurchaseRequest, Quote, ReviewList } from './types';
 
 /**
  * Screen-facing state. With EXPO_PUBLIC_CONVEX_URL set, lists are live useQuery subscriptions on the
@@ -288,3 +289,13 @@ function useLivePurchaseRequest(requestId: string | null | undefined) {
 export const usePurchaseRequest: (requestId: string | null | undefined) => PurchaseRequest | undefined = convexConfigured
   ? useLivePurchaseRequest
   : () => undefined;
+
+/**
+ * The item's cross-store comparison. A deployed getItem that predates the field omits it entirely, and
+ * only then does the demo comparison stand in (demo: true); null from the backend means no lookup yet.
+ */
+export function itemComparison(item: CartItem): { comparison: PriceComparison | null; demo: boolean } {
+  if (item.comparison !== undefined) return { comparison: item.comparison, demo: false };
+  const comparison = mockComparison(item);
+  return { comparison, demo: comparison !== null };
+}

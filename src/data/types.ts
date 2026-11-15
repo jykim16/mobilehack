@@ -85,6 +85,30 @@ export interface CartItem {
   price: Price | null;
   priceHistory: PriceHistory | null;
   pendingRequest?: { requestId: string; quoteVersion: number; totalCents: number | null; expiresAt: number } | null;
+  comparison?: PriceComparison | null;
+}
+
+/** Cross-store lookup on cart:getItem: Exa finds candidates, Firecrawl verifies each listing. Listing prices only. */
+export interface PriceComparison {
+  status: 'running' | 'verifying' | 'completed' | 'empty' | 'failed';
+  checkedAt: number | null;
+  subjectUrl: string;
+  exaRunId: string | null;
+  note: string | null;
+  offers: {
+    retailer: string;
+    seller: string | null;
+    productUrl: string;
+    matchedIdentifier: string | null;
+    condition: string | null;
+    priceCents: number | null;
+    currency: string | null;
+    availability: string | null;
+    shippingCents: number | null;
+    verifiedAt: number | null;
+    supportingSource: string | null;
+  }[];
+  rejected: { retailer: string; productUrl: string; reason: string }[];
 }
 
 export interface Quote {

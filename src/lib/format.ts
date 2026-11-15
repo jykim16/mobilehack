@@ -30,6 +30,14 @@ export function formatPostedDate(date: number) {
   return new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', ...(sameYear ? {} : { year: 'numeric' }) });
 }
 
+export function formatAgo(date: number, now: number) {
+  const minutes = Math.floor((now - date) / 60_000);
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes}m ago`;
+  if (minutes < 24 * 60) return `${Math.floor(minutes / 60)}h ago`;
+  return formatShortDate(date);
+}
+
 export function isToday(date: Date | number) {
   return new Date(date).toDateString() === new Date().toDateString();
 }
