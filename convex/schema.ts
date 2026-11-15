@@ -95,6 +95,18 @@ export default defineSchema({
     summary: v.optional(v.string()),
     highlights: v.array(highlight),
     sources: v.array(source),
+    items: v.optional(
+      v.array(
+        v.object({
+          author: v.union(v.string(), v.null()),
+          text: v.string(),
+          url: v.string(),
+          createdAt: v.union(v.number(), v.null()),
+          score: v.union(v.number(), v.null()),
+          community: v.union(v.string(), v.null()),
+        }),
+      ),
+    ),
     checkedAt: v.optional(v.number()),
     simulated: v.boolean(),
     error: v.optional(v.string()),
@@ -135,7 +147,8 @@ export default defineSchema({
   })
     .index("by_purchaseRequestId", ["purchaseRequestId"])
     .index("by_shopperId", ["shopperId"])
-    .index("by_orderRef", ["orderRef"]),
+    .index("by_orderRef", ["orderRef"])
+    .index("by_retailerOrderId", ["retailerOrderId"]),
 
   shipments: defineTable({
     shopperId: v.id("users"),

@@ -21,10 +21,13 @@ type SocialSeed = {
   rating: number | null;
   url: string;
   score: number | null;
-  daysAgo: number;
+  postedAt: number;
 };
 
-/** Seeded, clearly labeled social evidence for the demo's hero product. */
+/**
+ * Seeded, clearly labeled social evidence for the demo's hero product. The
+ * timestamps are fixed dates, never derived from the clock at query time.
+ */
 const SEEDED_SOCIAL: Record<string, SocialSeed[]> = {
   "hero-xm5": [
     {
@@ -35,7 +38,7 @@ const SEEDED_SOCIAL: Record<string, SocialSeed[]> = {
       rating: null,
       url: "https://x.com/seatbacksam/status/1857000200000000001",
       score: 1842,
-      daysAgo: 12,
+      postedAt: Date.UTC(2026, 10, 3, 14, 12),
     },
     {
       source: "x",
@@ -45,7 +48,7 @@ const SEEDED_SOCIAL: Record<string, SocialSeed[]> = {
       rating: null,
       url: "https://x.com/dealwatch/status/1857000200000000002",
       score: 963,
-      daysAgo: 3,
+      postedAt: Date.UTC(2026, 10, 12, 9, 40),
     },
     {
       source: "youtube",
@@ -55,7 +58,7 @@ const SEEDED_SOCIAL: Record<string, SocialSeed[]> = {
       rating: 4.5,
       url: "https://www.youtube.com/watch?v=xm5-longhaul-test",
       score: 128000,
-      daysAgo: 30,
+      postedAt: Date.UTC(2026, 9, 16, 18, 0),
     },
     {
       source: "youtube",
@@ -65,7 +68,7 @@ const SEEDED_SOCIAL: Record<string, SocialSeed[]> = {
       rating: 4.8,
       url: "https://www.youtube.com/watch?v=xm5-wired-vs-bluetooth",
       score: 54000,
-      daysAgo: 65,
+      postedAt: Date.UTC(2026, 8, 11, 20, 30),
     },
   ],
 };
@@ -74,25 +77,17 @@ type Review = {
   id: string;
   source: ReviewSource;
   sourceName: string;
-  author: string;
+  author: string | null;
   text: string;
   rating: number | null;
-  postedAt: number;
+  postedAt: number | null;
   url: string;
   score: number | null;
   simulated: boolean;
 };
 
-const DAY = 24 * 3600_000;
-
 function retailerSource(retailer: string): ReviewSource {
   return retailer === "amazon" || retailer === "bestbuy" ? retailer : "other";
-}
-
-/** Live Reddit highlights carry "(1.2 points, 45 comments)"; seeded ones don't. */
-function scoreFromDetail(detail: string): number | null {
-  const m = detail.match(/\((\d[\d,]*)\s*points?,\s*(\d[\d,]*)\s*comments?\)/);
-  return m ? Number(m[1].replace(/,/g, "")) : null;
 }
 
 export const list = query({
@@ -107,44 +102,61 @@ export const list = query({
       .query("evidence")
       .withIndex("by_cartItemId_and_section", (q) => q.eq("cartItemId", cartItemId))
       .take(10);
-    const reviewedAt = Date.now();
     const collected: Review[] = [];
 
     const reddit = evidence.find((e) => e.section === "reddit");
     if (reddit && reddit.status === "ready") {
-      reddit.highlights.forEach((highlight, i) => {
-        const source = reddit.sources[i] ?? reddit.sources[0];
-        if (!source) return;
-        const base = reviewedAt - (i + 1) * 2 * DAY;
+      const records = reddit.items ?? [];
+      records.forEach((record, i) => {
         collected.push({
           id: `reddit-${i}`,
           source: "reddit",
           sourceName: "Reddit",
-          author: highlight.label,
-          text: highlight.detail,
+          author: record.author,
+          text: record.text,
           rating: null,
-          postedAt: base,
-          url: `${source.url}#review-${i}`,
-          score: scoreFromDetail(highlight.detail),
+          postedAt: record.createdAt,
+          url: record.url,
+          score: record.score,
           simulated: reddit.simulated,
         });
       });
+      if (records.length === 0) {
+        // Seeded threads carry no author or date. Report them as unknown rather
+        // than inventing either.
+        reddit.highlights.forEach((highlight, i) => {
+          const source = reddit.sources[i] ?? reddit.sources[0];
+          if (!source) return;
+          collected.push({
+            id: `reddit-${i}`,
+            source: "reddit",
+            sourceName: "Reddit",
+            author: null,
+            text: highlight.detail,
+            rating: null,
+            postedAt: null,
+            url: source.url,
+            score: null,
+            simulated: reddit.simulated,
+          });
+        });
+      }
     }
 
     const retailerReviews = evidence.find((e) => e.section === "retailerReviews");
     if (retailerReviews && retailerReviews.status === "ready" && offer) {
+      const source = retailerReviews.sources[0];
       retailerReviews.highlights.forEach((highlight, i) => {
-        const source = retailerReviews.sources[0];
         if (!source) return;
         collected.push({
           id: `retailer-${i}`,
           source: retailerSource(offer.retailer),
           sourceName: offer.retailerName,
-          author: highlight.label,
-          text: highlight.detail,
+          author: null,
+          text: `${highlight.label}: ${highlight.detail}`,
           rating: null,
-          postedAt: reviewedAt - (i + 1) * 5 * DAY,
-          url: `${source.url}#review-${i}`,
+          postedAt: null,
+          url: source.url,
           score: null,
           simulated: retailerReviews.simulated,
         });
@@ -159,17 +171,24 @@ export const list = query({
         author: seed.author,
         text: seed.text,
         rating: seed.rating,
-        postedAt: reviewedAt - seed.daysAgo * DAY,
+        postedAt: seed.postedAt,
         url: seed.url,
         score: seed.score,
         simulated: true,
       });
     }
 
+    // Dedupe on the canonical url plus the text, so one source page can't appear
+    // twice through link variants while distinct review excerpts survive.
     const seen = new Set<string>();
     const reviews = collected
-      .sort((a, b) => b.postedAt - a.postedAt)
-      .filter((r) => (seen.has(r.url) ? false : (seen.add(r.url), true)));
+      .sort((a, b) => (b.postedAt ?? 0) - (a.postedAt ?? 0))
+      .filter((r) => {
+        const key = `${r.url}|${r.text}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
 
     const tally = new Map<ReviewSource, { source: ReviewSource; count: number; rated: number[] }>();
     for (const r of reviews) {
@@ -195,10 +214,10 @@ export const list = query({
         id: v.string(),
         source: reviewSource,
         sourceName: v.string(),
-        author: v.string(),
+        author: v.union(v.string(), v.null()),
         text: v.string(),
         rating: v.union(v.number(), v.null()),
-        postedAt: v.number(),
+        postedAt: v.union(v.number(), v.null()),
         url: v.string(),
         score: v.union(v.number(), v.null()),
         simulated: v.boolean(),

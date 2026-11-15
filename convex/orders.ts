@@ -1,12 +1,144 @@
 import { v } from "convex/values";
-import { internalAction, internalMutation, internalQuery } from "./_generated/server";
+import { internalAction, internalMutation, internalQuery, mutation } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { getAdapter } from "./retail";
 import { materialTermsChanged } from "./retail/adapter";
 import { quote, shipmentEvent, shipmentStatus } from "./lib/validators";
+import { clientShipment } from "./lib/clientPayloads";
+import { notFound, requireShopper } from "./lib/auth";
+import { ConvexError } from "convex/values";
 
 const MAX_SUBMIT_ATTEMPTS = 5;
 const SHIPMENT_POLL_MS = 10_000;
+
+function applyShipmentPayload(
+  fields: {
+    status: "ordered" | "shipped" | "out_for_delivery" | "delivered";
+    carrier: string | null;
+    trackingNumber: string | null;
+    trackingUrl: string | null;
+    eta: string | null;
+    events: { status: string; description: string; location: string | null; occurredAt: number }[];
+    updatedAt?: number;
+  },
+) {
+  return {
+    status: fields.status,
+    carrier: fields.carrier ?? undefined,
+    trackingNumber: fields.trackingNumber ?? undefined,
+    trackingUrl: fields.trackingUrl ?? undefined,
+    eta: fields.eta ?? undefined,
+    events: [...fields.events].sort((a, b) => a.occurredAt - b.occurredAt),
+    simulated: false,
+    updatedAt: fields.updatedAt ?? Date.now(),
+  };
+}
+
+/**
+ * Records the real order the shopper's device placed on the live Amazon site.
+ * Idempotent on orderRef, so a retried submission can never create a second
+ * order for the same reference.
+ */
+export const recordClientPlacement = mutation({
+  args: {
+    orderRef: v.string(),
+    retailerOrderId: v.string(),
+    placedAt: v.number(),
+    shipment: v.optional(clientShipment),
+  },
+  returns: v.object({
+    status: v.union(v.literal("placed"), v.literal("already_recorded")),
+    orderRef: v.string(),
+    retailerOrderId: v.string(),
+  }),
+  handler: async (ctx, args) => {
+    const shopperId = await requireShopper(ctx);
+    const order = await ctx.db
+      .query("orders")
+      .withIndex("by_orderRef", (q) => q.eq("orderRef", args.orderRef))
+      .first();
+    if (!order || order.shopperId !== shopperId) notFound("Order");
+    if (order.retailerOrderId) {
+      return {
+        status: "already_recorded" as const,
+        orderRef: order.orderRef,
+        retailerOrderId: order.retailerOrderId,
+      };
+    }
+    await ctx.db.patch("orders", order._id, {
+      status: "placed",
+      retailerOrderId: args.retailerOrderId,
+      placedAt: args.placedAt,
+      simulated: false,
+      error: undefined,
+    });
+    await ctx.db.patch("purchaseRequests", order.purchaseRequestId, { status: "ordered" });
+    await ctx.db.patch("cartItems", order.cartItemId, { status: "purchased" });
+    const existing = await ctx.db
+      .query("shipments")
+      .withIndex("by_orderId", (q) => q.eq("orderId", order._id))
+      .unique();
+    const shipmentFields = args.shipment
+      ? applyShipmentPayload(args.shipment)
+      : { status: "ordered" as const, simulated: false, updatedAt: Date.now() };
+    if (existing) {
+      await ctx.db.patch("shipments", existing._id, shipmentFields);
+    } else {
+      await ctx.db.insert("shipments", { shopperId, orderId: order._id, ...shipmentFields });
+    }
+    return {
+      status: "placed" as const,
+      orderRef: order.orderRef,
+      retailerOrderId: args.retailerOrderId,
+    };
+  },
+});
+
+/** Syncs the carrier status the device scraped from the live Amazon page. */
+export const syncClientShipment = mutation({
+  args: {
+    orderRef: v.optional(v.string()),
+    retailerOrderId: v.string(),
+    shipment: clientShipment,
+  },
+  returns: v.object({ updated: v.boolean(), orderRef: v.string() }),
+  handler: async (ctx, args) => {
+    const shopperId = await requireShopper(ctx);
+    const order = args.orderRef
+      ? await ctx.db
+          .query("orders")
+          .withIndex("by_orderRef", (q) => q.eq("orderRef", args.orderRef!))
+          .first()
+      : await ctx.db
+          .query("orders")
+          .withIndex("by_retailerOrderId", (q) => q.eq("retailerOrderId", args.retailerOrderId))
+          .first();
+    if (!order || order.shopperId !== shopperId) notFound("Order");
+    if (order.retailerOrderId && order.retailerOrderId !== args.retailerOrderId) notFound("Order");
+    if (!order.retailerOrderId) {
+      await ctx.db.patch("orders", order._id, {
+        retailerOrderId: args.retailerOrderId,
+        simulated: false,
+      });
+    }
+    const shipment = await ctx.db
+      .query("shipments")
+      .withIndex("by_orderId", (q) => q.eq("orderId", order._id))
+      .unique();
+    if (!shipment) notFound("Shipment");
+    await ctx.db.patch("shipments", shipment._id, applyShipmentPayload(args.shipment));
+    return { updated: true, orderRef: order.orderRef };
+  },
+});
+
+export const getShipmentForOrder = internalQuery({
+  args: { orderId: v.id("orders") },
+  handler: async (ctx, { orderId }) =>
+    await ctx.db
+      .query("shipments")
+      .withIndex("by_orderId", (q) => q.eq("orderId", orderId))
+      .unique(),
+});
 
 export const getOrderInternal = internalQuery({
   args: { orderId: v.id("orders") },
@@ -168,6 +300,8 @@ export const syncShipment = internalAction({
       orderRef: loaded.order.orderRef,
     });
     if (status.status !== "placed") return null;
+    const shipment = await ctx.runQuery(internal.orders.getShipmentForOrder, { orderId });
+    if (!shipment || shipment.simulated === false) return null;
     await ctx.runMutation(internal.orders.applyShipment, {
       orderId,
       status: status.shipment.status,

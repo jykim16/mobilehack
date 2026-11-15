@@ -215,7 +215,20 @@ async function redditResult(product: Doc<"products">): Promise<SectionResult> {
   );
   if (!res.ok) throw new Error(`Reddit HTTP ${res.status}`);
   const body = (await res.json()) as {
-    data?: { children?: { data: { title: string; permalink: string; subreddit_name_prefixed: string; score: number; num_comments: number } }[] };
+    data?: {
+      children?: {
+        data: {
+          title: string;
+          permalink: string;
+          subreddit_name_prefixed: string;
+          score: number;
+          num_comments: number;
+          author?: string | null;
+          created_utc?: number;
+          selftext?: string;
+        };
+      }[];
+    };
   };
   const posts = (body.data?.children ?? []).map((c) => c.data).slice(0, 3);
   if (posts.length === 0) throw new Error("No Reddit threads found");
@@ -229,6 +242,14 @@ async function redditResult(product: Doc<"products">): Promise<SectionResult> {
       tone: "neutral" as const,
     })),
     sources: posts.map((p) => ({ title: p.title, url: `https://www.reddit.com${p.permalink}`, publisher: "Reddit" })),
+    items: posts.map((p) => ({
+      author: p.author ?? null,
+      text: p.selftext ? `${p.title} — ${p.selftext.slice(0, 240)}` : p.title,
+      url: `https://www.reddit.com${p.permalink}`,
+      createdAt: p.created_utc ? p.created_utc * 1000 : null,
+      score: typeof p.score === "number" ? p.score : null,
+      community: p.subreddit_name_prefixed,
+    })),
   };
 }
 
@@ -348,6 +369,18 @@ export const publishSection = internalMutation({
     highlights: v.array(highlight),
     sources: v.array(source),
     simulated: v.boolean(),
+    items: v.optional(
+      v.array(
+        v.object({
+          author: v.union(v.string(), v.null()),
+          text: v.string(),
+          url: v.string(),
+          createdAt: v.union(v.number(), v.null()),
+          score: v.union(v.number(), v.null()),
+          community: v.union(v.string(), v.null()),
+        }),
+      ),
+    ),
   },
   handler: async (ctx, { cartItemId, section, ...result }) => {
     const ev = await findSection(ctx, cartItemId, section);

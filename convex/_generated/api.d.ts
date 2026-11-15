@@ -15,6 +15,7 @@ import type * as demo from "../demo.js";
 import type * as enrichment from "../enrichment.js";
 import type * as http from "../http.js";
 import type * as lib_auth from "../lib/auth.js";
+import type * as lib_clientPayloads from "../lib/clientPayloads.js";
 import type * as lib_demoData from "../lib/demoData.js";
 import type * as lib_opengraph from "../lib/opengraph.js";
 import type * as lib_tokens from "../lib/tokens.js";
@@ -54,6 +55,7 @@ declare const fullApi: ApiFromModules<{
   enrichment: typeof enrichment;
   http: typeof http;
   "lib/auth": typeof lib_auth;
+  "lib/clientPayloads": typeof lib_clientPayloads;
   "lib/demoData": typeof lib_demoData;
   "lib/opengraph": typeof lib_opengraph;
   "lib/tokens": typeof lib_tokens;
