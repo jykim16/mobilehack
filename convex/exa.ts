@@ -59,6 +59,7 @@ const offerValidator = v.object({
   supportingSource: v.union(v.string(), v.null()),
   shippingCents: v.union(v.number(), v.null()),
   verifiedAt: v.union(v.number(), v.null()),
+  reportedBy: v.optional(v.union(v.literal("exa"))),
   rejectedReason: v.union(v.string(), v.null()),
 });
 
@@ -172,7 +173,7 @@ export const startLookup = internalAction({
     }
     const comparison = await ctx.runQuery(internal.exa.latestForItem, { cartItemId });
     if (comparison && comparison.candidates.length > 0) {
-      await ctx.scheduler.runAfter(0, internal.exa.verifyCandidates, { comparisonId: comparison._id });
+      await ctx.scheduler.runAfter(0, internal.exa.acceptCandidates, { comparisonId: comparison._id });
     }
     if (runId) {
       await ctx.scheduler.runAfter(POLL_MS, internal.exa.pollLookup, { comparisonId: comparison!._id, attempt: 0 });
@@ -210,7 +211,7 @@ export const pollLookup = internalAction({
         });
         return null;
       }
-      await ctx.scheduler.runAfter(0, internal.exa.verifyCandidates, { comparisonId });
+      await ctx.scheduler.runAfter(0, internal.exa.acceptCandidates, { comparisonId });
       return null;
     }
     if (body && (status === "failed" || status === "canceled" || status === "error")) {
@@ -238,8 +239,13 @@ export const pollLookup = internalAction({
   },
 });
 
-/** Every candidate listing is confirmed with Firecrawl before it is shown. */
-export const verifyCandidates = internalAction({
+/**
+ * Accepts the agent's own report: no re-scraping. Candidates are matched to the
+ * saved product from what Exa returned (its matched identifier, or the model
+ * tokens in the URL) and any used or refurbished listing is dropped when the
+ * saved item is new. Every accepted row is labeled as reported by Exa.
+ */
+export const acceptCandidates = internalAction({
   args: { comparisonId: v.id("priceComparisons") },
   handler: async (ctx, { comparisonId }) => {
     const comparison = await ctx.runQuery(internal.exa.getComparison, { comparisonId });
@@ -247,6 +253,10 @@ export const verifyCandidates = internalAction({
     const context = await ctx.runQuery(internal.exa.itemContext, { cartItemId: comparison.cartItemId });
     if (!context) return null;
     const savedIsNew = !isWithheldCondition({ condition: context.condition ?? undefined });
+    const modelTokens = String(context.title ?? "")
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((t) => t.length >= 5 && /\d/.test(t));
     for (const candidate of comparison.candidates) {
       if (!candidate.productUrl.startsWith("https://")) continue;
       const already = await ctx.runQuery(internal.exa.hasOffer, {
@@ -254,65 +264,64 @@ export const verifyCandidates = internalAction({
         productUrl: candidate.productUrl,
       });
       if (already) continue;
-      const extraction = await ctx.runAction(internal.firecrawl.extractOffer, {
-        url: candidate.productUrl,
-        expectedKey: null,
+      const checkedAt = Date.now();
+      const url = candidate.productUrl.toLowerCase();
+      // Match on what Exa itself reported: an explicit identifier, or the model
+      // tokens from the saved product appearing in the listing URL.
+      const matchesProduct =
+        candidate.matchedIdentifier !== null ||
+        modelTokens.some((token) => url.includes(token));
+      if (!matchesProduct) {
+        await ctx.runMutation(internal.exa.addOffer, {
+          comparisonId,
+          offer: {
+            ...candidate,
+            shippingCents: null,
+            verifiedAt: checkedAt,
+            reportedBy: "exa" as const,
+            rejectedReason: "Exa did not tie this listing to the saved product",
+          },
+        });
+        continue;
+      }
+      const condClass = classifyCondition(candidate.condition);
+      if (savedIsNew && isWithheldCondition({ condition: candidate.condition ?? undefined, conditionClass: condClass })) {
+        await ctx.runMutation(internal.exa.addOffer, {
+          comparisonId,
+          offer: {
+            ...candidate,
+            shippingCents: null,
+            verifiedAt: checkedAt,
+            reportedBy: "exa" as const,
+            rejectedReason: `Listing is ${candidate.condition ?? "used"}, not new like the saved item`,
+          },
+        });
+        continue;
+      }
+      if (candidate.priceCents === null || candidate.priceCents <= 0) {
+        await ctx.runMutation(internal.exa.addOffer, {
+          comparisonId,
+          offer: {
+            ...candidate,
+            shippingCents: null,
+            verifiedAt: checkedAt,
+            reportedBy: "exa" as const,
+            rejectedReason: "Exa reported no price",
+          },
+        });
+        continue;
+      }
+      await ctx.runMutation(internal.exa.addOffer, {
+        comparisonId,
+        offer: {
+          ...candidate,
+          currency: candidate.currency ?? "USD",
+          shippingCents: null,
+          verifiedAt: checkedAt,
+          reportedBy: "exa" as const,
+          rejectedReason: null,
+        },
       });
-      const verifiedAt = Date.now();
-      if (!extraction.ok || !extraction.offer) {
-        await ctx.runMutation(internal.exa.addOffer, {
-          comparisonId,
-          offer: {
-            ...candidate,
-            shippingCents: null,
-            verifiedAt: null,
-            rejectedReason: "Firecrawl could not read this listing",
-          },
-        });
-        continue;
-      }
-      const live = extraction.offer;
-      const liveCondition = classifyCondition(live.condition);
-      if (savedIsNew && isWithheldCondition({ condition: live.condition ?? undefined, conditionClass: liveCondition })) {
-        await ctx.runMutation(internal.exa.addOffer, {
-          comparisonId,
-          offer: {
-            ...candidate,
-            condition: live.condition ?? candidate.condition,
-            shippingCents: null,
-            verifiedAt,
-            rejectedReason: `Listing is ${live.condition ?? "refurbished or used"}, not new like the saved item`,
-          },
-        });
-        continue;
-      }
-      if (live.priceCents === null || live.priceCents <= 0) {
-        await ctx.runMutation(internal.exa.addOffer, {
-          comparisonId,
-          offer: {
-            ...candidate,
-            shippingCents: null,
-            verifiedAt,
-            rejectedReason: "Listing shows no price",
-          },
-        });
-        continue;
-      }
-      const claimed = candidate.priceCents;
-      const drift =
-        claimed !== null && claimed > 0 ? Math.abs(live.priceCents - claimed) / claimed : 0;
-      const offer = {
-        ...candidate,
-        seller: live.seller ?? candidate.seller,
-        condition: live.condition ?? candidate.condition,
-        priceCents: live.priceCents,
-        currency: live.currency ?? candidate.currency ?? "USD",
-        availability: live.availability ?? candidate.availability,
-        shippingCents: null,
-        verifiedAt,
-        rejectedReason: drift > 0.05 ? `Listed price drifted ${(drift * 100).toFixed(0)}% from the agent's figure` : null,
-      };
-      await ctx.runMutation(internal.exa.addOffer, { comparisonId, offer });
     }
     const after = await ctx.runQuery(internal.exa.getComparison, { comparisonId });
     const verified = (after?.offers ?? []).filter((o) => o.rejectedReason === null);

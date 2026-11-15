@@ -218,7 +218,8 @@ export async function cartItemView(
           currency: o.currency ?? null,
           availability: o.availability ?? null,
           shippingCents: o.shippingCents ?? null,
-          verifiedAt: o.verifiedAt ?? null,
+          checkedAt: o.verifiedAt ?? null,
+          reportedBy: "exa" as const,
           supportingSource: o.supportingSource ?? null,
         })),
         rejected: (latest.offers ?? [])

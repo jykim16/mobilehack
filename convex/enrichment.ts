@@ -2,7 +2,7 @@ import { v } from "convex/values";
 import { internalAction, internalMutation, internalQuery } from "./_generated/server";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
-import { env, type MutationCtx } from "./_generated/server";
+import { env, type ActionCtx, type MutationCtx } from "./_generated/server";
 import { SECTION_NAMES, sectionName, highlight, source, type SectionName } from "./lib/validators";
 import {
   RETAILER_RETURN_TERMS,
@@ -71,8 +71,8 @@ export const enrichOfferFromWeb = internalAction({
     // listing itself could not be extracted.
     // Cross-store comparison starts once the saved product is resolved.
     await ctx.scheduler.runAfter(0, internal.exa.startLookup, { cartItemId });
-    const policyUrl = RETURN_POLICY_URLS[data.offer.retailer];
-    if (!policyUrl) return null;
+    // Retailers without a known policy page: read the terms off the listing itself.
+    const policyUrl = RETURN_POLICY_URLS[data.offer.retailer] ?? data.offer.url;
     const terms = await ctx.runAction(internal.firecrawl.extractReturnTerms, { url: policyUrl });
     if (!terms.ok || !terms.terms) return null;
     // Keep whatever we already had when the policy page yielded nothing usable.
@@ -753,6 +753,7 @@ async function redditResult(product: Doc<"products">): Promise<SectionResult> {
 }
 
 async function produce(
+  ctx: ActionCtx,
   section: SectionName,
   ctxData: { product: Doc<"products">; offer: Doc<"offers">; observations: Doc<"priceObservations">[] },
 ): Promise<SectionResult> {
@@ -766,13 +767,21 @@ async function produce(
     case "priceHistory":
       return priceHistoryResult(offer, observations);
     case "returnTerms":
+      // Seeded policy text is a fallback for seeded offers only; a live offer uses
+      // its own return summary until the policy scrape lands.
       return (
         seeded ??
-        RETAILER_RETURN_TERMS[offer.retailer] ?? {
+        (offer.simulated ? RETAILER_RETURN_TERMS[offer.retailer] : undefined) ?? {
           scope: "offer",
           simulated: false,
           summary: offer.returnSummary,
-          highlights: [],
+          highlights: [
+            {
+              label: "Return summary",
+              detail: offer.returnSummary,
+              tone: "neutral" as const,
+            },
+          ],
           sources: [{ title: `${offer.retailerName} listing`, url: offer.url, publisher: offer.retailerName }],
         }
       );
@@ -783,19 +792,33 @@ async function produce(
         if (seeded) return seeded;
         throw e;
       }
-    case "categoryGuidance":
-      return (
-        seeded ?? {
-          scope: "product",
-          simulated: true,
-          summary: `General buying guidance for ${product.category}.`,
-          highlights: [
-            { label: "Compare total cost", detail: "Check tax, shipping, and price history before buying.", tone: "neutral" },
-            { label: "Return window", detail: "Prefer offers with free returns for items you haven't tried.", tone: "neutral" },
-          ],
-          sources: [],
-        }
-      );
+    case "categoryGuidance": {
+      if (seeded) return seeded;
+      const guidance = await ctx.runAction(internal.firecrawl.extractGuidance, { url: offer.url });
+      if (!guidance.ok || guidance.criteria.length === 0) {
+        throw new Error(guidance.error ?? "No category guidance could be read from the page");
+      }
+      return {
+        scope: "product",
+        simulated: false,
+        summary:
+          guidance.criteria.find((c: { overlooked: boolean | null }) => c.overlooked)?.detail ??
+          `Buying criteria read from the ${guidance.category ?? product.category} listing.`,
+        highlights: guidance.criteria.map((c: { label: string; detail: string | null; whyItMatters: string | null; tone: string | null; overlooked: boolean | null }) => ({
+          label: c.label,
+          detail: [c.detail, c.whyItMatters].filter(Boolean).join(" ") || "Read from the listing.",
+          tone:
+            c.overlooked === true
+              ? ("new_criterion" as const)
+              : c.tone === "positive"
+                ? ("positive" as const)
+                : c.tone === "negative"
+                  ? ("negative" as const)
+                  : ("neutral" as const),
+        })),
+        sources: [{ title: `${offer.retailerName} listing`, url: offer.url, publisher: offer.retailerName }],
+      };
+    }
     case "retailerReviews":
       if (seeded) return seeded;
       return offer.rating
@@ -832,11 +855,18 @@ export const runSection = internalAction({
     const data = await ctx.runQuery(internal.enrichment.getSectionContext, { cartItemId });
     if (!data) return null;
     try {
-      const { scope: _scope, ...result } = await produce(section, data);
+      const { scope: _scope, ...result } = await produce(ctx, section, data);
       await ctx.runMutation(internal.enrichment.publishSection, {
         cartItemId,
         section,
         ...result,
+        highlights:
+          section === "categoryGuidance"
+            ? [...result.highlights].sort(
+                (a: { tone: string }, b: { tone: string }) =>
+                  Number(b.tone === "new_criterion") - Number(a.tone === "new_criterion"),
+              )
+            : result.highlights,
       });
     } catch (e) {
       const error = e instanceof Error ? e.message : String(e);

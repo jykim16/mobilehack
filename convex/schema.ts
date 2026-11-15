@@ -272,6 +272,7 @@ export default defineSchema({
         supportingSource: v.union(v.string(), v.null()),
         shippingCents: v.union(v.number(), v.null()),
         verifiedAt: v.union(v.number(), v.null()),
+        reportedBy: v.optional(v.union(v.literal("exa"))),
         rejectedReason: v.union(v.string(), v.null()),
       }),
     ),

@@ -26,8 +26,8 @@ client.setAuth(signIn.tokens.token);
 log("signed in anonymously");
 
 await client.mutation(api.demo.resetDemo, {});
-const { heroUrl } = await client.mutation(api.demo.setupMyCart, {});
-log("seeded Best Buy AirFly Pro; hero url", heroUrl);
+const { heroUrl, secondItemId } = await client.mutation(api.demo.setupMyCart, {});
+log("second store item:", secondItemId, "| hero url", heroUrl);
 
 const runId = Date.now();
 const added = await client.mutation(api.cart.addItem, {
@@ -77,8 +77,8 @@ let cart = await client.query(api.cart.listItems, {});
 log("cart:", cart.map((c) => `${c.offer.retailerName}: ${c.product.title.slice(0, 30)} ${usd(c.price.totalCents)}`).join(" | "));
 log("target $250 all-in met?", cart.find((c) => c.id === added.itemId).decision.targetMet);
 
-const drop = await client.mutation(api.demo.advancePrice, {});
-log("demo control: later price observation", usd(drop.priceCents));
+const drop = await client.mutation(api.demo.advancePrice, { itemId: added.itemId });
+log("demo control: later price observation", usd(drop.priceCents), "-> all-in", usd(drop.totalCents));
 item = await client.query(api.cart.getItem, { itemId: added.itemId });
 log("all-in now", usd(item.price.totalCents), "| target met?", item.decision.targetMet);
 

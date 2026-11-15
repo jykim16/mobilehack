@@ -43,8 +43,9 @@ check("a comparison row exists for the item", comparison !== null);
 check("the comparison terminates in a final state", comparison && ["completed", "empty", "failed"].includes(comparison.status), comparison?.status);
 check("it is keyed to the submitted URL", comparison?.subjectUrl === "https://www.amazon.com/dp/B09XS7JWHH", comparison?.subjectUrl);
 if (comparison?.status === "completed") {
-  check("verified offers carry a listing price and checked time", comparison.offers.every((o) => typeof o.priceCents === "number" && typeof o.verifiedAt === "number"));
-  check("verified offers are not used or refurbished", comparison.offers.every((o) => !/used|refurb|renew/i.test(o.condition ?? "")));
+  check("offers carry a listing price, checked time and the Exa label", comparison.offers.every((o) => typeof o.priceCents === "number" && typeof o.checkedAt === "number" && o.reportedBy === "exa"));
+  check("offers are not claimed as verified by us", comparison.offers.every((o) => o.reportedBy === "exa"));
+  check("offers are not used or refurbished", comparison.offers.every((o) => !/used|refurb|renew/i.test(o.condition ?? "")));
   check("no combined checkout total is invented", comparison.offers.every((o) => o.shippingCents === null || typeof o.shippingCents === "number"));
 } else {
   check("the empty state says so", (comparison?.note ?? "").length > 0, comparison?.note);
