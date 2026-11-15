@@ -29,10 +29,13 @@ export const mcpTables = {
   }).index("by_code", ["code"]),
 
   mcpTokens: defineTable({
-    tokenHash: v.string(),
+    /** Absent on a grant row, which holds no secret of its own. */
+    tokenHash: v.optional(v.string()),
     kind: v.union(v.literal("access"), v.literal("refresh"), v.literal("connection")),
     shopperId: v.id("users"),
     clientId: v.optional(v.string()),
+    /** For access/refresh rows: the connection row that granted them, so one revoke kills the whole grant. */
+    grantId: v.optional(v.id("mcpTokens")),
     scope: v.string(),
     label: v.optional(v.string()),
     createdAt: v.number(),
@@ -40,7 +43,8 @@ export const mcpTables = {
     revokedAt: v.optional(v.number()),
   })
     .index("by_tokenHash", ["tokenHash"])
-    .index("by_shopperId", ["shopperId"]),
+    .index("by_shopperId", ["shopperId"])
+    .index("by_grantId", ["grantId"]),
 
   mcpDemoShoppers: defineTable({ login: v.string(), shopperId: v.id("users") }).index("by_login", ["login"]),
 };

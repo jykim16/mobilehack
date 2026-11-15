@@ -127,7 +127,16 @@ export async function callTool(ctx: ActionCtx, shopperId: Id<"users">, name: str
     case "add_cart_item": {
       const url = str(args, "url", true);
       const variant = str(args, "variant");
-      const idempotencyKey = str(args, "idempotencyKey") ?? (await hashToken(`add:${shopperId}:${url}:${variant ?? ""}`));
+      const explicitKey = str(args, "idempotencyKey");
+      if (!explicitKey) {
+        const existing = (await backend.listItems(ctx, shopperId)).find(
+          (candidate) =>
+            candidate.url === url &&
+            (variant === undefined || candidate.variant?.label.toLowerCase() === variant.toLowerCase()),
+        );
+        if (existing) return { ...asItem(existing), deduplicated: true };
+      }
+      const idempotencyKey = explicitKey ?? `agent-add-${crypto.randomUUID()}`;
       return await backend.addItem(ctx, shopperId, { url, variant, reason: str(args, "reason"), idempotencyKey });
     }
     case "list_cart_items": {
@@ -150,7 +159,12 @@ export async function callTool(ctx: ActionCtx, shopperId: Id<"users">, name: str
       if (!item) throw new ToolInputError("No Cart item with that ID for this shopper.");
       const offerId = (str(args, "offerId") ?? item.offer?.id) as Id<"offers"> | undefined;
       if (!offerId) throw new ToolInputError("This Cart item has no resolved offer yet; try again once enrichment finishes.");
-      const idempotencyKey = str(args, "idempotencyKey") ?? (await hashToken(`purchase:${shopperId}:${itemId}:${offerId}:${quantity}`));
+      // Retries of a live request dedupe on its own key; a new request needs a new key.
+      const idempotencyKey =
+        str(args, "idempotencyKey") ??
+        (item.pendingRequest
+          ? `agent-purchase-${item.pendingRequest.requestId}-${quantity}`
+          : `agent-purchase-${crypto.randomUUID()}`);
       const request = await backend.requestPurchase(ctx, shopperId, { itemId, offerId, quantity, reason, idempotencyKey });
       return {
         ...request,

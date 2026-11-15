@@ -64,13 +64,22 @@ export const issueTokens = internalMutation({
   args: {
     shopperId: v.id("users"),
     clientId: v.string(),
+    clientLabel: v.optional(v.string()),
     scope: v.string(),
     accessToken: v.string(),
     refreshToken: v.string(),
   },
   handler: async (ctx, args) => {
     const now = Date.now();
-    const base = { shopperId: args.shopperId, clientId: args.clientId, scope: args.scope, createdAt: now };
+    const grantId = await ctx.db.insert("mcpTokens", {
+      shopperId: args.shopperId,
+      clientId: args.clientId,
+      kind: "connection",
+      scope: args.scope,
+      label: args.clientLabel ?? "App connector",
+      createdAt: now,
+    });
+    const base = { shopperId: args.shopperId, clientId: args.clientId, grantId, scope: args.scope, createdAt: now };
     await ctx.db.insert("mcpTokens", {
       ...base,
       kind: "access",
@@ -78,7 +87,7 @@ export const issueTokens = internalMutation({
       expiresAt: now + ACCESS_TOKEN_TTL_MS,
     });
     await ctx.db.insert("mcpTokens", { ...base, kind: "refresh", tokenHash: await hashToken(args.refreshToken) });
-    return null;
+    return grantId;
   },
 });
 
@@ -93,7 +102,13 @@ export const rotateRefreshToken = internalMutation({
       .unique();
     if (!old || old.kind !== "refresh" || old.revokedAt || old.clientId !== args.clientId) return null;
     await ctx.db.patch("mcpTokens", old._id, { revokedAt: now });
-    const base = { shopperId: old.shopperId, clientId: old.clientId, scope: old.scope, createdAt: now };
+    const base = {
+      shopperId: old.shopperId,
+      clientId: old.clientId,
+      grantId: old.grantId,
+      scope: old.scope,
+      createdAt: now,
+    };
     await ctx.db.insert("mcpTokens", {
       ...base,
       kind: "access",
@@ -138,17 +153,27 @@ export const listConnectionTokens = internalQuery({
     const rows = await ctx.db
       .query("mcpTokens")
       .withIndex("by_shopperId", (q) => q.eq("shopperId", shopperId))
-      .take(100);
-    return rows.filter((r) => r.kind === "connection").map((r) => ({ id: r._id, label: r.label ?? "Agent", createdAt: r.createdAt }));
+      .take(200);
+    return rows
+      .filter((r) => r.kind === "connection" && !r.revokedAt)
+      .map((r) => ({ id: r._id, label: r.label ?? "Agent", createdAt: r.createdAt }));
   },
 });
 
-export const revokeToken = internalMutation({
-  args: { shopperId: v.id("users"), tokenId: v.id("mcpTokens") },
-  handler: async (ctx, { shopperId, tokenId }) => {
-    const row = await ctx.db.get("mcpTokens", tokenId);
-    if (row && row.shopperId === shopperId) await ctx.db.patch("mcpTokens", tokenId, { revokedAt: Date.now() });
-    return null;
+/** Revoking a connection kills the grant row and every access/refresh token it issued. */
+export const revokeConnection = internalMutation({
+  args: { shopperId: v.id("users"), connectionId: v.id("mcpTokens") },
+  handler: async (ctx, { shopperId, connectionId }) => {
+    const now = Date.now();
+    const grant = await ctx.db.get("mcpTokens", connectionId);
+    if (!grant || grant.shopperId !== shopperId) return false;
+    await ctx.db.patch("mcpTokens", connectionId, { revokedAt: now });
+    const issued = await ctx.db
+      .query("mcpTokens")
+      .withIndex("by_grantId", (q) => q.eq("grantId", connectionId))
+      .take(200);
+    for (const row of issued) if (!row.revokedAt) await ctx.db.patch("mcpTokens", row._id, { revokedAt: now });
+    return true;
   },
 });
 

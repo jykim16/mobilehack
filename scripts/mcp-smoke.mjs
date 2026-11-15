@@ -48,18 +48,29 @@ async function oauthToken() {
   const code = location.searchParams.get("code");
   check(consent.status === 302 && !!code && location.searchParams.get("state") === "xyz", "sign-in redirects with code and state");
 
-  const badPkce = await fetch(as.token_endpoint, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ grant_type: "authorization_code", code, client_id: client.client_id, redirect_uri: redirectUri, code_verifier: "wrong" }) });
-  check(badPkce.status === 400, "wrong PKCE verifier is rejected (and burns the code)");
-
-  const consent2 = await fetch(as.authorization_endpoint, { method: "POST", redirect: "manual", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ ...authParams, code: login }) });
-  const code2 = new URL(consent2.headers.get("location")).searchParams.get("code");
-  const tok = await fetch(as.token_endpoint, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ grant_type: "authorization_code", code: code2, client_id: client.client_id, redirect_uri: redirectUri, code_verifier: verifier }) });
+  const tok = await fetch(as.token_endpoint, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ grant_type: "authorization_code", code, client_id: client.client_id, redirect_uri: redirectUri, code_verifier: verifier }) });
   const tokens = await tok.json();
-  check(tok.status === 200 && tokens.token_type === "Bearer" && !!tokens.refresh_token, "token exchange with PKCE", JSON.stringify(tokens));
+  check(tok.status === 200 && tokens.token_type === "Bearer" && !!tokens.refresh_token, "token exchange with PKCE");
 
   const refreshed = await fetch(as.token_endpoint, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: tokens.refresh_token, client_id: client.client_id }) });
   const next = await refreshed.json();
   check(refreshed.status === 200 && !!next.access_token, "refresh token rotation");
+
+  const oldRefresh = await fetch(as.token_endpoint, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: tokens.refresh_token, client_id: client.client_id }) });
+  check(oldRefresh.status === 400, "a used refresh token is refused");
+
+  const bogus = await fetch(as.authorization_endpoint, { method: "POST", redirect: "manual", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ ...authParams, code: "ZZZZZZ" }) });
+  check(bogus.status === 400, "an unknown pairing code is refused");
+
+  if (login.toLowerCase() === "demo") {
+    const consent2 = await fetch(as.authorization_endpoint, { method: "POST", redirect: "manual", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ ...authParams, code: login }) });
+    const code2 = new URL(consent2.headers.get("location")).searchParams.get("code");
+    const badPkce = await fetch(as.token_endpoint, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ grant_type: "authorization_code", code: code2, client_id: client.client_id, redirect_uri: redirectUri, code_verifier: "wrong" }) });
+    check(badPkce.status === 400, "wrong PKCE verifier is rejected (and burns the code)");
+  } else {
+    console.log("SKIP  wrong PKCE verifier: a single-use pairing code cannot be spent twice");
+  }
+
   return next.access_token;
 }
 
