@@ -17,10 +17,6 @@ export function etaDate(eta: string) {
   return new Date(year, month - 1, day);
 }
 
-export function formatDay(date: Date | number) {
-  return new Date(date).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
-}
-
 export function formatShortDate(date: Date | number) {
   return new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
