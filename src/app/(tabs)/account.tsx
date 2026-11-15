@@ -13,7 +13,7 @@ export default function AccountScreen() {
   const insets = useSafeAreaInsets();
 
   return (
-    <ScrollView style={styles.screen} contentInsetAdjustmentBehavior="automatic" contentContainerStyle={[styles.content, { paddingTop: insets.top + Spacing.sm }]}>
+    <ScrollView style={styles.screen} contentContainerStyle={[styles.content, { paddingTop: insets.top + Spacing.sm }]}>
       <Text style={styles.title} accessibilityRole="header">
         Account
       </Text>
