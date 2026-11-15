@@ -9,19 +9,18 @@ import { Colors, Radius, Spacing, Type, tabularNumbers } from '@/constants/theme
 export const COMPOSER_HEIGHT = 52;
 
 const liquidGlass = isLiquidGlassAvailable();
-const accentGlassTint = 'rgba(84, 51, 235, 0.55)';
 
 function Glass({ tint, style, children }: { tint?: string; style: StyleProp<ViewStyle>; children: ReactNode }) {
   if (liquidGlass) {
     return (
-      <GlassView glassEffectStyle="regular" colorScheme="dark" tintColor={tint} isInteractive style={style}>
+      <GlassView glassEffectStyle="regular" colorScheme="auto" tintColor={tint} isInteractive style={style}>
         {children}
       </GlassView>
     );
   }
   return (
-    <BlurView intensity={40} tint="dark" style={[style, styles.blurFallback]}>
-      <View style={[StyleSheet.absoluteFill, { backgroundColor: tint ?? 'rgba(44, 44, 46, 0.55)' }]} />
+    <BlurView intensity={40} tint="systemChromeMaterial" style={[style, styles.blurFallback]}>
+      <View style={[StyleSheet.absoluteFill, { backgroundColor: tint ?? Colors.glassFallback }]} />
       {children}
     </BlurView>
   );
@@ -66,7 +65,7 @@ export function ChatComposer({
         </Pressable>
       </Glass>
       <Pressable accessibilityRole="button" accessibilityLabel={`Cart, ${cartCount} items`} onPress={onOpenCart}>
-        <Glass tint={accentGlassTint} style={[styles.cart, cartCount > 0 && styles.cartWithCount]}>
+        <Glass tint={Colors.glassAccentTint} style={[styles.cart, cartCount > 0 && styles.cartWithCount]}>
           <Ionicons name="cart" size={20} color={Colors.onAccent} />
           {cartCount > 0 && <Text style={styles.count}>{cartCount}</Text>}
         </Glass>

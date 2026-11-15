@@ -16,6 +16,8 @@ export const Colors = {
   strong: '#FFFFFF',
   onStrong: '#000000',
   success: '#30D158',
+  glassAccentTint: 'rgba(84, 51, 235, 0.6)',
+  glassFallback: 'rgba(120, 120, 128, 0.24)',
 } as const;
 
 export const Spacing = {
