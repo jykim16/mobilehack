@@ -82,6 +82,7 @@ export const extractOffer = internalAction({
         starRating: v.union(v.number(), v.null()),
         ratingCount: v.union(v.number(), v.null()),
         asinOrSku: v.union(v.string(), v.null()),
+        imageUrl: v.union(v.string(), v.null()),
         evidence: v.union(v.string(), v.null()),
       }),
       v.null(),
@@ -138,5 +139,78 @@ export const extractReturnTerms = internalAction({
       return { ok: false, error: result.error, terms: null, sourceUrl: null };
     }
     return { ok: true, error: null, terms: parseReturnTerms(result.json), sourceUrl: result.sourceUrl };
+  },
+});
+
+const GUIDANCE_SCHEMA = {
+  type: "object",
+  properties: {
+    category: { type: ["string", "null"], description: "Product category, e.g. wireless over-ear headphones" },
+    criteria: {
+      type: "array",
+      description: "Four buying criteria that matter for this category, one of them something shoppers usually forget",
+      items: {
+        type: "object",
+        properties: {
+          label: { type: "string" },
+          detail: { type: ["string", "null"], description: "What the page or category shows about this criterion" },
+          whyItMatters: { type: ["string", "null"], description: "Why a shopper should care" },
+          tone: { type: ["string", "null"], description: "positive, negative, neutral" },
+          overlooked: { type: ["boolean", "null"], description: "True for the criterion shoppers rarely think to ask about" },
+        },
+        required: ["label"],
+      },
+    },
+    evidence: { type: ["string", "null"], description: "A short snippet from the page supporting the criteria" },
+  },
+  required: ["category", "criteria"],
+} as const;
+
+const GUIDANCE_PROMPT =
+  "Read this product page and list the buying criteria that actually matter for its category: build quality, compatibility, " +
+  "comfort or handling, longevity, and anything the listing implies. Include exactly one criterion that shoppers usually " +
+  "do not think to ask about (mark overlooked: true) - for instance whether it works wired, what accessories are required, " +
+  "or how it behaves in the situation the buyer described. Use only what the page states; return null instead of guessing.";
+
+/** Category guidance from the live page, for products we hold no seeded research for. */
+export const extractGuidance = internalAction({
+  args: { url: v.string() },
+  returns: v.object({
+    ok: v.boolean(),
+    error: v.union(v.string(), v.null()),
+    category: v.union(v.string(), v.null()),
+    evidence: v.union(v.string(), v.null()),
+    criteria: v.array(
+      v.object({
+        label: v.string(),
+        detail: v.union(v.string(), v.null()),
+        whyItMatters: v.union(v.string(), v.null()),
+        tone: v.union(v.string(), v.null()),
+        overlooked: v.union(v.boolean(), v.null()),
+      }),
+    ),
+  }),
+  handler: async (_ctx, { url }) => {
+    const key = env.FIRECRAWL_API_KEY;
+    if (!key) return { ok: false, error: "FIRECRAWL_API_KEY is not set", category: null, evidence: null, criteria: [] };
+    const result = await scrapeJson(url, GUIDANCE_SCHEMA, GUIDANCE_PROMPT, key);
+    if (!result.ok) return { ok: false, error: result.error, category: null, evidence: null, criteria: [] };
+    const raw = result.json as any;
+    const criteria = Array.isArray(raw.criteria)
+      ? raw.criteria.slice(0, 5).map((c: any) => ({
+          label: String(c?.label ?? "Criterion"),
+          detail: typeof c?.detail === "string" ? c.detail : null,
+          whyItMatters: typeof c?.whyItMatters === "string" ? c.whyItMatters : null,
+          tone: typeof c?.tone === "string" ? c.tone : null,
+          overlooked: typeof c?.overlooked === "boolean" ? c.overlooked : null,
+        }))
+      : [];
+    return {
+      ok: true,
+      error: null,
+      category: typeof raw.category === "string" ? raw.category : null,
+      evidence: typeof raw.evidence === "string" ? raw.evidence : null,
+      criteria,
+    };
   },
 });

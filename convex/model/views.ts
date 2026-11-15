@@ -1,6 +1,7 @@
 import type { Doc, Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
 import { estimateTotals } from "../retail/pricing";
+import { isPurchasableCondition, offerConditionClass } from "../lib/conditions";
 import { SECTION_NAMES } from "../lib/validators";
 
 export function offerView(offer: Doc<"offers">, variantLabel: string | null) {
@@ -20,32 +21,84 @@ export function offerView(offer: Doc<"offers">, variantLabel: string | null) {
     returnSummary: offer.returnSummary,
     rating: offer.rating ?? null,
     condition: offer.condition ?? null,
+    conditionClass: offerConditionClass(offer),
     provenance: offer.provenance ?? null,
     inStock: offer.inStock,
-    purchasable: offer.inStock && offer.priceCents > 0,
+    purchasable: offer.inStock && offer.priceCents > 0 && isPurchasableCondition(offer),
     simulated: offer.simulated,
     updatedAt: offer.updatedAt,
   };
 }
 
-async function priceHistoryFor(ctx: QueryCtx, offer: Doc<"offers">) {
+async function priceHistoryFor(
+  ctx: QueryCtx,
+  offer: Doc<"offers">,
+  history: Doc<"evidence"> | null,
+) {
   const obs = await ctx.db
     .query("priceObservations")
     .withIndex("by_offerId_and_observedAt", (q) => q.eq("offerId", offer._id))
     .order("asc")
     .take(200);
-  const prices = obs.map((o) => o.priceCents);
-  return {
-    points: obs.map((o) => ({
-      observedAt: o.observedAt,
-      priceCents: o.priceCents,
-      source: o.source,
-      simulated: o.simulated,
-    })),
-    observationCount: obs.length,
+  const observationPoints = obs.map((o) => ({
+    observedAt: o.observedAt,
+    priceCents: o.priceCents,
+    source: o.source,
+    simulated: o.simulated,
+  }));
+  const observed = obs.map((o) => o.priceCents);
+  const range = (prices: number[]) => ({
     lowCents: prices.length ? Math.min(...prices) : offer.priceCents,
     highCents: prices.length ? Math.max(...prices) : offer.priceCents,
+  });
+
+  const h = history?.history ?? null;
+  const base = {
+    observationCount: obs.length,
     currentCents: offer.priceCents,
+    trackingSinceAdded: obs.length <= 1,
+  };
+
+  if (h && (h.mode === "live" || h.mode === "sampled") && h.points.length > 0) {
+    const prices = h.points.map((p) => p.priceCents);
+    return {
+      ...base,
+      mode: h.mode,
+      seriesLabel: h.seriesLabel,
+      sourceUrl: h.sourceUrl,
+      sampled: h.sampled,
+      note: h.note,
+      points: h.points.map((p) => ({
+        observedAt: p.at,
+        priceCents: p.priceCents,
+        source: h.mode === "sampled" ? "Sampled from Keepa" : (h.seriesLabel ?? "Keepa"),
+        simulated: false,
+      })),
+      // A sparse sample is not a low or a high.
+      ...(h.sampled ? { lowCents: null, highCents: null } : range(prices)),
+    };
+  }
+  if (h) {
+    return {
+      ...base,
+      mode: h.mode,
+      seriesLabel: h.seriesLabel,
+      sourceUrl: h.sourceUrl,
+      sampled: h.sampled,
+      note: h.note,
+      points: observationPoints,
+      ...range(observed),
+    };
+  }
+  return {
+    ...base,
+    mode: "observations" as const,
+    seriesLabel: null,
+    sourceUrl: null,
+    sampled: false,
+    note: null,
+    points: observationPoints,
+    ...range(observed),
   };
 }
 
@@ -93,6 +146,93 @@ export async function cartItemView(
         }
       : null;
 
+  // Only a new-condition offer may stand in for the item; anything else is
+  // returned separately and labeled.
+  const newOffers = productOffers.filter(
+    (o) => isPurchasableCondition(o) && o.inStock && o.priceCents > 0,
+  );
+  const newOffer =
+    newOffers.find((o) => o._id === item.offerId) ??
+    newOffers.slice().sort((a, b) => a.priceCents - b.priceCents)[0] ??
+    null;
+  const alternates = (offer ? [offer] : []).flatMap((o) =>
+    (o.alternates ?? []).map((a) => ({
+      conditionClass: a.conditionClass,
+      condition: a.condition ?? null,
+      seller: a.seller ?? null,
+      priceCents: a.priceCents ?? null,
+      sourceUrl: a.sourceUrl,
+      observedAt: a.observedAt,
+    })),
+  );
+  const offerAvailability = {
+    newOfferAvailable: newOffer !== null,
+    note:
+      newOffer !== null
+        ? alternates.length > 0
+          ? `Also listed at this URL, not shown as the item: ${alternates
+              .map(
+                (a) =>
+                  `${a.condition ?? a.conditionClass} from ${a.seller ?? "an unknown seller"}${
+                    a.priceCents !== null ? " at $" + (a.priceCents / 100).toFixed(2) : ""
+                  }`,
+              )
+              .join("; ")}.`
+          : null
+        : `No new-condition offer is available for this URL.${
+            alternates.length > 0
+              ? ` The live page lists ${alternates
+                  .map(
+                    (a) =>
+                      `${a.condition ?? a.conditionClass} from ${a.seller ?? "an unknown seller"}${
+                        a.priceCents !== null ? " at $" + (a.priceCents / 100).toFixed(2) : ""
+                      }`,
+                  )
+                  .join("; ")}.`
+              : ""
+          }`,
+  };
+
+  const comparisonRow = await ctx.db
+    .query("priceComparisons")
+    .withIndex("by_cartItemId", (q) => q.eq("cartItemId", item._id))
+    .order("desc")
+    .take(1);
+  const latest = comparisonRow[0] ?? null;
+  const verified = (latest?.offers ?? []).filter((o) => o.rejectedReason === null && o.verifiedAt !== null);
+  const comparisonView = latest
+    ? {
+        status: latest.status,
+        checkedAt: latest.checkedAt ?? null,
+        subjectUrl: latest.subjectUrl,
+        exaRunId: latest.exaRunId ?? null,
+        note: latest.note ?? null,
+        // Listing prices only: shipping is kept apart and totals are not computed here.
+        offers: verified.map((o) => ({
+          retailer: o.retailer,
+          seller: o.seller ?? null,
+          productUrl: o.productUrl,
+          matchedIdentifier: o.matchedIdentifier ?? null,
+          condition: o.condition ?? null,
+          priceCents: o.priceCents ?? null,
+          currency: o.currency ?? null,
+          availability: o.availability ?? null,
+          shippingCents: o.shippingCents ?? null,
+          checkedAt: o.verifiedAt ?? null,
+          reportedBy: "exa" as const,
+          supportingSource: o.supportingSource ?? null,
+        })),
+        rejected: (latest.offers ?? [])
+          .filter((o) => o.rejectedReason !== null)
+          .map((o) => ({ retailer: o.retailer, productUrl: o.productUrl, reason: o.rejectedReason })),
+      }
+    : null;
+
+  const evidenceDocs = await ctx.db
+    .query("evidence")
+    .withIndex("by_cartItemId_and_section", (q) => q.eq("cartItemId", item._id))
+    .take(10);
+
   const totals = offer ? estimateTotals(offer.priceCents, offer.shippingCents, item.quantity) : null;
   const target = item.decision?.targetCents;
   const compareTo =
@@ -102,10 +242,6 @@ export async function cartItemView(
         : totals.totalCents
       : null;
 
-  const evidenceDocs = await ctx.db
-    .query("evidence")
-    .withIndex("by_cartItemId_and_section", (q) => q.eq("cartItemId", item._id))
-    .take(10);
   const sections = SECTION_NAMES.map((name) => {
     const e = evidenceDocs.find((d) => d.section === name);
     if (!e) return { section: name, status: "pending" as const, checkedAt: null, simulated: false };
@@ -158,6 +294,8 @@ export async function cartItemView(
     variant: variant ? { id: variant._id, label: variant.label } : null,
     offer: offer ? offerView(offer, variant?.label ?? null) : null,
     offers: productOffers.map((o) => offerView(o, variantLabels.get(o.variantId) ?? null)),
+    newOffer: newOffer ? offerView(newOffer, variantLabels.get(newOffer.variantId) ?? null) : null,
+    offerAvailability,
     rating,
     price: offer && totals
       ? {
@@ -168,7 +306,14 @@ export async function cartItemView(
           estimated: true,
         }
       : null,
-    priceHistory: offer ? await priceHistoryFor(ctx, offer) : null,
+    comparison: comparisonView,
+    priceHistory: offer
+      ? await priceHistoryFor(
+          ctx,
+          offer,
+          evidenceDocs.find((e) => e.section === "priceHistory") ?? null,
+        )
+      : null,
     decision: item.decision
       ? {
           priorities: item.decision.priorities,

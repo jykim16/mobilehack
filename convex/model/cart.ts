@@ -140,22 +140,65 @@ export async function setQuantityFor(
   return null;
 }
 
-export async function removeItemFor(ctx: MutationCtx, shopperId: Id<"users">, itemId: Id<"cartItems">) {
-  await loadOwnedItem(ctx, shopperId, itemId);
-  await ctx.db.patch("cartItems", itemId, { status: "removed" });
-  const pending = await ctx.db
+export async function removeItemFor(
+  ctx: MutationCtx,
+  shopperId: Id<"users">,
+  itemId: Id<"cartItems">,
+) {
+  const item = await loadOwnedItem(ctx, shopperId, itemId);
+
+  const requests = await ctx.db
     .query("purchaseRequests")
-    .withIndex("by_shopperId_and_status", (q) =>
-      q.eq("shopperId", shopperId).eq("status", "pending_approval"),
-    )
-    .take(50);
-  for (const req of pending) {
-    if (req.cartItemId === itemId) {
-      await ctx.db.patch("purchaseRequests", req._id, {
+    .withIndex("by_shopperId_and_status", (q) => q.eq("shopperId", shopperId))
+    .take(200);
+  const mine = requests.filter((r) => r.cartItemId === itemId);
+  const committed = mine.find((r) => r.status === "approved" || r.status === "ordered");
+  if (committed || item.status === "purchased") {
+    throw new ConvexError({
+      code: "INVALID_STATE",
+      message: "This item is already being purchased; it can't be removed.",
+    });
+  }
+  for (const r of mine) {
+    if (r.status === "pending_approval" || r.status === "quoting") {
+      await ctx.db.patch("purchaseRequests", r._id, {
         status: "expired",
         error: "The cart item was removed.",
       });
     }
   }
-  return null;
+
+  const evidence = await ctx.db
+    .query("evidence")
+    .withIndex("by_cartItemId_and_section", (q) => q.eq("cartItemId", itemId))
+    .take(20);
+  for (const e of evidence) await ctx.db.delete("evidence", e._id);
+
+  const comparisons = await ctx.db
+    .query("priceComparisons")
+    .withIndex("by_cartItemId", (q) => q.eq("cartItemId", itemId))
+    .take(10);
+  for (const c of comparisons) await ctx.db.delete("priceComparisons", c._id);
+
+  if (item.offerId) {
+    const offerId = item.offerId;
+    const siblings = await ctx.db
+      .query("cartItems")
+      .withIndex("by_offerId_and_status", (q) => q.eq("offerId", offerId))
+      .take(50);
+    const shared = siblings.some((s) => s._id !== itemId && s.status !== "removed");
+    if (!shared) {
+      const observations = await ctx.db
+        .query("priceObservations")
+        .withIndex("by_offerId_and_observedAt", (q) => q.eq("offerId", offerId))
+        .take(500);
+      for (const o of observations) await ctx.db.delete("priceObservations", o._id);
+    }
+  }
+
+  const product = item.productId ? await ctx.db.get("products", item.productId) : null;
+  const title = product?.title ?? item.url;
+
+  await ctx.db.delete("cartItems", itemId);
+  return { removed: true as const, title };
 }

@@ -4,6 +4,7 @@ import { v } from "convex/values";
 import { mcpTables } from "./mcp/tables";
 import {
   actor,
+  conditionClass,
   decision,
   enrichmentStatus,
   evidenceScope,
@@ -51,6 +52,20 @@ export default defineSchema({
     returnSummary: v.string(),
     rating: v.optional(v.object({ average: v.number(), count: v.number() })),
     condition: v.optional(v.string()),
+    conditionClass: v.optional(conditionClass),
+    /** Non-new offers seen at this URL: stored and labeled, never presented as the item. */
+    alternates: v.optional(
+      v.array(
+        v.object({
+          conditionClass,
+          condition: v.union(v.string(), v.null()),
+          seller: v.union(v.string(), v.null()),
+          priceCents: v.union(v.number(), v.null()),
+          sourceUrl: v.string(),
+          observedAt: v.number(),
+        }),
+      ),
+    ),
     provenance: v.optional(
       v.object({
         method: v.union(v.literal("firecrawl"), v.literal("opengraph"), v.literal("seed")),
@@ -106,6 +121,7 @@ export default defineSchema({
     summary: v.optional(v.string()),
     highlights: v.array(highlight),
     sources: v.array(source),
+    pendingRun: v.optional(v.string()),
     items: v.optional(
       v.array(
         v.object({
@@ -119,6 +135,22 @@ export default defineSchema({
       ),
     ),
     checkedAt: v.optional(v.number()),
+    history: v.optional(
+      v.object({
+        mode: v.union(
+          v.literal("live"),
+          v.literal("sampled"),
+          v.literal("fallback"),
+          v.literal("observations"),
+        ),
+        seriesLabel: v.union(v.string(), v.null()),
+        currency: v.union(v.string(), v.null()),
+        sourceUrl: v.union(v.string(), v.null()),
+        sampled: v.boolean(),
+        note: v.union(v.string(), v.null()),
+        points: v.array(v.object({ at: v.union(v.number(), v.null()), priceCents: v.number() })),
+      }),
+    ),
     details: v.optional(
       v.object({
         returnWindowDays: v.union(v.number(), v.null()),
@@ -198,6 +230,56 @@ export default defineSchema({
     updatedAt: v.number(),
     simulated: v.boolean(),
   }).index("by_orderId", ["orderId"]),
+
+  priceComparisons: defineTable({
+    shopperId: v.id("users"),
+    cartItemId: v.id("cartItems"),
+    subjectUrl: v.string(),
+    query: v.string(),
+    exaRunId: v.optional(v.string()),
+    status: v.union(
+      v.literal("running"),
+      v.literal("verifying"),
+      v.literal("completed"),
+      v.literal("empty"),
+      v.literal("failed"),
+    ),
+    attempts: v.number(),
+    checkedAt: v.optional(v.number()),
+    note: v.optional(v.string()),
+    candidates: v.array(
+      v.object({
+        retailer: v.string(),
+        seller: v.union(v.string(), v.null()),
+        productUrl: v.string(),
+        matchedIdentifier: v.union(v.string(), v.null()),
+        condition: v.union(v.string(), v.null()),
+        priceCents: v.union(v.number(), v.null()),
+        currency: v.union(v.string(), v.null()),
+        availability: v.union(v.string(), v.null()),
+        supportingSource: v.union(v.string(), v.null()),
+      }),
+    ),
+    offers: v.array(
+      v.object({
+        retailer: v.string(),
+        seller: v.union(v.string(), v.null()),
+        productUrl: v.string(),
+        matchedIdentifier: v.union(v.string(), v.null()),
+        condition: v.union(v.string(), v.null()),
+        priceCents: v.union(v.number(), v.null()),
+        currency: v.union(v.string(), v.null()),
+        availability: v.union(v.string(), v.null()),
+        supportingSource: v.union(v.string(), v.null()),
+        shippingCents: v.union(v.number(), v.null()),
+        verifiedAt: v.union(v.number(), v.null()),
+        reportedBy: v.optional(v.union(v.literal("exa"))),
+        rejectedReason: v.union(v.string(), v.null()),
+      }),
+    ),
+  })
+    .index("by_cartItemId", ["cartItemId"])
+    .index("by_exaRunId", ["exaRunId"]),
 
   simulatedRetailerOrders: defineTable({
     orderRef: v.string(),

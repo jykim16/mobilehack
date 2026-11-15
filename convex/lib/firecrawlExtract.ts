@@ -11,13 +11,22 @@ export const OFFER_SCHEMA = {
     variant: { type: ["string", "null"], description: "Colour, size or configuration shown for this offer" },
     retailer: { type: ["string", "null"], description: "Retailer name" },
     seller: { type: ["string", "null"], description: "Who sells or ships this specific offer" },
-    condition: { type: ["string", "null"], description: "New, renewed, used - as stated" },
+    condition: {
+      type: ["string", "null"],
+      description:
+        "The condition of this exact offer as the page states it. Report \"New\" whenever the page sells a new item, " +
+        "even if the word only appears in a condition row. Use null only when the page states no condition at all.",
+    },
     displayedPrice: { type: ["number", "null"], description: "The price shown for this offer, in the page currency" },
     currency: { type: ["string", "null"], description: "ISO currency code" },
     availability: { type: ["string", "null"], description: "In stock, out of stock, or the stated availability text" },
     starRating: { type: ["number", "null"], description: "Average star rating out of 5" },
     ratingCount: { type: ["number", "null"], description: "Number of ratings behind the star rating" },
     asinOrSku: { type: ["string", "null"], description: "ASIN for Amazon, SKU or item id for other retailers" },
+    imageUrl: {
+      type: ["string", "null"],
+      description: "URL of the listing's main product image, absolute or relative to the page",
+    },
     evidence: { type: ["string", "null"], description: "Short verbatim snippet from the page that supports the price and seller" },
   },
   required: ["model", "seller", "displayedPrice", "evidence"],
@@ -36,9 +45,11 @@ export const RETURN_TERMS_SCHEMA = {
 } as const;
 
 export const OFFER_PROMPT =
-  "Extract the single purchasable offer shown on this product page. Use only values printed on the page. " +
-  "If the page shows no price for this exact variant, return null for displayedPrice. " +
-  "Quote the snippet that supports the price and seller in evidence.";
+  "Extract the single purchasable offer shown on this product page: the Buy Box offer, or the best available offer " +
+  "when there is no Buy Box. Use only values printed on the page. Always state the offer's condition explicitly - " +
+  "\"New\" for a new item, or the used/refurbished wording the page uses - and use null only when the page never " +
+  "mentions condition. If the page shows no price for this exact variant, return null for displayedPrice. " +
+  "Quote the snippet that supports the price, seller and condition in evidence.";
 
 export const RETURN_PROMPT =
   "Extract the store's return policy: the return window in days, whether return shipping is free, " +
@@ -72,6 +83,16 @@ function asBoolean(value: unknown): boolean | null {
   return null;
 }
 
+/** Relative image paths are resolved against the listing they came from. */
+export function resolveImageUrl(imageUrl: string | null, listingUrl: string): string | null {
+  if (!imageUrl) return null;
+  try {
+    return new URL(imageUrl, listingUrl).toString();
+  } catch {
+    return null;
+  }
+}
+
 export type ExtractedOffer = {
   model: string | null;
   variant: string | null;
@@ -84,6 +105,7 @@ export type ExtractedOffer = {
   starRating: number | null;
   ratingCount: number | null;
   asinOrSku: string | null;
+  imageUrl: string | null;
   evidence: string | null;
 };
 
@@ -103,6 +125,7 @@ export function parseOffer(raw: RawExtraction): ExtractedOffer {
     starRating: stars !== null && stars >= 0 && stars <= 5 ? Math.round(stars * 10) / 10 : null,
     ratingCount: count !== null && count >= 0 ? Math.round(count) : null,
     asinOrSku: asString(raw.asinOrSku),
+    imageUrl: asString(raw.imageUrl),
     evidence: asString(raw.evidence),
   };
 }
@@ -135,7 +158,11 @@ export function parseReturnTerms(raw: RawExtraction): ExtractedReturnTerms {
  */
 export function sameVariant(expectedKey: string | null, extractedKey: string | null): boolean {
   if (expectedKey === null) return extractedKey === null;
-  if (extractedKey === null) return true;
   const want = expectedKey.split(":").pop()!.toUpperCase();
+  // Retailers we cannot key by SKU fall back to a URL-shaped key
+  // ("walmart:walmart.com/ip/Widget/123456"). There the scraped page is the
+  // authority, so only a clearly different id vetoes the extraction.
+  if (want.includes("/") || want.includes(".")) return true;
+  if (extractedKey === null) return true;
   return extractedKey.toUpperCase().includes(want);
 }
