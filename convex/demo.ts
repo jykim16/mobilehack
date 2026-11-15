@@ -13,6 +13,7 @@ import {
   historyTimestamp,
 } from "./lib/demoData";
 import { addItemFor } from "./model/cart";
+import { SIMULATED_TAX_RATE, estimateTotals } from "./retail/pricing";
 
 const DEMO_DROP_SOURCE = "Demo control: later price observation";
 
@@ -93,20 +94,50 @@ export const setupMyCart = mutation({
   },
 });
 
+/** $250 all-in target the demo price drop aims under. */
+const DEMO_ALL_IN_TARGET_CENTS = 25000;
+
+/** Largest item price whose all-in total still lands at or under the target. */
+function dropPriceFor(currentCents: number, shippingCents: number): number {
+  const allIn = (price: number) => estimateTotals(price, shippingCents, 1).totalCents;
+  let price = Math.min(currentCents - 1, Math.round(DEMO_ALL_IN_TARGET_CENTS / (1 + SIMULATED_TAX_RATE)));
+  while (price > 0 && allIn(price) > DEMO_ALL_IN_TARGET_CENTS - 100) price -= 1;
+  if (price <= 0 || price >= currentCents) price = Math.round(currentCents * 0.94);
+  return Math.max(price, 1);
+}
+
 async function advance(ctx: MutationCtx) {
   const offer = await heroOffer(ctx);
   const now = Date.now();
+  const priceCents = dropPriceFor(offer.priceCents, offer.shippingCents);
   await ctx.db.insert("priceObservations", {
     offerId: offer._id,
-    priceCents: HERO_DROPPED_PRICE_CENTS,
+    priceCents,
     shippingCents: offer.shippingCents,
     observedAt: now,
     source: DEMO_DROP_SOURCE,
     simulated: true,
   });
-  await ctx.db.patch("offers", offer._id, { priceCents: HERO_DROPPED_PRICE_CENTS, updatedAt: now });
+  await ctx.db.patch("offers", offer._id, {
+    priceCents,
+    updatedAt: now,
+    provenance: offer.provenance
+      ? {
+          ...offer.provenance,
+          observedAt: now,
+          note: "Demo control: a staged price change, not an observation from the retailer",
+        }
+      : {
+          method: "seed",
+          sourceUrl: offer.url,
+          observedAt: now,
+          supportingText: null,
+          verifiedKey: null,
+          note: "Demo control: a staged price change, not an observation from the retailer",
+        },
+  });
   await ctx.runMutation(internal.enrichment.refreshPriceHistory, { offerId: offer._id });
-  return { offerId: offer._id, priceCents: HERO_DROPPED_PRICE_CENTS, observedAt: now };
+  return { offerId: offer._id, priceCents, observedAt: now };
 }
 
 /** DEMO CONTROL: writes the later (lower) price observation for the hero offer. */

@@ -65,6 +65,18 @@ export const recordClientPlacement = mutation({
         retailerOrderId: order.retailerOrderId,
       };
     }
+    const request = await ctx.db.get("purchaseRequests", order.purchaseRequestId);
+    const approvable =
+      request &&
+      (request.status === "approved" || request.status === "ordered") &&
+      request.quoteVersion === order.quoteVersion;
+    if (!approvable) {
+      throw new ConvexError({
+        code: "INVALID_STATE",
+        message:
+          "This order is not approved at its current quote version; the shopper must approve the fresh quote first.",
+      });
+    }
     await ctx.db.patch("orders", order._id, {
       status: "placed",
       retailerOrderId: args.retailerOrderId,
@@ -310,6 +322,7 @@ export const syncShipment = internalAction({
       trackingUrl: status.shipment.trackingUrl ?? "",
       eta: status.shipment.eta ?? "",
       events: status.shipment.events ?? [],
+      simulated: true,
     });
     const done = status.shipment.status === "delivered";
     if (!done && polls < 60) {
@@ -328,13 +341,17 @@ export const applyShipment = internalMutation({
     trackingUrl: v.string(),
     eta: v.string(),
     events: v.array(shipmentEvent),
+    simulated: v.boolean(),
   },
-  handler: async (ctx, { orderId, status, carrier, trackingNumber, trackingUrl, eta, events }) => {
+  handler: async (ctx, { orderId, status, carrier, trackingNumber, trackingUrl, eta, events, simulated }) => {
     const shipment = await ctx.db
       .query("shipments")
       .withIndex("by_orderId", (q) => q.eq("orderId", orderId))
       .unique();
     if (!shipment) return null;
+    // A live (device-synced) shipment is never overwritten by the simulated
+    // carrier, and the check happens in the same transaction as the write.
+    if (simulated && shipment.simulated === false) return null;
     await ctx.db.patch("shipments", shipment._id, {
       status,
       carrier: carrier || undefined,
@@ -342,6 +359,7 @@ export const applyShipment = internalMutation({
       trackingUrl: trackingUrl || undefined,
       eta: eta || undefined,
       events,
+      simulated,
       updatedAt: Date.now(),
     });
     return null;
