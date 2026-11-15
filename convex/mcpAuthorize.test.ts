@@ -77,6 +77,23 @@ describe("oauth authorize credentials", () => {
     expect(new URL(response.headers.get("location")!).searchParams.get("code")).toMatch(/^cart_code_/);
   });
 
+  test("a pairing code dies with the connection that issued it", async () => {
+    const { t, shopperId } = await setup();
+    const connectionId = await t.run(async (ctx) =>
+      ctx.db.insert("mcpTokens", { shopperId, kind: "connection", scope: "cart", label: "Agent", createdAt: Date.now() }),
+    );
+    const live = await t.run(async (ctx) =>
+      ctx.db.insert("mcpPairingCodes", { code: "LIVE23", shopperId, connectionId, expiresAt: Date.now() + 60_000, used: false }),
+    );
+    expect((await authorize(t, "LIVE23")).status).toBe(302);
+
+    await t.run(async (ctx) => ctx.db.patch("mcpTokens", connectionId, { revokedAt: Date.now() }));
+    await t.run(async (ctx) => ctx.db.patch("mcpPairingCodes", live, { used: false }));
+    const afterRevoke = await authorize(t, "LIVE23");
+    expect(afterRevoke.status).toBe(400);
+    expect(await afterRevoke.text()).toContain("invalid");
+  });
+
   test("an unknown token is refused without revealing anything", async () => {
     const { t } = await setup();
     const response = await authorize(t, "cart_ct_nope");

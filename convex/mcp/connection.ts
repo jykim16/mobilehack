@@ -20,10 +20,14 @@ function newPairingCode(): string {
   return Array.from(bytes, (b) => PAIRING_ALPHABET[b % PAIRING_ALPHABET.length]).join("");
 }
 
-async function insertPairingCode(ctx: MutationCtx, shopperId: Id<"users">): Promise<{ code: string; expiresAt: number }> {
+async function insertPairingCode(
+  ctx: MutationCtx,
+  shopperId: Id<"users">,
+  connectionId?: Id<"mcpTokens">,
+): Promise<{ code: string; expiresAt: number }> {
   const code = newPairingCode();
   const expiresAt = Date.now() + PAIRING_CODE_TTL_MS;
-  await ctx.db.insert("mcpPairingCodes", { code, shopperId, expiresAt, used: false });
+  await ctx.db.insert("mcpPairingCodes", { code, shopperId, connectionId, expiresAt, used: false });
   return { code, expiresAt };
 }
 export const createPairingCode = mutation({
@@ -39,7 +43,7 @@ export const create = mutation({
   handler: async (ctx, { label }): Promise<{ token: string; pairingCode: string; pairingCodeExpiresAt: number }> => {
     const shopperId = await requireShopper(ctx);
     const token = "cart_ct_" + crypto.randomUUID().replace(/-/g, "") + crypto.randomUUID().replace(/-/g, "");
-    await ctx.db.insert("mcpTokens", {
+    const connectionId = await ctx.db.insert("mcpTokens", {
       shopperId,
       tokenHash: await hashToken(token),
       kind: "connection",
@@ -47,7 +51,7 @@ export const create = mutation({
       label: label ?? "Agent",
       createdAt: Date.now(),
     });
-    const pairing = await insertPairingCode(ctx, shopperId);
+    const pairing = await insertPairingCode(ctx, shopperId, connectionId);
     return { token, pairingCode: pairing.code, pairingCodeExpiresAt: pairing.expiresAt };
   },
 });

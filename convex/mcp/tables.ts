@@ -24,6 +24,8 @@ export const mcpTables = {
   mcpPairingCodes: defineTable({
     code: v.string(),
     shopperId: v.id("users"),
+    /** Set when the code was issued with a connection: revoking that connection kills the code too. */
+    connectionId: v.optional(v.id("mcpTokens")),
     expiresAt: v.number(),
     used: v.boolean(),
   }).index("by_code", ["code"]),

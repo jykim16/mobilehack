@@ -203,6 +203,10 @@ export const consumePairingCode = internalMutation({
       .withIndex("by_code", (q) => q.eq("code", normalized))
       .unique();
     if (!row || row.used || row.expiresAt < Date.now()) return null;
+    if (row.connectionId) {
+      const connection = await ctx.db.get("mcpTokens", row.connectionId);
+      if (!connection || connection.revokedAt) return null;
+    }
     await ctx.db.patch("mcpPairingCodes", row._id, { used: true });
     return row.shopperId;
   },
