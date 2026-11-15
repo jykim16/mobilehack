@@ -65,13 +65,21 @@ npx eas-cli@latest update:configure
 
 Commit the real `updates.url` and `extra.eas.projectId` generated in `app.json`, retain `runtimeVersion: { "policy": "fingerprint" }`, and retain the chosen owner. Configure this **before** building a binary so it can receive compatible updates without another install.
 
-After installing that binary, publish compatible JavaScript and asset updates with:
+After installing that binary, publish compatible JavaScript and asset updates for custom native builds with:
 
 ```sh
 npx eas-cli@latest update --channel preview --environment preview --message 'Cart teammate preview' --non-interactive
 ```
 
-Share the real dashboard/build links returned by Expo, not guessed URLs. A preview release build receives its channel's updates; arbitrary PR update QRs require a compatible development client. Adding or changing native modules requires a new binary with a matching fingerprint. No GitHub preview workflow is configured.
+Expo Go uses the SDK runtime (`exposdk:58.0.0` for SDK 58), not a custom binary's native fingerprint. Publish a separate compatible update to the same preview channel with:
+
+```sh
+CART_EXPO_GO_PREVIEW=1 npx eas-cli@latest update --channel preview --environment preview --message 'Cart Expo Go preview' --non-interactive
+```
+
+`app.config.ts` selects the SDK runtime only for that explicit publishing mode; every EAS build profile forces the flag off and retains the fingerprint policy in `app.json`. Do not store this flag in the Expo environment. The channel can contain both runtimes: clients select the matching one, so a custom native binary does not receive an SDK-runtime update by accident. Publish both variants when supporting Expo Go and installed preview builds. Expo Go updates may only use its bundled native modules; SDK 58 includes Cart's WebView and SecureStore, but adding a non-bundled module requires a custom build instead.
+
+Share the actual platform update links and QRs returned by Expo. A preview release build receives its channel's matching-runtime updates; arbitrary PR update QRs require a compatible development client. Adding or changing native modules requires a new binary with a matching fingerprint. No GitHub preview workflow is configured.
 
 ## Zero-install web preview
 

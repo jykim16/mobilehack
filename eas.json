@@ -7,6 +7,9 @@
       "developmentClient": true,
       "distribution": "internal",
       "environment": "development",
+      "env": {
+        "CART_EXPO_GO_PREVIEW": "0"
+      },
       "android": {
         "buildType": "apk"
       },
@@ -16,6 +19,9 @@
       "distribution": "internal",
       "channel": "preview",
       "environment": "preview",
+      "env": {
+        "CART_EXPO_GO_PREVIEW": "0"
+      },
       "android": {
         "buildType": "apk"
       }
@@ -24,6 +30,9 @@
       "distribution": "store",
       "channel": "production",
       "environment": "production",
+      "env": {
+        "CART_EXPO_GO_PREVIEW": "0"
+      },
       "autoIncrement": true
     }
   }
