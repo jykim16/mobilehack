@@ -83,7 +83,11 @@ npx eas-cli@latest env:exec preview 'EXPO_NO_DOTENV=1 npx expo export --platform
 
 The export runs inside the selected Expo environment and disables local dotenv overrides. `deploy --environment preview` alone only supplies server-side values; it cannot replace public URLs already inlined into the browser bundle. Create both preview variables before exporting.
 
-The first deployment asks for a preview subdomain; choose it rather than guessing a URL. Send the actual HTTPS link returned by the CLI. Teammates need only a phone browser and a Cart account. This is not a native-app test: the Amazon WebView integration is unavailable on web. Deploy the whole server export through Expo Hosting, not just `dist/client` to a static file host. Export again before each deployment. No hosting deployment has been created by this configuration change.
+The first deployment asks for a preview subdomain; choose it rather than guessing a URL. Send the actual HTTPS link returned by the CLI. Teammates need only a phone browser and a Cart account. This is not a native-app test: the Amazon WebView integration is unavailable on web. Deploy the whole server export through Expo Hosting, not just `dist/client` to a static file host. Export again before each deployment; editing the configuration alone does not redeploy the site.
+
+## iOS simulator build compatibility
+
+The SDK 58 `expo-dev-launcher` release `58.0.20` calls the iOS 27.1-only `axisBehavior` SwiftUI API when compiled with Swift 6.4. Revyl's Xcode 27.0 runner has that compiler but not that SDK API, so a runtime availability check does not prevent compilation from failing. The version-scoped postinstall patch uses the launcher's default toolbar placement instead of that cosmetic preference. It leaves the application UI and update runtime policy unchanged. Remove the patch when upgrading to an upstream launcher release that guards the SDK correctly.
 
 ## References
 

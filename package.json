@@ -48,6 +48,7 @@
     "vitest": "^5.1.0"
   },
   "scripts": {
+    "postinstall": "node scripts/patch-expo-dev-launcher.mjs",
     "start": "expo start",
     "reset-project": "node ./scripts/reset-project.js",
     "android": "expo start --android",
