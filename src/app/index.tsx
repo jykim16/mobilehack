@@ -3,16 +3,15 @@ import { router } from 'expo-router';
 import { useRef, useState } from 'react';
 import {
   KeyboardAvoidingView,
-  Pressable,
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
   type ScrollViewInstance,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { ChatComposer, COMPOSER_HEIGHT } from '@/components/chat-composer';
 import { PillButton } from '@/components/pill-button';
 import { ProductImage, RatingText } from '@/components/product-bits';
 import { Colors, Radius, Spacing, Type, tabularNumbers } from '@/constants/theme';
@@ -46,7 +45,10 @@ export default function ChatScreen() {
       <ScrollView
         ref={scrollRef}
         style={styles.messages}
-        contentContainerStyle={styles.messagesContent}
+        contentContainerStyle={[
+          styles.messagesContent,
+          { paddingBottom: COMPOSER_HEIGHT + Math.max(insets.bottom, Spacing.md) + Spacing.xxl },
+        ]}
         keyboardDismissMode="interactive"
         onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: true })}>
         {messages.map((message) => (
@@ -55,40 +57,15 @@ export default function ChatScreen() {
         {assistantTyping && <Text style={styles.typing}>Thinking…</Text>}
       </ScrollView>
 
-      <View style={[styles.composer, { paddingBottom: Math.max(insets.bottom, Spacing.md) }]}>
-        <View style={styles.inputPill}>
-          <TextInput
-            value={draft}
-            onChangeText={setDraft}
-            onSubmitEditing={send}
-            placeholder="Ask about a product or order"
-            placeholderTextColor={Colors.textTertiary}
-            returnKeyType="send"
-            style={styles.input}
-          />
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Send message"
-            disabled={!canSend}
-            onPress={send}
-            style={[styles.send, { backgroundColor: canSend ? Colors.accent : Colors.control }]}>
-            <Ionicons name="arrow-up" size={18} color={canSend ? Colors.onAccent : Colors.textTertiary} />
-          </Pressable>
-        </View>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={`Cart, ${cartCount} items`}
-          onPress={() => router.push('/cart')}
-          style={({ pressed }) => [styles.cartButton, pressed && { backgroundColor: Colors.control }]}>
-          <Ionicons name="cart-outline" size={20} color={Colors.text} />
-          <Text style={styles.cartLabel}>Cart</Text>
-          {cartCount > 0 && (
-            <View style={styles.badge}>
-              <Text style={styles.badgeText}>{cartCount}</Text>
-            </View>
-          )}
-        </Pressable>
-      </View>
+      <ChatComposer
+        value={draft}
+        onChangeText={setDraft}
+        onSend={send}
+        canSend={canSend}
+        cartCount={cartCount}
+        onOpenCart={() => router.push('/cart')}
+        bottomInset={Math.max(insets.bottom, Spacing.md)}
+      />
     </KeyboardAvoidingView>
   );
 }
@@ -156,7 +133,7 @@ const styles = StyleSheet.create({
   header: { alignItems: 'center', paddingBottom: Spacing.md },
   wordmark: { fontSize: 24, lineHeight: 30, fontWeight: '700', letterSpacing: -1, color: Colors.accent },
   messages: { flex: 1 },
-  messagesContent: { paddingHorizontal: Spacing.lg, paddingTop: Spacing.sm, paddingBottom: Spacing.xxl, gap: Spacing.xxl },
+  messagesContent: { paddingHorizontal: Spacing.lg, paddingTop: Spacing.sm, gap: Spacing.xxl },
   userBubble: {
     alignSelf: 'flex-end',
     maxWidth: '82%',
@@ -179,44 +156,4 @@ const styles = StyleSheet.create({
   suggestionRetailer: { ...Type.secondary, color: Colors.textSecondary },
   inCart: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs, height: 36 },
   inCartText: { ...Type.body, color: Colors.textSecondary },
-  composer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.sm,
-    paddingHorizontal: Spacing.lg,
-    paddingTop: Spacing.sm,
-    backgroundColor: Colors.background,
-  },
-  inputPill: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    height: 48,
-    borderRadius: Radius.pill,
-    backgroundColor: Colors.surface,
-    paddingLeft: Spacing.lg,
-    paddingRight: 6,
-  },
-  input: { flex: 1, minWidth: 0, ...Type.body, fontSize: 16, color: Colors.text, height: 48 },
-  send: { width: 36, height: 36, borderRadius: Radius.pill, alignItems: 'center', justifyContent: 'center' },
-  cartButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    height: 48,
-    paddingHorizontal: 14,
-    borderRadius: Radius.pill,
-    backgroundColor: Colors.surface,
-  },
-  cartLabel: { ...Type.body, fontWeight: '600', color: Colors.text },
-  badge: {
-    minWidth: 20,
-    height: 20,
-    borderRadius: Radius.pill,
-    paddingHorizontal: 5,
-    backgroundColor: Colors.strong,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  badgeText: { fontSize: 12, fontWeight: '700', color: Colors.onStrong, ...tabularNumbers },
 });
