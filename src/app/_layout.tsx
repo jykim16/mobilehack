@@ -1,11 +1,13 @@
 import { DarkTheme, DefaultTheme, Stack, ThemeProvider } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
+import type { ReactNode } from 'react';
 import { useColorScheme } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
+import { AmazonBrowserProvider } from '@/amazon';
 import { useColors } from '@/constants/theme';
 import { ShopProvider } from '@/data/shop-store';
-import { SessionProvider, useSession } from '@/lib/session';
+import { SessionProvider, useSession, useShopperId } from '@/lib/session';
 
 export default function RootLayout() {
   const Colors = useColors();
@@ -18,14 +20,20 @@ export default function RootLayout() {
     <GestureHandlerRootView style={{ flex: 1 }}>
       <ThemeProvider value={theme}>
         <SessionProvider>
-          <ShopProvider>
-            <StatusBar style="auto" />
-            <RootStack />
-          </ShopProvider>
+          <ShopperAmazonProvider>
+            <ShopProvider>
+              <StatusBar style="auto" />
+              <RootStack />
+            </ShopProvider>
+          </ShopperAmazonProvider>
         </SessionProvider>
       </ThemeProvider>
     </GestureHandlerRootView>
   );
+}
+
+function ShopperAmazonProvider({ children }: { children: ReactNode }) {
+  return <AmazonBrowserProvider shopperId={useShopperId()}>{children}</AmazonBrowserProvider>;
 }
 
 function RootStack() {
