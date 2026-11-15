@@ -52,19 +52,27 @@ export const enrichOfferFromWeb = internalAction({
         offerId: data.offer._id,
         error: extraction.error ?? "no structured data returned",
       });
-      return null;
+    } else {
+      await ctx.runMutation(internal.enrichment.applyExtractedOffer, {
+        offerId: data.offer._id,
+        extraction: extraction.offer,
+        sourceUrl: extraction.sourceUrl ?? data.offer.url,
+        variantMatches: extraction.variantMatches,
+        observedAt: Date.now(),
+      });
     }
-    await ctx.runMutation(internal.enrichment.applyExtractedOffer, {
-      offerId: data.offer._id,
-      extraction: extraction.offer,
-      sourceUrl: extraction.sourceUrl ?? data.offer.url,
-      variantMatches: extraction.variantMatches,
-      observedAt: Date.now(),
-    });
+    // The policy page is a separate scrape and stands on its own, even when the
+    // listing itself could not be extracted.
     const policyUrl = RETURN_POLICY_URLS[data.offer.retailer];
     if (!policyUrl) return null;
     const terms = await ctx.runAction(internal.firecrawl.extractReturnTerms, { url: policyUrl });
     if (!terms.ok || !terms.terms) return null;
+    // Keep whatever we already had when the policy page yielded nothing usable.
+    const stated =
+      terms.terms.windowDays !== null ||
+      terms.terms.freeReturns !== null ||
+      terms.terms.openedItemRestrictions !== null;
+    if (!stated) return null;
     await ctx.runMutation(internal.enrichment.applyExtractedReturnTerms, {
       cartItemId,
       offerId: data.offer._id,

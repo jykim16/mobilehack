@@ -102,7 +102,11 @@ function dropPriceFor(currentCents: number, shippingCents: number): number {
   const allIn = (price: number) => estimateTotals(price, shippingCents, 1).totalCents;
   let price = Math.min(currentCents - 1, Math.round(DEMO_ALL_IN_TARGET_CENTS / (1 + SIMULATED_TAX_RATE)));
   while (price > 0 && allIn(price) > DEMO_ALL_IN_TARGET_CENTS - 100) price -= 1;
-  if (price <= 0 || price >= currentCents) price = Math.round(currentCents * 0.94);
+  // When the live price already sits under the target, the target-based number is
+  // no drop at all, so take a visible step down instead.
+  if (price <= 0 || price >= currentCents || price > currentCents * 0.98) {
+    price = Math.round(currentCents * 0.94);
+  }
   return Math.max(price, 1);
 }
 
