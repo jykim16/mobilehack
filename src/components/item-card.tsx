@@ -15,6 +15,7 @@ export function ItemCard({
   rating,
   actionLabel,
   actionVariant,
+  actionDisabled,
   onAction,
   children,
 }: {
@@ -25,6 +26,7 @@ export function ItemCard({
   rating: Rating | null;
   actionLabel: string;
   actionVariant: 'strong' | 'secondary';
+  actionDisabled?: boolean;
   onAction: () => void;
   children?: ReactNode;
 }) {
@@ -52,7 +54,7 @@ export function ItemCard({
           onPress={() => router.push({ pathname: '/price-history/[id]', params: { id: itemId } })}>
           {({ pressed }) => <Text style={[styles.priceHistory, pressed && styles.pressed]}>Price history</Text>}
         </Pressable>
-        <PillButton label={actionLabel} variant={actionVariant} size="small" onPress={onAction} />
+        <PillButton label={actionLabel} variant={actionVariant} size="small" disabled={actionDisabled} onPress={onAction} />
       </View>
     </View>
   );

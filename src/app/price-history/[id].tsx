@@ -1,22 +1,16 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { router, useLocalSearchParams } from 'expo-router';
-import { useEffect, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { PriceChart } from '@/components/price-chart';
 import { RetailerLogo } from '@/components/product-bits';
 import { Colors, Radius, Spacing, Type, tabularNumbers } from '@/constants/theme';
-import { getItem } from '@/data/cart-api';
-import type { CartItem } from '@/data/types';
+import { useItem } from '@/data/shop-store';
 import { formatPrice } from '@/lib/format';
 
 export default function PriceHistorySheet() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const [item, setItem] = useState<CartItem | null>(null);
-
-  useEffect(() => {
-    getItem({ itemId: id }).then(setItem);
-  }, [id]);
+  const item = useItem(id);
 
   const history = item?.priceHistory;
   if (!item || !history || history.points.length < 2) {

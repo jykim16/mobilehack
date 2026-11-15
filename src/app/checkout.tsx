@@ -1,70 +1,70 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { router, useLocalSearchParams } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { PillButton } from '@/components/pill-button';
 import { ProductImage } from '@/components/product-bits';
 import { Colors, Radius, Spacing, Type, tabularNumbers } from '@/constants/theme';
-import { decidePurchase, getItem, requestPurchase } from '@/data/cart-api';
-import { idempotencyKey, useShop } from '@/data/shop-store';
-import type { Quote } from '@/data/types';
+import { errorMessage, useShop, type PendingQuote } from '@/data/shop-store';
 import { formatPrice } from '@/lib/format';
-
-interface PendingRequest {
-  requestId: string;
-  quoteVersion: number;
-  quote: Quote;
-}
 
 export default function CheckoutSheet() {
   const insets = useSafeAreaInsets();
   const { items: itemParam } = useLocalSearchParams<{ items: string }>();
-  const { refresh, setCartTab } = useShop();
-  const [requests, setRequests] = useState<PendingRequest[] | null>(null);
+  const { items, quoteItem, decide: decidePurchase, setCartTab } = useShop();
+  const [requests, setRequests] = useState<PendingQuote[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [approving, setApproving] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const started = useRef(false);
 
   useEffect(() => {
+    if (started.current) return;
+    started.current = true;
     const itemIds = (itemParam ?? '').split(',').filter(Boolean);
+    const selected = items.filter((item) => itemIds.includes(item.id));
     Promise.all(
-      itemIds.map(async (itemId) => {
-        const item = await getItem({ itemId });
-        const result = await requestPurchase({
-          itemId,
-          offerId: item.offer!.id,
-          quantity: item.quantity,
-          reason: 'Bought from the Cart app',
-          idempotencyKey: idempotencyKey(),
-        });
-        return { requestId: result.requestId, quoteVersion: result.quoteVersion, quote: result.quote! };
-      })
+      selected.length ? selected.map(quoteItem) : [Promise.reject(new Error('This item is no longer in your cart.'))]
     )
       .then(setRequests)
-      .catch((e: Error) => setError(e.message));
-  }, [itemParam]);
+      .catch((e: unknown) => setError(errorMessage(e)));
+  }, [itemParam, items, quoteItem]);
 
   const decide = async (decision: 'approve' | 'defer') => {
     if (!requests) return;
-    setApproving(decision === 'approve');
-    const results = await Promise.all(
-      requests.map((r) => decidePurchase({ requestId: r.requestId, quoteVersion: r.quoteVersion, decision }))
-    );
-    await refresh();
-    if (decision === 'defer') return router.back();
-    const placed = results.filter((r) => r.outcome === 'approved' || r.outcome === 'already_approved');
-    if (placed.length === results.length) {
-      setCartTab('purchases');
-      return router.back();
+    setBusy(true);
+    setNotice(null);
+    try {
+      const results = await Promise.all(requests.map((r) => decidePurchase(r, decision)));
+      const remaining: PendingQuote[] = [];
+      let message: string | null = null;
+      for (const { outcome, request } of results) {
+        if (outcome === 'stale_quote' && request.quote) {
+          remaining.push({ requestId: request.requestId, quoteVersion: request.quoteVersion, quote: request.quote });
+          message = 'The price changed since this quote. Review the new total.';
+        } else if (outcome === 'expired' && decision === 'approve') {
+          const item = items.find((i) => i.id === request.itemId);
+          if (item) remaining.push(await quoteItem({ ...item, pendingRequest: null }));
+          message = 'That quote expired, so here is a fresh one.';
+        } else if (outcome === 'invalid_state') {
+          message = 'This item can no longer be bought. It may have been removed or already purchased.';
+        }
+      }
+      if (message) {
+        if (remaining.length === 0) setError(message);
+        setRequests(remaining.length ? remaining : null);
+        setNotice(remaining.length ? message : null);
+        setBusy(false);
+        return;
+      }
+      if (decision === 'approve') setCartTab('purchases');
+      router.back();
+    } catch (e) {
+      setNotice(errorMessage(e));
+      setBusy(false);
     }
-    setApproving(false);
-    setRequests(requests.filter((_, i) => !placed.includes(results[i])));
-    setError(
-      results.some((r) => r.outcome === 'expired')
-        ? 'This quote expired, so nothing was ordered. Close and tap Buy again for a fresh quote.'
-        : 'The price changed, so nothing was ordered. Close and tap Buy again for a fresh quote.'
-    );
   };
 
   if (!requests) {
@@ -126,16 +126,16 @@ export default function CheckoutSheet() {
       </ScrollView>
 
       <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, Spacing.lg) }]}>
+        {notice && <Text style={styles.notice}>{notice}</Text>}
         <PillButton
           variant="accent"
-          label={approving ? 'Placing order…' : `Approve · ${formatPrice(total)}`}
-          disabled={approving || error !== null}
+          label={busy ? 'Placing order…' : `Approve · ${formatPrice(total)}`}
+          disabled={busy}
           onPress={() => decide('approve')}
         />
-        <Pressable accessibilityRole="button" hitSlop={8} onPress={() => decide('defer')} disabled={approving}>
+        <Pressable accessibilityRole="button" hitSlop={8} onPress={() => decide('defer')} disabled={busy}>
           {({ pressed }) => <Text style={[styles.notNow, pressed && { color: Colors.text }]}>Not now</Text>}
         </Pressable>
-        {error && <Text style={styles.error}>{error}</Text>}
         {requests.some((r) => r.quote.simulated) && (
           <Text style={styles.footnote}>Simulated checkout. No payment is taken.</Text>
         )}
@@ -182,6 +182,6 @@ const styles = StyleSheet.create({
   totalValue: { ...Type.headline, ...tabularNumbers, color: Colors.text },
   footer: { paddingHorizontal: Spacing.xxl, paddingTop: Spacing.md, gap: Spacing.md, alignItems: 'stretch' },
   notNow: { ...Type.body, color: Colors.textSecondary, textAlign: 'center' },
+  notice: { ...Type.secondary, color: Colors.text, textAlign: 'center' },
   footnote: { ...Type.secondary, color: Colors.textTertiary, textAlign: 'center' },
-  error: { ...Type.secondary, color: Colors.text, textAlign: 'center' },
 });

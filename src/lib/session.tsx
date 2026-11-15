@@ -6,13 +6,14 @@ import { Platform } from 'react-native';
 
 /**
  * Anonymous Convex Auth sign-in, per api-contract.md. Without EXPO_PUBLIC_CONVEX_URL the app runs
- * offline on mock data. With it, the app signs in once at launch in the background; a failure is
- * logged and the app keeps running on mock data. Nothing ever waits on auth to render.
+ * offline on mock data. With it, the app signs in once at launch in the background and the cart reads
+ * live data once signed in; a failure is logged and surfaced as 'signed_out'.
  */
 
 export type SessionStatus = 'offline' | 'signing_in' | 'signed_in' | 'signed_out';
 
 const convexUrl = process.env.EXPO_PUBLIC_CONVEX_URL;
+export const convexConfigured = Boolean(convexUrl);
 const convex = convexUrl ? new ConvexReactClient(convexUrl, { unsavedChangesWarning: false }) : null;
 
 const storage: TokenStorage | undefined =
@@ -41,7 +42,7 @@ function AnonymousSignIn({ children }: { children: ReactNode }) {
     if (isLoading || isAuthenticated || attempted.current) return;
     attempted.current = true;
     signIn('anonymous').catch((error: unknown) => {
-      console.warn('Anonymous sign-in failed; continuing on mock data.', error);
+      console.warn('Anonymous sign-in failed.', error);
       setFailed(true);
     });
   }, [isLoading, isAuthenticated, signIn]);

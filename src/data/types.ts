@@ -23,6 +23,7 @@ export interface Offer {
   returnSummary: string;
   rating: { average: number; count: number } | null;
   inStock: boolean;
+  purchasable?: boolean;
   simulated: boolean;
   updatedAt: number;
 }
@@ -83,6 +84,7 @@ export interface CartItem {
   rating: Rating | null;
   price: Price | null;
   priceHistory: PriceHistory | null;
+  pendingRequest?: { requestId: string; quoteVersion: number; totalCents: number | null; expiresAt: number } | null;
 }
 
 export interface Quote {

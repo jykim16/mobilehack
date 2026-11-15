@@ -26,6 +26,7 @@ export default function RootLayout() {
           <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: Colors.background } }}>
             <Stack.Screen name="index" />
             <Stack.Screen name="cart" />
+            <Stack.Screen name="connect-agent" />
             <Stack.Screen name="price-history/[id]" options={{ ...sheetOptions, sheetAllowedDetents: [0.82] }} />
             <Stack.Screen name="checkout" options={{ ...sheetOptions, sheetAllowedDetents: [0.75] }} />
           </Stack>
