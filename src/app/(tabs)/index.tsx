@@ -226,7 +226,7 @@ export default function CartScreen() {
           )}
         </View>
       ) : (
-        <ScrollView contentContainerStyle={[styles.list, { paddingBottom: 96 }]} keyboardShouldPersistTaps="handled">
+        <ScrollView contentContainerStyle={[styles.list, { paddingBottom: 96 }]} contentInsetAdjustmentBehavior="automatic" keyboardShouldPersistTaps="handled">
           {adds.map((add) => {
             const item = add.itemId ? items.find((i) => i.id === add.itemId) : undefined;
             const offer = item ? (itemOffer(item) ?? item.offer) : null;
