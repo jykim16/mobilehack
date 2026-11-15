@@ -11,6 +11,7 @@ Personal agents (Muse, ChatGPT) shop through Cart over a remote MCP server hoste
 | `add_cart_item` | Saves a retailer product URL to the shopper's Cart and starts enrichment; returns `itemId` + status. |
 | `list_cart_items` | Lists active items with offer, price, decision context and section status. |
 | `get_cart_item` | One item in full: offers, all-in estimate, priorities and target, every evidence section with highlights, source links and checked time. |
+| `remove_cart_item` | Removes an item; a pending request on it is expired with it, and an approved or ordered request refuses so the shopper finishes checkout in the app first. |
 | `request_purchase` | Asks the shopper to approve a purchase. Returns immediately with `pending_approval`; buys nothing. |
 | `get_purchase_status` | Approval state, quote, order reference and shipment status. |
 

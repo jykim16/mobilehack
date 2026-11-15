@@ -128,7 +128,21 @@ check(!req.isError && !!requestId && /approv/i.test(req.structuredContent?.statu
 const status = await call("get_purchase_status", { requestId });
 check(!status.isError && status.structuredContent?.requestId === requestId, "get_purchase_status");
 
-const leaked = JSON.stringify([added, list, item, req, status]).match(/"(payment\w*|card\w*|billing\w*|shippingAddress|shippingTo|address\w*|postalCode|phone\w*)"\s*:/i);
+let removed = null;
+if (names.includes("remove_cart_item")) {
+  removed = await call("remove_cart_item", { itemId });
+  check(!removed.isError && removed.structuredContent?.removed === true && !!removed.structuredContent?.title, "remove_cart_item returns what it removed");
+  const afterRemove = await call("get_cart_item", { itemId });
+  check(afterRemove.isError === true, "the removed item is gone");
+  const expired = await call("get_purchase_status", { requestId });
+  check(expired.structuredContent?.status === "expired", "removing the item expired its pending request", expired.structuredContent?.status);
+  const again = await call("remove_cart_item", { itemId });
+  check(again.isError === true, "removing it twice refuses");
+} else {
+  console.log("SKIP  remove_cart_item: this deployment does not serve it yet");
+}
+
+const leaked = JSON.stringify([added, list, item, req, status, removed]).match(/"(payment\w*|card\w*|billing\w*|shippingAddress|shippingTo|address\w*|postalCode|phone\w*)"\s*:/i);
 check(!leaked, "no payment or shipping fields in tool output", leaked?.[0]);
 
 console.log(failures ? `\n${failures} check(s) failed` : "\nAll checks passed");

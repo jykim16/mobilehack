@@ -46,6 +46,19 @@ export const TOOLS: { name: string; title: string; description: string; inputSch
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
   {
+    name: "remove_cart_item",
+    title: "Remove from Cart",
+    description:
+      "Remove an item from the shopper's Cart. A pending purchase request on it is expired with it. If the shopper already approved or the order was placed, this refuses: tell the shopper to approve or cancel that purchase in the Cart app first.",
+    inputSchema: {
+      type: "object",
+      properties: { itemId: { type: "string", description: "Cart item to remove." } },
+      required: ["itemId"],
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+  },
+  {
     name: "request_purchase",
     title: "Request purchase approval",
     description:
@@ -172,6 +185,10 @@ export async function callTool(ctx: ActionCtx, shopperId: Id<"users">, name: str
       const idempotencyKey = str(args, "idempotencyKey") ?? `agent-purchase-${crypto.randomUUID()}`;
       const request = await backend.requestPurchase(ctx, shopperId, { itemId, offerId, quantity, reason, idempotencyKey });
       return { ...request, message: PENDING_MESSAGE };
+    }
+    case "remove_cart_item": {
+      const removed = await backend.removeItem(ctx, shopperId, str(args, "itemId", true) as Id<"cartItems">);
+      return { removed: true, itemId: removed.itemId, title: removed.title };
     }
     case "get_purchase_status":
       return await backend.getPurchaseStatus(ctx, shopperId, str(args, "requestId", true) as Id<"purchaseRequests">);

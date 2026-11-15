@@ -32,6 +32,10 @@ export async function requestPurchase(
   return await ctx.runAction(internal.agent.requestPurchase, { shopperId, ...args });
 }
 
+export async function removeItem(ctx: ActionCtx, shopperId: Id<"users">, itemId: Id<"cartItems">) {
+  return await ctx.runMutation(internal.mcp.removal.removeItem, { shopperId, itemId });
+}
+
 export async function getPurchaseStatus(ctx: ActionCtx, shopperId: Id<"users">, requestId: Id<"purchaseRequests">) {
   return await ctx.runQuery(internal.agent.getPurchaseStatus, { shopperId, requestId });
 }
