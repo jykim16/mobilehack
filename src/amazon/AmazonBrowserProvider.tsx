@@ -35,16 +35,24 @@ import {
 } from './asin';
 import {
   buildAttachClientQuoteArgs,
-  buildRecordClientPlacementArgs,
   buildSyncClientShipmentArgs,
   type ConvexAmazonSyncClient,
 } from './convex-sync';
+import {
+  applyLedgerReconciliationsToState,
+  computeLiveCartQuantityPlan,
+  ConvexSyncRetryQueue,
+  executeIdempotentAddItem,
+  selectVerifiedAddedCartItem,
+  settleSubmittedOrderConfirmation,
+  verifyFinalCartRowQuantity,
+} from './reconcile-sync';
 import {
   evaluatePreSubmitSafetyGate,
   isValidPositiveCents,
   normalizeApprovedItems,
   OrderSubmissionLedger,
-  resolveOrderConfirmationOutcome,
+  shouldStartFreshSignInNavigation,
   verifyActiveBasketBinding,
   verifyCheckoutReviewBinding,
 } from './safety';
@@ -256,10 +264,6 @@ export function AmazonBrowserProvider({ children, convexSync }: AmazonBrowserPro
   const webViewRef = useRef<NativeWebViewInstance | null>(null);
   const convexSyncRef = useRef<ConvexAmazonSyncClient | undefined>(convexSync);
 
-  useEffect(() => {
-    convexSyncRef.current = convexSync;
-  }, [convexSync]);
-
   const [isSignedIn, setIsSignedIn] = useState(false);
   const [busyCount, setBusyCount] = useState(0);
   const [isSheetOpen, setIsSheetOpen] = useState(false);
@@ -267,6 +271,8 @@ export function AmazonBrowserProvider({ children, convexSync }: AmazonBrowserPro
   const [currentUrl, setCurrentUrl] = useState<string>(AMAZON_CART_URL);
   const [challenge, setChallenge] = useState<AmazonAuthChallenge>('none');
   const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
+  const [lastSyncError, setLastSyncError] = useState<string | null>(null);
+  const [pendingSyncCount, setPendingSyncCount] = useState(0);
 
   const [items, setItems] = useState<CartItem[]>([]);
   const [purchases, setPurchases] = useState<Purchase[]>([]);
@@ -278,8 +284,24 @@ export function AmazonBrowserProvider({ children, convexSync }: AmazonBrowserPro
   const purchasedItemsRef = useRef<Record<string, CartItem>>(purchasedItems);
   const pendingRequestsRef = useRef<PurchaseRequest[]>(pendingRequests);
   const isSignedInRef = useRef(isSignedIn);
+  const challengeRef = useRef<AmazonAuthChallenge>(challenge);
   const lastSyncedAtRef = useRef<number | null>(lastSyncedAt);
   const currentUrlRef = useRef(currentUrl);
+
+  const [syncQueue] = useState(
+    () =>
+      new ConvexSyncRetryQueue((snap) => {
+        setPendingSyncCount(snap.pendingCount);
+        setLastSyncError(snap.lastSyncError);
+      }),
+  );
+
+  useEffect(() => {
+    convexSyncRef.current = convexSync;
+    if (convexSync) {
+      void syncQueue.flush(convexSync);
+    }
+  }, [convexSync, syncQueue]);
 
   useEffect(() => {
     itemsRef.current = items;
@@ -296,6 +318,9 @@ export function AmazonBrowserProvider({ children, convexSync }: AmazonBrowserPro
   useEffect(() => {
     isSignedInRef.current = isSignedIn;
   }, [isSignedIn]);
+  useEffect(() => {
+    challengeRef.current = challenge;
+  }, [challenge]);
   useEffect(() => {
     lastSyncedAtRef.current = lastSyncedAt;
   }, [lastSyncedAt]);
@@ -328,7 +353,9 @@ export function AmazonBrowserProvider({ children, convexSync }: AmazonBrowserPro
         currentUrlRef.current = url;
       }
       setChallenge(nextChallenge);
+      challengeRef.current = nextChallenge;
       setIsSignedIn(signedIn);
+      isSignedInRef.current = signedIn;
       if (signedIn) {
         settleSignInWaiters(true);
       }
@@ -481,6 +508,10 @@ export function AmazonBrowserProvider({ children, convexSync }: AmazonBrowserPro
     return nextItems;
   }, []);
 
+  const flushPendingSync = useCallback(() => {
+    return syncQueue.flush(convexSyncRef.current);
+  }, [syncQueue]);
+
   const openBrowserSheet = useCallback((initialUrl?: string) => {
     setIsSheetOpen(true);
     if (initialUrl && webViewRef.current) {
@@ -488,9 +519,13 @@ export function AmazonBrowserProvider({ children, convexSync }: AmazonBrowserPro
         `window.location.assign(${JSON.stringify(initialUrl)}); true;`,
       );
     } else if (
-      !isSignedInRef.current &&
-      !currentUrlRef.current.includes('/ap/signin') &&
-      webViewRef.current
+      webViewRef.current &&
+      shouldStartFreshSignInNavigation({
+        initialUrl,
+        isSignedIn: isSignedInRef.current,
+        currentUrl: currentUrlRef.current,
+        challenge: challengeRef.current,
+      })
     ) {
       webViewRef.current.injectJavaScript(
         `window.location.assign(${JSON.stringify(AMAZON_SIGNIN_URL)}); true;`,
@@ -512,8 +547,11 @@ export function AmazonBrowserProvider({ children, convexSync }: AmazonBrowserPro
       }
       const res = await evalStep<AmazonSessionCheckResult>((reqId) => buildSessionCheckScript(reqId));
       setIsSignedIn(res.signedIn);
+      isSignedInRef.current = res.signedIn;
       setChallenge(res.challenge);
+      challengeRef.current = res.challenge;
       setLastSyncedAt(res.checkedAt);
+      lastSyncedAtRef.current = res.checkedAt;
       return res;
     });
   }, [enqueueCommand, evalStep, navigateTo]);
@@ -524,7 +562,8 @@ export function AmazonBrowserProvider({ children, convexSync }: AmazonBrowserPro
 
     return new Promise<boolean>((resolve) => {
       signInWaitersRef.current.add(resolve);
-      openBrowserSheet(AMAZON_SIGNIN_URL);
+      // Preserve active MFA/CVF/CAPTCHA or existing /ap/signin challenge if already active
+      openBrowserSheet();
     });
   }, [checkSession, openBrowserSheet]);
 
@@ -590,14 +629,16 @@ export function AmazonBrowserProvider({ children, convexSync }: AmazonBrowserPro
         }
 
         let usedAodFallback = false;
+        let aodAppliedQuantity = true;
         if (productAttempt.status === 'needs_aod_fallback') {
           usedAodFallback = true;
           await navigateTo(amazonOfferListingUrl(asin));
           const aodRes = await evalStep<{
             clicked: boolean;
+            appliedQuantity: boolean;
             seller: string | null;
             priceCents: number | null;
-          }>((reqId) => buildAodAddToCartScript(reqId), 14_000);
+          }>((reqId) => buildAodAddToCartScript(reqId, requestedQty), 14_000);
 
           if (!aodRes.clicked) {
             return {
@@ -613,6 +654,7 @@ export function AmazonBrowserProvider({ children, convexSync }: AmazonBrowserPro
             };
           }
 
+          aodAppliedQuantity = aodRes.appliedQuantity;
           const cached = productCacheRef.current.get(asin);
           if (cached) {
             productCacheRef.current.set(asin, {
@@ -626,7 +668,7 @@ export function AmazonBrowserProvider({ children, convexSync }: AmazonBrowserPro
         await delay(2200);
         await navigateTo(AMAZON_CART_URL);
 
-        const scrapedCart = await evalStep<{
+        let scrapedCart = await evalStep<{
           signedIn: boolean;
           challenge: AmazonAuthChallenge;
           currentUrl: string;
@@ -635,16 +677,54 @@ export function AmazonBrowserProvider({ children, convexSync }: AmazonBrowserPro
           items: ScrapedAmazonCartRow[];
         }>((reqId) => buildScrapeCartScript(reqId));
 
+        // When AOD fallback added a single-unit offer without an in-form quantity selector,
+        // step the cart row up to requestedQty on /gp/cart/view.html and re-verify.
+        if (usedAodFallback && !aodAppliedQuantity && requestedQty > 1) {
+          const livePlan = computeLiveCartQuantityPlan(scrapedCart.items, asin, requestedQty);
+          if (livePlan.found && livePlan.operation === 'increment' && livePlan.steps > 0) {
+            for (let i = 0; i < livePlan.steps; i += 1) {
+              const mutRes = await evalStep<{ mutated: boolean; reason?: string }>((reqId) =>
+                buildMutateCartRowScript(reqId, asin!, 'increment'),
+              );
+              if (!mutRes.mutated) break;
+              await delay(1100);
+            }
+            scrapedCart = await evalStep<{
+              signedIn: boolean;
+              challenge: AmazonAuthChallenge;
+              currentUrl: string;
+              cartCount: number;
+              subtotalCents: number;
+              items: ScrapedAmazonCartRow[];
+            }>((reqId) => buildScrapeCartScript(reqId));
+          }
+        }
+
         setIsSignedIn(scrapedCart.signedIn);
+        isSignedInRef.current = scrapedCart.signedIn;
         setChallenge(scrapedCart.challenge);
+        challengeRef.current = scrapedCart.challenge;
 
         const syncedAt = Date.now();
         const nextItems = syncCartRowsToState(scrapedCart.items, syncedAt);
-        const addedItem =
-          nextItems.find((i) => extractAsin(i.url) === asin) ?? nextItems[0] ?? null;
+        const addedItem = selectVerifiedAddedCartItem(nextItems, asin, requestedQty);
+
+        if (!addedItem) {
+          return {
+            ok: false,
+            asin,
+            usedAodFallback,
+            cartCount: scrapedCart.cartCount,
+            subtotalCents: scrapedCart.subtotalCents,
+            addedItem: null,
+            cartRows: scrapedCart.items,
+            syncedAt,
+            error: `Amazon cart did not reflect ASIN ${asin} at requested quantity (${requestedQty}).`,
+          };
+        }
 
         return {
-          ok: addedItem !== null,
+          ok: true,
           asin,
           usedAodFallback,
           cartCount: scrapedCart.cartCount,
@@ -918,6 +998,7 @@ export function AmazonBrowserProvider({ children, convexSync }: AmazonBrowserPro
       // 1. Reconcile-before-retry ledger check: never double-submit `'placed'` OR `'unknown'` orderRef
       const ledgerEntry = submissionLedgerRef.current.get(orderRef);
       if (ledgerEntry?.state === 'placed') {
+        const replaySync = await syncQueue.flush(convexSyncRef.current);
         return {
           status: 'placed',
           safetyGate: { dryRun, userConfirmed, orderSubmitted: false },
@@ -927,6 +1008,7 @@ export function AmazonBrowserProvider({ children, convexSync }: AmazonBrowserPro
           quote: null,
           shipment: null,
           reason: 'Idempotent replay: returning existing placed order.',
+          syncError: replaySync.lastSyncError,
         };
       }
       if (ledgerEntry?.state === 'unknown') {
@@ -940,6 +1022,7 @@ export function AmazonBrowserProvider({ children, convexSync }: AmazonBrowserPro
           shipment: null,
           reason:
             'Previous submission for this orderRef had an unconfirmed outcome; reconcile via syncOrders() before retrying.',
+          syncError: syncQueue.lastSyncError,
         };
       }
 
@@ -1081,84 +1164,40 @@ export function AmazonBrowserProvider({ children, convexSync }: AmazonBrowserPro
           };
         }
 
-        // Record in ledger immediately after click so no retry can double-click if confirmation fails
         const submitTimestamp = Date.now();
-        submissionLedgerRef.current.recordUnknown(
+        const preExistingOrderIds = purchasesRef.current
+          .map((p) => p.retailerOrderId)
+          .filter((id): id is string => Boolean(id));
+
+        const settled = await settleSubmittedOrderConfirmation({
           orderRef,
-          submitTimestamp,
-          gateDecision.approvedItems.map((i) => i.asin),
-        );
+          submittedAt: submitTimestamp,
+          approvedItems: gateDecision.approvedItems,
+          expectedTotalCents: gateDecision.expectedTotalCents,
+          preExistingOrderIds,
+          verifiedQuote,
+          ledger: submissionLedgerRef.current,
+          syncQueue: syncQueue,
+          convexSync: convexSyncRef.current,
+          readConfirmation: async () => {
+            await navWait;
+            await delay(1500);
+            return evalStep<{
+              retailerOrderId: string | null;
+              isConfirmationSurface?: boolean;
+              hasAuthOrErrorBarrier?: boolean;
+              currentUrl: string;
+            }>((reqId) => buildScrapeOrderConfirmationScript(reqId));
+          },
+        });
 
-        await navWait;
-        await delay(1500);
-        const confirmation = await evalStep<{
-          retailerOrderId: string | null;
-          isConfirmationSurface?: boolean;
-          hasAuthOrErrorBarrier?: boolean;
-          currentUrl: string;
-        }>((reqId) => buildScrapeOrderConfirmationScript(reqId));
-
-        const resolution = resolveOrderConfirmationOutcome(confirmation);
-        setLastSyncedAt(Date.now());
-
-        if (resolution.status === 'unknown') {
-          return {
-            status: 'unknown',
-            safetyGate: { dryRun: false, userConfirmed: true, orderSubmitted: true },
-            orderRef,
-            retailerOrderId: null,
-            placedAt: null,
-            quote: verifiedQuote,
-            shipment: null,
-            reason: resolution.reason,
-          };
-        }
-
-        const placedAt = Date.now();
-        const retailerOrderId = resolution.retailerOrderId;
-        const initialShipment: Shipment = {
-          status: 'ordered',
-          carrier: null,
-          trackingNumber: null,
-          trackingUrl: null,
-          eta: parseDeliveryEtaIso(verifiedQuote.deliveryEstimate, placedAt),
-          events: buildShipmentEvents({
-            status: 'ordered',
-            headline: 'Order placed on Amazon',
-            placedAt,
-            updatedAt: placedAt,
-          }),
-          updatedAt: placedAt,
-          simulated: false,
-        };
-
-        submissionLedgerRef.current.recordPlaced(orderRef, retailerOrderId, placedAt);
-
-        if (convexSyncRef.current?.recordClientPlacement) {
-          void convexSyncRef.current
-            .recordClientPlacement(
-              buildRecordClientPlacementArgs({
-                orderRef,
-                retailerOrderId,
-                placedAt,
-                shipment: initialShipment,
-              }),
-            )
-            .catch(() => undefined);
-        }
-
-        return {
-          status: 'placed',
-          safetyGate: { dryRun: false, userConfirmed: true, orderSubmitted: true },
-          orderRef,
-          retailerOrderId,
-          placedAt,
-          quote: verifiedQuote,
-          shipment: initialShipment,
-        };
+        const checkedAt = Date.now();
+        setLastSyncedAt(checkedAt);
+        lastSyncedAtRef.current = checkedAt;
+        return settled;
       });
     },
-    [enqueueCommand, evalStep, getCheckoutQuote, waitForNextPageReady],
+    [enqueueCommand, evalStep, getCheckoutQuote, syncQueue, waitForNextPageReady],
   );
 
   const syncOrders = useCallback((): Promise<AmazonSyncOrdersResult> => {
@@ -1171,6 +1210,9 @@ export function AmazonBrowserProvider({ children, convexSync }: AmazonBrowserPro
         orders: {
           retailerOrderId: string;
           asin: string | null;
+          asins?: string[];
+          items?: ApprovedBasketItem[];
+          placedAtMs?: number | null;
           productTitle: string;
           imageUrl: string | null;
           totalCents: number | null;
@@ -1181,27 +1223,38 @@ export function AmazonBrowserProvider({ children, convexSync }: AmazonBrowserPro
 
       const syncedAt = Date.now();
       setLastSyncedAt(syncedAt);
+      lastSyncedAtRef.current = syncedAt;
 
       if (!scraped.signedIn) {
         setIsSignedIn(false);
+        isSignedInRef.current = false;
         setChallenge(scraped.challenge);
+        challengeRef.current = scraped.challenge;
+        const syncFlush = await syncQueue.flush(convexSyncRef.current);
         return {
           ok: false,
           requiresSignIn: true,
           purchases: purchasesRef.current,
           syncedAt,
           error: 'Sign in to Amazon to sync Your Orders and delivery dates.',
+          syncError: syncFlush.lastSyncError,
         };
       }
 
       setIsSignedIn(true);
+      isSignedInRef.current = true;
       setChallenge('none');
+      challengeRef.current = 'none';
 
-      // Reconcile any previously `'unknown'` submissions observed in Your Orders
-      submissionLedgerRef.current.reconcileFromSyncedOrders(
+      // Reconcile any previously `'unknown'` submissions strictly against verified new orders
+      const reconciled = submissionLedgerRef.current.reconcileFromSyncedOrders(
         scraped.orders.map((o) => ({
           retailerOrderId: o.retailerOrderId,
           asin: o.asin,
+          asins: o.asins,
+          items: o.items,
+          totalCents: o.totalCents,
+          placedAtMs: o.placedAtMs,
           syncedAt,
         })),
       );
@@ -1234,9 +1287,9 @@ export function AmazonBrowserProvider({ children, convexSync }: AmazonBrowserPro
         });
       }
 
-      const nextPurchasedMap: Record<string, CartItem> = { ...purchasedItemsRef.current };
+      const rawPurchasedMap: Record<string, CartItem> = { ...purchasedItemsRef.current };
 
-      const nextPurchases: Purchase[] = scraped.orders.map((ord) => {
+      const rawSyncedPurchases: Purchase[] = scraped.orders.map((ord) => {
         const enriched = trackerDetailsByOrderId.get(ord.retailerOrderId) ?? null;
         const effectiveHeadline = enriched?.primaryStatus || ord.statusHeadline;
         const shipmentStatus = normalizeShipmentStatus(effectiveHeadline);
@@ -1248,7 +1301,7 @@ export function AmazonBrowserProvider({ children, convexSync }: AmazonBrowserPro
           rawEvents: enriched?.events,
           status: shipmentStatus,
           headline: effectiveHeadline,
-          placedAt: syncedAt - 3_600_000,
+          placedAt: ord.placedAtMs ?? syncedAt - 3_600_000,
           updatedAt: syncedAt,
         });
 
@@ -1263,19 +1316,7 @@ export function AmazonBrowserProvider({ children, convexSync }: AmazonBrowserPro
           simulated: false,
         };
 
-        if (convexSyncRef.current?.syncClientShipment) {
-          void convexSyncRef.current
-            .syncClientShipment(
-              buildSyncClientShipmentArgs({
-                orderRef,
-                retailerOrderId: ord.retailerOrderId,
-                shipment,
-              }),
-            )
-            .catch(() => undefined);
-        }
-
-        nextPurchasedMap[itemId] = {
+        rawPurchasedMap[itemId] = {
           id: itemId,
           url: ord.asin ? canonicalAmazonProductUrl(ord.asin) : AMAZON_ORDERS_URL,
           status: 'purchased',
@@ -1307,7 +1348,7 @@ export function AmazonBrowserProvider({ children, convexSync }: AmazonBrowserPro
           itemId,
           status: 'placed',
           retailerOrderId: ord.retailerOrderId,
-          placedAt: syncedAt,
+          placedAt: ord.placedAtMs ?? syncedAt,
           quote: {
             retailer: 'amazon',
             retailerName: 'Amazon',
@@ -1332,19 +1373,50 @@ export function AmazonBrowserProvider({ children, convexSync }: AmazonBrowserPro
         };
       });
 
-      setPurchasedItems(nextPurchasedMap);
-      purchasedItemsRef.current = nextPurchasedMap;
-      setPurchases(nextPurchases);
-      purchasesRef.current = nextPurchases;
+      const applied = applyLedgerReconciliationsToState({
+        reconciled,
+        pendingRequests: pendingRequestsRef.current,
+        items: itemsRef.current,
+        purchasedItems: rawPurchasedMap,
+        syncedPurchases: rawSyncedPurchases,
+      });
+
+      setPendingRequests(applied.pendingRequests);
+      pendingRequestsRef.current = applied.pendingRequests;
+      setItems(applied.items);
+      itemsRef.current = applied.items;
+      setPurchasedItems(applied.purchasedItems);
+      purchasedItemsRef.current = applied.purchasedItems;
+      setPurchases(applied.purchases);
+      purchasesRef.current = applied.purchases;
+
+      for (const placementArgs of applied.placementsToSync) {
+        void syncQueue.enqueuePlacement(placementArgs, convexSyncRef.current);
+      }
+
+      for (const purchase of applied.purchases) {
+        if (!purchase.retailerOrderId || !purchase.shipment) continue;
+        void syncQueue.enqueueShipment(
+          buildSyncClientShipmentArgs({
+            orderRef: purchase.orderRef,
+            retailerOrderId: purchase.retailerOrderId,
+            shipment: purchase.shipment,
+          }),
+          convexSyncRef.current,
+        );
+      }
+
+      const syncFlush = await syncQueue.flush(convexSyncRef.current);
 
       return {
         ok: true,
         requiresSignIn: false,
-        purchases: nextPurchases,
+        purchases: applied.purchases,
         syncedAt,
+        syncError: syncFlush.lastSyncError,
       };
     });
-  }, [enqueueCommand, evalStep, navigateTo]);
+  }, [enqueueCommand, evalStep, navigateTo, syncQueue]);
 
   const refreshCart = useCallback((): Promise<CartItem[]> => {
     return enqueueCommand(async () => {
@@ -1407,44 +1479,63 @@ export function AmazonBrowserProvider({ children, convexSync }: AmazonBrowserPro
       quantity?: number;
       idempotencyKey: string;
     }) => {
-      const existingId = idempotencyMapRef.current.get(args.idempotencyKey);
-      if (existingId) {
-        return { itemId: existingId, enrichmentStatus: 'enriching' as const, deduplicated: true };
-      }
-      const res = await addToCart({
-        url: args.url,
-        quantity: args.quantity,
-        variantLabel: args.variant,
-        reason: args.reason,
+      return executeIdempotentAddItem({
+        idempotencyMap: idempotencyMapRef.current,
+        idempotencyKey: args.idempotencyKey,
+        runAddToCart: () =>
+          addToCart({
+            url: args.url,
+            quantity: args.quantity,
+            variantLabel: args.variant,
+            reason: args.reason,
+          }),
       });
-      const itemId = res.addedItem?.id ?? `amz-item-${res.asin}`;
-      idempotencyMapRef.current.set(args.idempotencyKey, itemId);
-      return { itemId, enrichmentStatus: 'enriching' as const, deduplicated: false };
     },
     [addToCart],
   );
 
   const setQuantity = useCallback(
     async ({ itemId, quantity }: { itemId: string; quantity: number }): Promise<null> => {
-      const clamped = Math.max(1, Math.min(10, Math.floor(quantity)));
-      const target = itemsRef.current.find((i) => i.id === itemId);
-      const asin = extractAsin(target?.url);
-      if (!target || !asin) return null;
-
       await enqueueCommand(async () => {
-        await navigateTo(AMAZON_CART_URL);
-        const delta = clamped - target.quantity;
-        const steps = Math.min(9, Math.abs(delta));
-        for (let i = 0; i < steps; i += 1) {
-          await evalStep((reqId) =>
-            buildMutateCartRowScript(reqId, asin, delta > 0 ? 'increment' : 'decrement'),
-          );
-          await delay(1100);
+        const target = itemsRef.current.find((i) => i.id === itemId);
+        const asin = extractAsin(target?.url) ?? extractAsin(itemId);
+        if (!asin) {
+          throw new Error(`Cannot update Amazon cart quantity: unknown itemId "${itemId}".`);
         }
-        const snap = await evalStep<{ items: ScrapedAmazonCartRow[] }>((reqId) =>
+
+        await navigateTo(AMAZON_CART_URL);
+        const liveSnap = await evalStep<{ items: ScrapedAmazonCartRow[] }>((reqId) =>
           buildScrapeCartScript(reqId),
         );
-        syncCartRowsToState(snap.items, Date.now());
+        const plan = computeLiveCartQuantityPlan(liveSnap.items, asin, quantity);
+        if (!plan.found) {
+          syncCartRowsToState(liveSnap.items, Date.now());
+          throw new Error(`Amazon cart item ${asin} is no longer in the active cart.`);
+        }
+
+        if (plan.operation !== 'none' && plan.steps > 0) {
+          const stepOp: 'increment' | 'decrement' = plan.operation;
+          for (let i = 0; i < plan.steps; i += 1) {
+            const mutRes = await evalStep<{ mutated: boolean; reason?: string }>((reqId) =>
+              buildMutateCartRowScript(reqId, asin, stepOp),
+            );
+            if (!mutRes.mutated) {
+              throw new Error(
+                `Could not ${stepOp} quantity control for Amazon cart item ${asin} (${mutRes.reason ?? 'unknown'}).`,
+              );
+            }
+            await delay(1100);
+          }
+        }
+
+        const finalSnap = await evalStep<{ items: ScrapedAmazonCartRow[] }>((reqId) =>
+          buildScrapeCartScript(reqId),
+        );
+        syncCartRowsToState(finalSnap.items, Date.now());
+        const verified = verifyFinalCartRowQuantity(finalSnap.items, asin, plan.clampedTarget);
+        if (!verified.ok) {
+          throw new Error(verified.reason);
+        }
       });
       return null;
     },
@@ -1535,18 +1626,19 @@ export function AmazonBrowserProvider({ children, convexSync }: AmazonBrowserPro
       };
 
       idempotencyMapRef.current.set(args.idempotencyKey, requestId);
-      setPendingRequests((prev) => [reqRecord, ...prev]);
+      const nextRequests = [reqRecord, ...pendingRequestsRef.current];
+      setPendingRequests(nextRequests);
+      pendingRequestsRef.current = nextRequests;
 
-      if (quoteRes.quote && !quoteRes.requiresSignIn && convexSyncRef.current?.attachClientQuote) {
-        void convexSyncRef.current
-          .attachClientQuote(
-            buildAttachClientQuoteArgs({
-              requestId,
-              quoteVersion: 1,
-              quote: quoteRes.quote,
-            }),
-          )
-          .catch(() => undefined);
+      if (quoteRes.quote && !quoteRes.requiresSignIn) {
+        void syncQueue.enqueueQuote(
+          buildAttachClientQuoteArgs({
+            requestId,
+            quoteVersion: 1,
+            quote: quoteRes.quote,
+          }),
+          convexSyncRef.current,
+        );
       }
 
       return {
@@ -1557,7 +1649,7 @@ export function AmazonBrowserProvider({ children, convexSync }: AmazonBrowserPro
         quote: quoteRes.quote,
       };
     },
-    [getCheckoutQuote],
+    [getCheckoutQuote, syncQueue],
   );
 
   const decidePurchase = useCallback(
@@ -1577,9 +1669,37 @@ export function AmazonBrowserProvider({ children, convexSync }: AmazonBrowserPro
         throw new Error(`PurchaseRequest ${args.requestId} not found`);
       }
       if (existing.order?.status === 'placed') {
+        void syncQueue.flush(convexSyncRef.current);
         return { outcome: 'already_approved', request: existing };
       }
       if (existing.order?.status === 'unknown') {
+        const ledgerCheck = submissionLedgerRef.current.get(existing.order.orderRef);
+        if (ledgerCheck?.state === 'placed') {
+          const applied = applyLedgerReconciliationsToState({
+            reconciled: [
+              {
+                orderRef: existing.order.orderRef,
+                retailerOrderId: ledgerCheck.retailerOrderId,
+                placedAt: ledgerCheck.placedAt,
+              },
+            ],
+            pendingRequests: pendingRequestsRef.current,
+            items: itemsRef.current,
+            purchasedItems: purchasedItemsRef.current,
+            syncedPurchases: purchasesRef.current,
+          });
+          setPendingRequests(applied.pendingRequests);
+          pendingRequestsRef.current = applied.pendingRequests;
+          setItems(applied.items);
+          itemsRef.current = applied.items;
+          setPurchasedItems(applied.purchasedItems);
+          purchasedItemsRef.current = applied.purchasedItems;
+          setPurchases(applied.purchases);
+          purchasesRef.current = applied.purchases;
+          const promoted =
+            applied.pendingRequests.find((r) => r.requestId === args.requestId) ?? existing;
+          return { outcome: 'already_approved', request: promoted };
+        }
         return { outcome: 'unknown', request: existing };
       }
       if (Date.now() > existing.expiresAt) {
@@ -1661,9 +1781,11 @@ export function AmazonBrowserProvider({ children, convexSync }: AmazonBrowserPro
           },
           shipment: null,
         };
-        setPendingRequests((prev) =>
-          prev.map((r) => (r.requestId === args.requestId ? unknownReq : r)),
+        const nextPending = pendingRequestsRef.current.map((r) =>
+          r.requestId === args.requestId ? unknownReq : r,
         );
+        setPendingRequests(nextPending);
+        pendingRequestsRef.current = nextPending;
         return { outcome: 'unknown', request: unknownReq, orderResult };
       }
 
@@ -1702,14 +1824,22 @@ export function AmazonBrowserProvider({ children, convexSync }: AmazonBrowserPro
         };
 
         if (targetItem) {
-          setPurchasedItems((prev) => ({
-            ...prev,
-            [targetItem.id]: { ...targetItem, status: 'purchased' },
-          }));
-          setItems((prev) => prev.filter((i) => i.id !== targetItem.id));
+          const nextPurchased = {
+            ...purchasedItemsRef.current,
+            [targetItem.id]: { ...targetItem, status: 'purchased' as const },
+          };
+          setPurchasedItems(nextPurchased);
+          purchasedItemsRef.current = nextPurchased;
+
+          const nextActiveItems = itemsRef.current.filter((i) => i.id !== targetItem.id);
+          setItems(nextActiveItems);
+          itemsRef.current = nextActiveItems;
         }
 
-        setPurchases((prev) => [newPurchase, ...prev]);
+        const nextPurchases = [newPurchase, ...purchasesRef.current];
+        setPurchases(nextPurchases);
+        purchasesRef.current = nextPurchases;
+
         const completedReq: PurchaseRequest = {
           ...existing,
           status: 'ordered',
@@ -1724,15 +1854,17 @@ export function AmazonBrowserProvider({ children, convexSync }: AmazonBrowserPro
           },
           shipment: newPurchase.shipment,
         };
-        setPendingRequests((prev) =>
-          prev.map((r) => (r.requestId === args.requestId ? completedReq : r)),
+        const nextPending = pendingRequestsRef.current.map((r) =>
+          r.requestId === args.requestId ? completedReq : r,
         );
+        setPendingRequests(nextPending);
+        pendingRequestsRef.current = nextPending;
         return { outcome: 'approved', request: completedReq, orderResult };
       }
 
       return { outcome: 'invalid_state', request: existing, orderResult };
     },
-    [placeOrder],
+    [placeOrder, syncQueue],
   );
 
   const status: AmazonSessionStatus =
@@ -1745,6 +1877,8 @@ export function AmazonBrowserProvider({ children, convexSync }: AmazonBrowserPro
       currentUrl,
       challenge,
       lastSyncedAt,
+      lastSyncError,
+      pendingSyncCount,
       openBrowserSheet,
       closeBrowserSheet,
       ensureSignedIn,
@@ -1753,6 +1887,7 @@ export function AmazonBrowserProvider({ children, convexSync }: AmazonBrowserPro
       getCheckoutQuote,
       placeOrder,
       syncOrders,
+      flushPendingSync,
     }),
     [
       status,
@@ -1760,6 +1895,8 @@ export function AmazonBrowserProvider({ children, convexSync }: AmazonBrowserPro
       currentUrl,
       challenge,
       lastSyncedAt,
+      lastSyncError,
+      pendingSyncCount,
       openBrowserSheet,
       closeBrowserSheet,
       ensureSignedIn,
@@ -1768,6 +1905,7 @@ export function AmazonBrowserProvider({ children, convexSync }: AmazonBrowserPro
       getCheckoutQuote,
       placeOrder,
       syncOrders,
+      flushPendingSync,
     ],
   );
 
@@ -1778,6 +1916,8 @@ export function AmazonBrowserProvider({ children, convexSync }: AmazonBrowserPro
       purchasedItems,
       pendingRequests,
       lastSyncedAt,
+      lastSyncError,
+      pendingSyncCount,
       listItems,
       getItem,
       addItem,
@@ -1788,6 +1928,7 @@ export function AmazonBrowserProvider({ children, convexSync }: AmazonBrowserPro
       decidePurchase,
       refreshCart,
       refreshPurchases,
+      flushPendingSync,
     }),
     [
       items,
@@ -1795,6 +1936,8 @@ export function AmazonBrowserProvider({ children, convexSync }: AmazonBrowserPro
       purchasedItems,
       pendingRequests,
       lastSyncedAt,
+      lastSyncError,
+      pendingSyncCount,
       listItems,
       getItem,
       addItem,
@@ -1805,6 +1948,7 @@ export function AmazonBrowserProvider({ children, convexSync }: AmazonBrowserPro
       decidePurchase,
       refreshCart,
       refreshPurchases,
+      flushPendingSync,
     ],
   );
 

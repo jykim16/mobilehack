@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { registerHooks } from 'node:module';
 import test from 'node:test';
 import vm from 'node:vm';
 
@@ -17,17 +18,43 @@ import {
   evaluatePreSubmitSafetyGate,
   OrderSubmissionLedger,
   resolveOrderConfirmationOutcome,
+  shouldStartFreshSignInNavigation,
   verifyActiveBasketBinding,
   verifyCheckoutReviewBinding,
 } from '../safety.ts';
 import {
+  buildAodAddToCartScript,
   buildInspectCheckoutReviewScript,
   buildMutateCartRowScript,
   buildScrapeCartScript,
   buildScrapeOrderConfirmationScript,
   buildScrapeProgressTrackerScript,
+  buildScrapeYourOrdersScript,
   buildSubmitCheckoutOrderScript,
 } from '../scripts.ts';
+
+registerHooks({
+  resolve(specifier, context, nextResolve) {
+    if (
+      (specifier.startsWith('./') || specifier.startsWith('../')) &&
+      !/\.[a-z0-9]+$/i.test(specifier) &&
+      context.parentURL?.includes('/src/amazon/')
+    ) {
+      return nextResolve(`${specifier}.ts`, context);
+    }
+    return nextResolve(specifier, context);
+  },
+});
+
+const {
+  applyLedgerReconciliationsToState,
+  computeLiveCartQuantityPlan,
+  ConvexSyncRetryQueue,
+  executeIdempotentAddItem,
+  selectVerifiedAddedCartItem,
+  settleSubmittedOrderConfirmation,
+  verifyFinalCartRowQuantity,
+} = await import('../reconcile-sync.ts');
 
 /**
  * Execute an injected WebView step script inside an isolated Node `vm` context
@@ -520,7 +547,13 @@ test('(e) repeat approval/placeOrder on same orderRef cannot double-submit while
   const orderRef = 'CART-REQ_ABC123';
 
   // First submit clicked Place Order, but confirmation timed out -> recorded as 'unknown'
-  ledger.recordUnknown(orderRef, 1_700_000_000_000, ['B09XS7JWHH']);
+  ledger.recordUnknown({
+    orderRef,
+    submittedAt: 1_700_000_000_000,
+    approvedItems: [{ asin: 'B09XS7JWHH', quantity: 1 }],
+    expectedTotalCents: 24900,
+    preExistingOrderIds: ['114-0000001-0000001'],
+  });
   assert.equal(ledger.get(orderRef)?.state, 'unknown');
 
   // Fabricated AMZ-PENDING-* IDs are rejected even if someone tries to recordPlaced directly
@@ -533,6 +566,9 @@ test('(e) repeat approval/placeOrder on same orderRef cannot double-submit while
     {
       retailerOrderId: '114-9988776-5544332',
       asin: 'B09XS7JWHH',
+      items: [{ asin: 'B09XS7JWHH', quantity: 1 }],
+      totalCents: 24900,
+      placedAtMs: 1_700_000_010_000,
       syncedAt: 1_700_000_030_000,
     },
   ]);
@@ -752,4 +788,574 @@ test('(g) currency parser ignores embedded item counts ("Items (2): $199.00") & 
   );
   assert.equal(multiQtyWithDeleteBtn.data.mutated, true);
   assert.equal(deleteActiveClicked, 1);
+});
+
+// ============================================================================
+// (h) PR #10 Review Hardening Regression Suite (Findings 1 through 10)
+// ============================================================================
+
+test('(h.1) [HIGH] checkout submission rejects missing, partial, or unidentified ASINs even when count & total match', async () => {
+  // Case 1: summaryItemCount=1 and total=$249.00 match, but lineItems has NO parseable ASIN (asin: null)
+  const hostUnidentified = verifyCheckoutReviewBinding({
+    approvedItems: [{ asin: 'B09XS7JWHH', quantity: 1 }],
+    summaryItemCount: 1,
+    lineItems: [{ asin: null, title: 'Same-priced mystery item', quantity: 1 }],
+  });
+  assert.equal(hostUnidentified.ok, false);
+
+  const domUnidentified = await runInjectedStepScript(
+    buildSubmitCheckoutOrderScript('req-unidentified-asin', {
+      dryRun: false,
+      userConfirmed: true,
+      expectedTotalCents: 24900,
+      approvedItems: [{ asin: 'B09XS7JWHH', quantity: 1 }],
+    }),
+    {
+      grandTotalText: '$249.00',
+      summaryLines: ['Items (1): $229.99', 'Estimated tax: $19.01', 'Order total: $249.00'],
+      checkoutItems: [{ asin: '', title: 'Same-priced mystery item', quantity: 1 }],
+    },
+  );
+  assert.equal(domUnidentified.placeOrderClicks, 0);
+  assert.equal(domUnidentified.data.submitted, false);
+  assert.equal(domUnidentified.data.code, 'basket_mismatch');
+
+  // Case 2: 2 approved items (Sony + Bose), checkout has Sony + 1 unidentified row (partial ASIN evidence)
+  const hostPartial = verifyCheckoutReviewBinding({
+    approvedItems: [
+      { asin: 'B09XS7JWHH', quantity: 1 },
+      { asin: 'B0CCZ26B5V', quantity: 1 },
+    ],
+    summaryItemCount: 2,
+    lineItems: [
+      { asin: 'B09XS7JWHH', title: 'Sony WH-1000XM5', quantity: 1 },
+      { asin: null, title: 'Unparsed second item', quantity: 1 },
+    ],
+  });
+  assert.equal(hostPartial.ok, false);
+
+  const domPartial = await runInjectedStepScript(
+    buildSubmitCheckoutOrderScript('req-partial-asin', {
+      dryRun: false,
+      userConfirmed: true,
+      expectedTotalCents: 57800,
+      approvedItems: [
+        { asin: 'B09XS7JWHH', quantity: 1 },
+        { asin: 'B0CCZ26B5V', quantity: 1 },
+      ],
+    }),
+    {
+      grandTotalText: '$578.00',
+      summaryLines: ['Items (2): $534.00', 'Estimated tax: $44.00', 'Order total: $578.00'],
+      checkoutItems: [
+        { asin: 'B09XS7JWHH', title: 'Sony WH-1000XM5', quantity: 1 },
+        { asin: '', title: 'Unparsed second item', quantity: 1 },
+      ],
+    },
+  );
+  assert.equal(domPartial.placeOrderClicks, 0);
+  assert.equal(domPartial.data.submitted, false);
+  assert.equal(domPartial.data.code, 'basket_mismatch');
+
+  // Case 3: Empty lineItems array even with matching summaryItemCount
+  const hostEmptyLines = verifyCheckoutReviewBinding({
+    approvedItems: [{ asin: 'B09XS7JWHH', quantity: 1 }],
+    summaryItemCount: 1,
+    lineItems: [],
+  });
+  assert.equal(hostEmptyLines.ok, false);
+});
+
+test('(h.2) historical purchases, unparsed ASINs, mismatched totals/quantities, and ambiguous matches never reconcile unknown orders', async () => {
+  const ledger = new OrderSubmissionLedger();
+  const submittedAt = new Date('2026-11-15T14:30:00Z').getTime();
+  ledger.noteObservedOrderIds(['114-1111111-1111111']);
+  ledger.recordUnknown({
+    orderRef: 'CART-REQ_HIST',
+    submittedAt,
+    approvedItems: [{ asin: 'B09XS7JWHH', quantity: 2 }],
+    expectedTotalCents: 49800,
+  });
+
+  // None of these invalid candidates may reconcile CART-REQ_HIST:
+  const rejected = ledger.reconcileFromSyncedOrders([
+    // 1. Pre-existing order ID known before submit
+    {
+      retailerOrderId: '114-1111111-1111111',
+      asin: 'B09XS7JWHH',
+      items: [{ asin: 'B09XS7JWHH', quantity: 2 }],
+      totalCents: 49800,
+      placedAtMs: submittedAt,
+      syncedAt: submittedAt + 5000,
+    },
+    // 2. Historical order from an earlier month for the exact same ASIN + qty + total
+    {
+      retailerOrderId: '114-2222222-2222222',
+      asin: 'B09XS7JWHH',
+      items: [{ asin: 'B09XS7JWHH', quantity: 2 }],
+      totalCents: 49800,
+      placedAtMs: new Date('2026-10-01T12:00:00Z').getTime(),
+      syncedAt: submittedAt + 5000,
+    },
+    // 3. Unparsed null ASIN
+    {
+      retailerOrderId: '114-3333333-3333333',
+      asin: null,
+      totalCents: 49800,
+      placedAtMs: submittedAt,
+      syncedAt: submittedAt + 5000,
+    },
+    // 4. Wrong quantity (qty 1 instead of 2)
+    {
+      retailerOrderId: '114-4444444-4444444',
+      asin: 'B09XS7JWHH',
+      items: [{ asin: 'B09XS7JWHH', quantity: 1 }],
+      totalCents: 49800,
+      placedAtMs: submittedAt,
+      syncedAt: submittedAt + 5000,
+    },
+    // 5. Wrong total
+    {
+      retailerOrderId: '114-5555555-5555555',
+      asin: 'B09XS7JWHH',
+      items: [{ asin: 'B09XS7JWHH', quantity: 2 }],
+      totalCents: 24900,
+      placedAtMs: submittedAt,
+      syncedAt: submittedAt + 5000,
+    },
+  ]);
+
+  assert.equal(rejected.length, 0);
+  assert.equal(ledger.get('CART-REQ_HIST')?.state, 'unknown');
+
+  // Ambiguous duplicate same-day orders also remain 'unknown'
+  const ambiguous = ledger.reconcileFromSyncedOrders([
+    {
+      retailerOrderId: '114-6666666-6666666',
+      asin: 'B09XS7JWHH',
+      items: [{ asin: 'B09XS7JWHH', quantity: 2 }],
+      totalCents: 49800,
+      placedAtMs: submittedAt,
+      syncedAt: submittedAt + 10_000,
+    },
+    {
+      retailerOrderId: '114-7777777-7777777',
+      asin: 'B09XS7JWHH',
+      items: [{ asin: 'B09XS7JWHH', quantity: 2 }],
+      totalCents: 49800,
+      placedAtMs: submittedAt,
+      syncedAt: submittedAt + 10_000,
+    },
+  ]);
+  assert.equal(ambiguous.length, 0);
+  assert.equal(ledger.get('CART-REQ_HIST')?.state, 'unknown');
+
+  // Verify buildScrapeYourOrdersScript parses order date + ASINs + quantities from order cards
+  const scrapedOrders = await runInjectedStepScript(buildScrapeYourOrdersScript('req-orders'), {
+    pathname: '/gp/your-account/order-history',
+    href: 'https://www.amazon.com/gp/your-account/order-history',
+    querySelector: (sel) => {
+      if (sel.includes('#nav-logobar-greeting')) return { textContent: 'Hello, Shopper', getAttribute: () => '' };
+      return null;
+    },
+    querySelectorAll: (sel) => {
+      if (sel.includes('.order-card')) {
+        return [
+          {
+            textContent: 'Order placed November 15, 2026 Total $498.00 Order # 114-8888888-9999999 Arriving Tuesday',
+            querySelector: (inner) => {
+              if (inner.includes('yohtmlc-product-title')) return { textContent: 'Sony WH-1000XM5' };
+              if (inner === 'img') return { getAttribute: () => 'https://m.media-amazon.com/sony.jpg' };
+              return null;
+            },
+            querySelectorAll: (inner) => {
+              if (inner.includes('/dp/')) {
+                return [{ getAttribute: () => '/dp/B09XS7JWHH' }];
+              }
+              if (inner.includes('item-view-qty')) {
+                return [{ textContent: '2' }];
+              }
+              return [];
+            },
+          },
+        ];
+      }
+      return [];
+    },
+  });
+  assert.equal(scrapedOrders.data.orders.length, 1);
+  assert.equal(scrapedOrders.data.orders[0].retailerOrderId, '114-8888888-9999999');
+  assert.deepEqual(scrapedOrders.data.orders[0].items, [{ asin: 'B09XS7JWHH', quantity: 2 }]);
+  assert.equal(typeof scrapedOrders.data.orders[0].placedAtMs, 'number');
+});
+
+test('(h.3) applyLedgerReconciliationsToState promotes unknown PurchaseRequest to ordered while preserving identities', () => {
+  const quote = {
+    retailer: 'amazon',
+    retailerName: 'Amazon',
+    seller: 'Amazon.com',
+    productTitle: 'Sony WH-1000XM5',
+    variantLabel: 'Black',
+    imageUrl: null,
+    quantity: 1,
+    unitPriceCents: 22999,
+    subtotalCents: 22999,
+    taxCents: 1901,
+    shippingCents: 0,
+    totalCents: 24900,
+    currency: 'USD',
+    deliveryEstimate: 'Arriving Wednesday',
+    returnSummary: '30-day returns',
+    quotedAt: 1_700_000_000_000,
+    simulated: false,
+  };
+
+  const activeItem = {
+    id: 'item_orig_sony',
+    url: 'https://www.amazon.com/dp/B09XS7JWHH',
+    status: 'active',
+    quantity: 1,
+    reason: 'Travel headphones',
+    addedBy: 'app',
+    addedAt: 1_700_000_000_000,
+    enrichmentStatus: 'ready',
+    product: null,
+    variant: null,
+    offer: null,
+    offers: [],
+    rating: null,
+    price: null,
+    priceHistory: null,
+  };
+
+  const pendingReq = {
+    requestId: 'req_orig_1',
+    itemId: 'item_orig_sony',
+    offerId: 'offer_1',
+    status: 'approved',
+    requestedBy: 'app',
+    reason: 'Travel headphones',
+    quantity: 1,
+    quoteVersion: 1,
+    quote,
+    expiresAt: 1_700_001_800_000,
+    decidedAt: 1_700_000_010_000,
+    requestedAt: 1_700_000_000_000,
+    error: null,
+    order: {
+      orderId: 'order_orig_1',
+      orderRef: 'CART-REQ_ORIG_1',
+      status: 'unknown',
+      retailerOrderId: null,
+      placedAt: null,
+      simulated: false,
+    },
+    shipment: null,
+  };
+
+  const applied = applyLedgerReconciliationsToState({
+    reconciled: [
+      {
+        orderRef: 'CART-REQ_ORIG_1',
+        retailerOrderId: '114-5556667-7778889',
+        placedAt: 1_700_000_060_000,
+      },
+    ],
+    pendingRequests: [pendingReq],
+    items: [activeItem],
+    purchasedItems: {},
+    syncedPurchases: [],
+  });
+
+  assert.equal(applied.pendingRequests[0].status, 'ordered');
+  assert.equal(applied.pendingRequests[0].requestId, 'req_orig_1');
+  assert.equal(applied.pendingRequests[0].order?.orderId, 'order_orig_1');
+  assert.equal(applied.pendingRequests[0].order?.status, 'placed');
+  assert.equal(applied.pendingRequests[0].order?.retailerOrderId, '114-5556667-7778889');
+  assert.equal(applied.items.length, 0);
+  assert.equal(applied.purchasedItems.item_orig_sony?.status, 'purchased');
+  assert.equal(applied.purchases.length, 1);
+  assert.equal(applied.purchases[0].orderId, 'order_orig_1');
+  assert.equal(applied.purchases[0].requestId, 'req_orig_1');
+  assert.equal(applied.purchases[0].itemId, 'item_orig_sony');
+  assert.equal(applied.placementsToSync.length, 1);
+  assert.equal(applied.placementsToSync[0].orderRef, 'CART-REQ_ORIG_1');
+});
+
+test('(h.4) ConvexSyncRetryQueue retains failed quote/placement/shipment calls, exposes lastSyncError, and flushes cleanly on retry', async () => {
+  let shouldFail = true;
+  const recordedPlacements = [];
+  const snapshots = [];
+
+  const queue = new ConvexSyncRetryQueue((snap) => snapshots.push(snap));
+  const client = {
+    recordClientPlacement: async (args) => {
+      if (shouldFail) {
+        throw new Error('Convex network timeout');
+      }
+      recordedPlacements.push(args);
+    },
+  };
+
+  const firstAttempt = await queue.enqueuePlacement(
+    {
+      orderRef: 'CART-RETRY_1',
+      retailerOrderId: '114-1234567-7654321',
+      placedAt: 1_700_000_000_000,
+    },
+    client,
+  );
+
+  assert.equal(firstAttempt.synced, 0);
+  assert.equal(firstAttempt.remaining, 1);
+  assert.equal(firstAttempt.lastSyncError, 'Convex network timeout');
+  assert.equal(queue.pendingCount, 1);
+  assert.equal(recordedPlacements.length, 0);
+
+  // Subsequent replay / syncOrders flush succeeds and clears lastSyncError
+  shouldFail = false;
+  const secondAttempt = await queue.flush(client);
+  assert.equal(secondAttempt.synced, 1);
+  assert.equal(secondAttempt.remaining, 0);
+  assert.equal(secondAttempt.lastSyncError, null);
+  assert.equal(recordedPlacements.length, 1);
+  assert.equal(recordedPlacements[0].orderRef, 'CART-RETRY_1');
+});
+
+test('(h.5) settleSubmittedOrderConfirmation catches post-submit evalStep timeouts into structured status="unknown" with orderSubmitted=true', async () => {
+  const ledger = new OrderSubmissionLedger();
+  const syncQueue = new ConvexSyncRetryQueue();
+  const quote = {
+    retailer: 'amazon',
+    retailerName: 'Amazon',
+    seller: 'Amazon.com',
+    productTitle: 'Sony WH-1000XM5',
+    variantLabel: null,
+    imageUrl: null,
+    quantity: 1,
+    unitPriceCents: 22999,
+    subtotalCents: 22999,
+    taxCents: 1901,
+    shippingCents: 0,
+    totalCents: 24900,
+    currency: 'USD',
+    deliveryEstimate: 'Tomorrow',
+    returnSummary: '30-day returns',
+    quotedAt: 1_700_000_000_000,
+    simulated: false,
+  };
+
+  const result = await settleSubmittedOrderConfirmation({
+    orderRef: 'CART-TIMEOUT_1',
+    submittedAt: 1_700_000_000_000,
+    approvedItems: [{ asin: 'B09XS7JWHH', quantity: 1 }],
+    expectedTotalCents: 24900,
+    preExistingOrderIds: ['114-0000000-0000000'],
+    verifiedQuote: quote,
+    ledger,
+    syncQueue,
+    readConfirmation: async () => {
+      throw new Error('WebView step timed out after 12000ms');
+    },
+  });
+
+  assert.equal(result.status, 'unknown');
+  assert.equal(result.safetyGate.orderSubmitted, true);
+  assert.equal(result.retailerOrderId, null);
+  assert.equal(ledger.get('CART-TIMEOUT_1')?.state, 'unknown');
+});
+
+test('(h.5 & h.6) executeIdempotentAddItem never caches failed/CAPTCHA additions so subsequent retry with same key succeeds', async () => {
+  const idempotencyMap = new Map();
+  let calls = 0;
+
+  // First call hits CAPTCHA -> ok: false -> must throw and NOT cache key
+  await assert.rejects(
+    () =>
+      executeIdempotentAddItem({
+        idempotencyMap,
+        idempotencyKey: 'idem-add-sony',
+        runAddToCart: async () => {
+          calls += 1;
+          return {
+            ok: false,
+            asin: 'B09XS7JWHH',
+            usedAodFallback: false,
+            cartCount: 0,
+            subtotalCents: 0,
+            addedItem: null,
+            cartRows: [],
+            syncedAt: Date.now(),
+            error: 'Amazon requested CAPTCHA verification.',
+          };
+        },
+      }),
+    /CAPTCHA/,
+  );
+  assert.equal(idempotencyMap.has('idem-add-sony'), false);
+
+  // Retry with exact same idempotencyKey after CAPTCHA clears -> executes and caches real itemId
+  const okRes = await executeIdempotentAddItem({
+    idempotencyMap,
+    idempotencyKey: 'idem-add-sony',
+    runAddToCart: async () => {
+      calls += 1;
+      return {
+        ok: true,
+        asin: 'B09XS7JWHH',
+        usedAodFallback: true,
+        cartCount: 1,
+        subtotalCents: 22999,
+        addedItem: { id: 'amz-item-B09XS7JWHH', url: 'https://www.amazon.com/dp/B09XS7JWHH', quantity: 1 },
+        cartRows: [],
+        syncedAt: Date.now(),
+      };
+    },
+  });
+  assert.equal(calls, 2);
+  assert.equal(okRes.itemId, 'amz-item-B09XS7JWHH');
+  assert.equal(okRes.deduplicated, false);
+
+  // Third call with same key deduplicates without invoking runAddToCart again
+  const dedupRes = await executeIdempotentAddItem({
+    idempotencyMap,
+    idempotencyKey: 'idem-add-sony',
+    runAddToCart: async () => {
+      calls += 1;
+      throw new Error('Should not run');
+    },
+  });
+  assert.equal(calls, 2);
+  assert.equal(dedupRes.deduplicated, true);
+});
+
+test('(h.7 & h.8) selectVerifiedAddedCartItem never falls back to unrelated items[0] and buildAodAddToCartScript applies quantity > 1', async () => {
+  const existingBose = {
+    id: 'amz-item-B0CCZ26B5V',
+    url: 'https://www.amazon.com/dp/B0CCZ26B5V',
+    quantity: 1,
+  };
+
+  // Requested Sony B09XS7JWHH failed to add while Bose was already in cart -> must return null, NEVER Bose!
+  assert.equal(selectVerifiedAddedCartItem([existingBose], 'B09XS7JWHH', 1), null);
+
+  // Requested qty=3, cart only has qty=1 -> must return null
+  const sonyQty1 = {
+    id: 'amz-item-B09XS7JWHH',
+    url: 'https://www.amazon.com/dp/B09XS7JWHH',
+    quantity: 1,
+  };
+  assert.equal(selectVerifiedAddedCartItem([existingBose, sonyQty1], 'B09XS7JWHH', 3), null);
+
+  // Requested qty=3 and cart has qty=3 -> returns Sony item
+  const sonyQty3 = { ...sonyQty1, quantity: 3 };
+  assert.equal(selectVerifiedAddedCartItem([existingBose, sonyQty3], 'B09XS7JWHH', 3)?.id, 'amz-item-B09XS7JWHH');
+
+  // Verify buildAodAddToCartScript sets offer form quantity when available and reports appliedQuantity=false otherwise
+  let selectedQtyValue = '1';
+  const aodWithQtyField = await runInjectedStepScript(buildAodAddToCartScript('req-aod-qty', 3), {
+    querySelector: (sel) => {
+      if (sel.includes('submit.addToCart')) {
+        return {
+          getAttribute: () => 'Add to Cart from seller ElectronicsHub and price $229.99',
+          scrollIntoView: () => {},
+          click: () => {},
+          closest: () => ({
+            querySelector: (qSel) =>
+              qSel.includes('quantity')
+                ? {
+                    get value() {
+                      return selectedQtyValue;
+                    },
+                    set value(v) {
+                      selectedQtyValue = v;
+                    },
+                    dispatchEvent: () => {},
+                  }
+                : null,
+          }),
+        };
+      }
+      return null;
+    },
+  });
+  assert.equal(aodWithQtyField.data.clicked, true);
+  assert.equal(aodWithQtyField.data.appliedQuantity, true);
+  assert.equal(selectedQtyValue, '3');
+
+  const aodSingleUnitOnly = await runInjectedStepScript(buildAodAddToCartScript('req-aod-noqty', 3), {
+    querySelector: (sel) => {
+      if (sel.includes('submit.addToCart')) {
+        return {
+          getAttribute: () => 'Add to Cart from seller ElectronicsHub and price $229.99',
+          scrollIntoView: () => {},
+          click: () => {},
+          closest: () => ({ querySelector: () => null }),
+        };
+      }
+      return null;
+    },
+  });
+  assert.equal(aodSingleUnitOnly.data.clicked, true);
+  assert.equal(aodSingleUnitOnly.data.appliedQuantity, false);
+});
+
+test('(h.9) computeLiveCartQuantityPlan computes delta from live cart state (preventing queued 1->2->3 overshoot to 4)', () => {
+  // Task 1 sees live cart row at qty=1 and increments by 1 -> qty=2
+  const plan1 = computeLiveCartQuantityPlan([makeCartRow('B09XS7JWHH', 1)], 'B09XS7JWHH', 2);
+  assert.equal(plan1.operation, 'increment');
+  assert.equal(plan1.steps, 1);
+
+  // Task 2 runs AFTER Task 1 updated live cart to qty=2 -> reads live qty=2 and increments by 1 (to 3, NOT +2 to 4!)
+  const plan2 = computeLiveCartQuantityPlan([makeCartRow('B09XS7JWHH', 2)], 'B09XS7JWHH', 3);
+  assert.equal(plan2.operation, 'increment');
+  assert.equal(plan2.steps, 1);
+
+  // Final verification rejects mismatched settled quantity and accepts exact match
+  assert.equal(verifyFinalCartRowQuantity([makeCartRow('B09XS7JWHH', 4)], 'B09XS7JWHH', 3).ok, false);
+  assert.equal(verifyFinalCartRowQuantity([makeCartRow('B09XS7JWHH', 3)], 'B09XS7JWHH', 3).ok, true);
+});
+
+test('(h.10) shouldStartFreshSignInNavigation preserves active /ap/mfa, /ap/cvf, /ap/signin, and CAPTCHA challenges on reopen', () => {
+  assert.equal(
+    shouldStartFreshSignInNavigation({
+      isSignedIn: false,
+      currentUrl: 'https://www.amazon.com/ap/mfa?ie=UTF8',
+      challenge: 'mfa',
+    }),
+    false,
+  );
+  assert.equal(
+    shouldStartFreshSignInNavigation({
+      isSignedIn: false,
+      currentUrl: 'https://www.amazon.com/ap/cvf/transactionapproval',
+      challenge: 'mfa',
+    }),
+    false,
+  );
+  assert.equal(
+    shouldStartFreshSignInNavigation({
+      isSignedIn: false,
+      currentUrl: 'https://www.amazon.com/errors/validateCaptcha',
+      challenge: 'captcha',
+    }),
+    false,
+  );
+  assert.equal(
+    shouldStartFreshSignInNavigation({
+      isSignedIn: false,
+      currentUrl: 'https://www.amazon.com/ap/signin',
+      challenge: 'signin',
+    }),
+    false,
+  );
+  // Only starts fresh sign-in navigation when signed out on an ordinary non-challenge page
+  assert.equal(
+    shouldStartFreshSignInNavigation({
+      isSignedIn: false,
+      currentUrl: 'https://www.amazon.com/gp/cart/view.html',
+      challenge: 'none',
+    }),
+    true,
+  );
 });

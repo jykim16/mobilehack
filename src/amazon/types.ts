@@ -200,6 +200,7 @@ export interface AmazonPlaceOrderResult {
   quote: Quote | null;
   shipment: Shipment | null;
   reason?: string;
+  syncError?: string | null;
 }
 
 export interface AmazonSyncOrdersResult {
@@ -208,6 +209,7 @@ export interface AmazonSyncOrdersResult {
   purchases: Purchase[];
   syncedAt: number;
   error?: string;
+  syncError?: string | null;
 }
 
 export interface AmazonSessionHookValue {
@@ -216,6 +218,8 @@ export interface AmazonSessionHookValue {
   currentUrl: string;
   challenge: AmazonAuthChallenge;
   lastSyncedAt: number | null;
+  lastSyncError: string | null;
+  pendingSyncCount: number;
   openBrowserSheet: (initialUrl?: string) => void;
   closeBrowserSheet: () => void;
   ensureSignedIn: () => Promise<boolean>;
@@ -224,6 +228,11 @@ export interface AmazonSessionHookValue {
   getCheckoutQuote: (input?: AmazonCheckoutQuoteInput) => Promise<AmazonCheckoutQuoteResult>;
   placeOrder: (input: AmazonPlaceOrderInput) => Promise<AmazonPlaceOrderResult>;
   syncOrders: () => Promise<AmazonSyncOrdersResult>;
+  flushPendingSync: () => Promise<{
+    synced: number;
+    remaining: number;
+    lastSyncError: string | null;
+  }>;
 }
 
 /**
@@ -235,6 +244,8 @@ export interface AmazonCartAdapterValue {
   purchasedItems: Record<string, CartItem>;
   pendingRequests: PurchaseRequest[];
   lastSyncedAt: number | null;
+  lastSyncError: string | null;
+  pendingSyncCount: number;
   listItems: () => Promise<CartItem[]>;
   getItem: (args: { itemId: string }) => Promise<CartItem | null>;
   addItem: (args: {
@@ -274,4 +285,9 @@ export interface AmazonCartAdapterValue {
   }>;
   refreshCart: () => Promise<CartItem[]>;
   refreshPurchases: () => Promise<Purchase[]>;
+  flushPendingSync: () => Promise<{
+    synced: number;
+    remaining: number;
+    lastSyncError: string | null;
+  }>;
 }

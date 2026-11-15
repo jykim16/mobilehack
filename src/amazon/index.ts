@@ -36,6 +36,18 @@ export {
   toConvexClientShipment,
 } from './convex-sync';
 export {
+  applyLedgerReconciliationsToState,
+  computeLiveCartQuantityPlan,
+  type ConvexSyncQueueSnapshot,
+  ConvexSyncRetryQueue,
+  executeIdempotentAddItem,
+  type LiveQuantityMutationPlan,
+  type PendingConvexSyncJob,
+  selectVerifiedAddedCartItem,
+  settleSubmittedOrderConfirmation,
+  verifyFinalCartRowQuantity,
+} from './reconcile-sync';
+export {
   AMAZON_ORDER_ID_RE,
   type BasketBindingFailureCode,
   type BasketBindingResult,
@@ -47,6 +59,8 @@ export {
   OrderSubmissionLedger,
   type PreSubmitGateDecision,
   resolveOrderConfirmationOutcome,
+  shouldStartFreshSignInNavigation,
+  type SyncedOrderCandidate,
   verifyActiveBasketBinding,
   verifyCheckoutReviewBinding,
 } from './safety';

@@ -293,10 +293,12 @@ export function buildProductScrapeAndAddScript(reqId: string, quantity: number):
   );
 }
 
-export function buildAodAddToCartScript(reqId: string): string {
+export function buildAodAddToCartScript(reqId: string, requestedQuantity = 1): string {
+  const safeQty = Math.max(1, Math.min(10, Math.floor(requestedQuantity)));
   return wrapStepScript(
     reqId,
     `
+    var qty = ${safeQty};
     var deadline = Date.now() + 4500;
     var btn = null;
     while (Date.now() < deadline) {
@@ -308,7 +310,26 @@ export function buildAodAddToCartScript(reqId: string): string {
     }
 
     if (!btn) {
-      return { clicked: false, seller: null, priceCents: null };
+      return { clicked: false, appliedQuantity: false, seller: null, priceCents: null };
+    }
+
+    var appliedQuantity = qty === 1;
+    if (qty > 1) {
+      var offerScope = (btn.closest && btn.closest('form, #aod-pinned-offer, .aod-offer-block')) || document;
+      var qtyField = offerScope.querySelector
+        ? offerScope.querySelector('select[name="quantity"], input[name="quantity"]')
+        : null;
+      if (qtyField) {
+        try {
+          qtyField.value = String(qty);
+          appliedQuantity = String(qtyField.value) === String(qty);
+          if (typeof Event === 'function' && typeof qtyField.dispatchEvent === 'function') {
+            qtyField.dispatchEvent(new Event('change', { bubbles: true }));
+          }
+        } catch (_) {
+          appliedQuantity = String(qtyField.value || '') === String(qty);
+        }
+      }
     }
 
     var aria = String(btn.getAttribute('aria-label') || '');
@@ -319,6 +340,7 @@ export function buildAodAddToCartScript(reqId: string): string {
 
     return {
       clicked: true,
+      appliedQuantity: appliedQuantity,
       seller: sellerMatch && sellerMatch[1] ? sellerMatch[1].trim() : null,
       priceCents: priceCents
     };
@@ -529,10 +551,16 @@ const CHECKOUT_SUMMARY_AND_BASKET_HELPERS = `
       if (nestedDup) continue;
 
       var rawAsin = String(el.getAttribute('data-asin') || '').trim().toUpperCase();
-      if (!/^[A-Z0-9]{10}$/.test(rawAsin)) {
-        var link = el.querySelector ? el.querySelector('a[href*="/dp/"], a[href*="/gp/product/"]') : null;
+      if (!/^[A-Z0-9]{10}$/.test(rawAsin) && el.querySelector) {
+        var link = el.querySelector('a[href*="/dp/"], a[href*="/gp/product/"]');
         var hm = link ? String(link.getAttribute('href') || '').match(/\\/(?:dp|gp\\/product)\\/([A-Z0-9]{10})/i) : null;
-        rawAsin = hm && hm[1] ? hm[1].toUpperCase() : '';
+        if (hm && hm[1]) {
+          rawAsin = hm[1].toUpperCase();
+        } else {
+          var hiddenAsin = el.querySelector('input[name*="asin" i]');
+          var hv = hiddenAsin ? String(hiddenAsin.value || hiddenAsin.getAttribute('value') || '').trim().toUpperCase() : '';
+          if (/^[A-Z0-9]{10}$/.test(hv)) rawAsin = hv;
+        }
       }
 
       var titleNode = el.querySelector
@@ -737,12 +765,12 @@ export function buildSubmitCheckoutOrderScript(
 
     var hasSummaryCount = typeof parsed.summaryItemCount === 'number' && isFinite(parsed.summaryItemCount);
     var lineItems = parsed.lineItems || [];
-    if (!hasSummaryCount && lineItems.length === 0) {
+    if (lineItems.length === 0) {
       return {
         submitted: false,
         haltedBySafetyGate: true,
         code: 'basket_mismatch',
-        reason: 'In-DOM safety gate refused Place Order because checkout item count and line items could not be verified.'
+        reason: 'In-DOM safety gate refused Place Order because checkout review exposed no verifiable ASIN line items.'
       };
     }
 
@@ -755,32 +783,67 @@ export function buildSubmitCheckoutOrderScript(
       };
     }
 
-    var asinLineItems = lineItems.filter(function(li) { return !!li.asin; });
-    if (asinLineItems.length > 0) {
-      var observedByAsin = {};
-      for (var m = 0; m < asinLineItems.length; m++) {
-        var li = asinLineItems[m];
-        if (!expectedByAsin[li.asin]) {
-          return {
-            submitted: false,
-            haltedBySafetyGate: true,
-            code: 'basket_mismatch',
-            reason: 'In-DOM safety gate refused Place Order because checkout contains unapproved ASIN ' + li.asin + '.'
-          };
-        }
-        observedByAsin[li.asin] = (observedByAsin[li.asin] || 0) + li.quantity;
+    var observedByAsin = {};
+    var observedTotalQty = 0;
+    for (var m = 0; m < lineItems.length; m++) {
+      var li = lineItems[m];
+      var liAsin = li && typeof li.asin === 'string' ? li.asin.trim().toUpperCase() : '';
+      if (!/^[A-Z0-9]{10}$/.test(liAsin)) {
+        return {
+          submitted: false,
+          haltedBySafetyGate: true,
+          code: 'basket_mismatch',
+          reason: 'In-DOM safety gate refused Place Order because checkout contains a line item without a verifiable 10-character ASIN.'
+        };
       }
-      var expectedKeys = Object.keys(expectedByAsin);
-      for (var ek = 0; ek < expectedKeys.length; ek++) {
-        var kAsin = expectedKeys[ek];
-        if (observedByAsin[kAsin] !== undefined && observedByAsin[kAsin] !== expectedByAsin[kAsin]) {
-          return {
-            submitted: false,
-            haltedBySafetyGate: true,
-            code: 'basket_mismatch',
-            reason: 'In-DOM safety gate refused Place Order because checkout quantity for ' + kAsin + ' (' + observedByAsin[kAsin] + ') != approved quantity (' + expectedByAsin[kAsin] + ').'
-          };
-        }
+      if (!expectedByAsin[liAsin]) {
+        return {
+          submitted: false,
+          haltedBySafetyGate: true,
+          code: 'basket_mismatch',
+          reason: 'In-DOM safety gate refused Place Order because checkout contains unapproved ASIN ' + liAsin + '.'
+        };
+      }
+      var liQty = li && typeof li.quantity === 'number' ? li.quantity : 0;
+      if (!isFinite(liQty) || Math.floor(liQty) !== liQty || liQty < 1) {
+        return {
+          submitted: false,
+          haltedBySafetyGate: true,
+          code: 'basket_mismatch',
+          reason: 'In-DOM safety gate refused Place Order because checkout line item ' + liAsin + ' has an invalid quantity.'
+        };
+      }
+      observedByAsin[liAsin] = (observedByAsin[liAsin] || 0) + liQty;
+      observedTotalQty += liQty;
+    }
+
+    if (observedTotalQty !== expectedTotalQty) {
+      return {
+        submitted: false,
+        haltedBySafetyGate: true,
+        code: 'basket_mismatch',
+        reason: 'In-DOM safety gate refused Place Order because checkout line-item quantity sum (' + observedTotalQty + ') != approved quantity (' + expectedTotalQty + ').'
+      };
+    }
+
+    var expectedKeys = Object.keys(expectedByAsin);
+    for (var ek = 0; ek < expectedKeys.length; ek++) {
+      var kAsin = expectedKeys[ek];
+      if (observedByAsin[kAsin] === undefined) {
+        return {
+          submitted: false,
+          haltedBySafetyGate: true,
+          code: 'basket_mismatch',
+          reason: 'In-DOM safety gate refused Place Order because approved ASIN ' + kAsin + ' is missing from checkout review line items.'
+        };
+      }
+      if (observedByAsin[kAsin] !== expectedByAsin[kAsin]) {
+        return {
+          submitted: false,
+          haltedBySafetyGate: true,
+          code: 'basket_mismatch',
+          reason: 'In-DOM safety gate refused Place Order because checkout quantity for ' + kAsin + ' (' + observedByAsin[kAsin] + ') != approved quantity (' + expectedByAsin[kAsin] + ').'
+        };
       }
     }
 
@@ -900,11 +963,40 @@ export function buildScrapeYourOrdersScript(reqId: string): string {
       var productTitle = cleanText(titleEl);
       if (!productTitle) continue;
 
-      var dpAnchor = card.querySelector('a[href*="/dp/"], a[href*="/gp/product/"]');
-      var asinMatch = dpAnchor
-        ? String(dpAnchor.getAttribute('href') || '').match(/\\/(?:dp|gp\\/product)\\/([A-Z0-9]{10})/i)
-        : null;
-      var asin = asinMatch && asinMatch[1] ? asinMatch[1].toUpperCase() : null;
+      var dpAnchors = Array.prototype.slice.call(
+        card.querySelectorAll('a[href*="/dp/"], a[href*="/gp/product/"]')
+      );
+      var asins = [];
+      var seenAsins = {};
+      for (var d = 0; d < dpAnchors.length; d++) {
+        var dm = String(dpAnchors[d].getAttribute('href') || '').match(/\\/(?:dp|gp\\/product)\\/([A-Z0-9]{10})/i);
+        if (dm && dm[1]) {
+          var upperAsin = dm[1].toUpperCase();
+          if (!seenAsins[upperAsin]) {
+            seenAsins[upperAsin] = true;
+            asins.push(upperAsin);
+          }
+        }
+      }
+      var asin = asins.length > 0 ? asins[0] : null;
+
+      var qtyBadges = Array.prototype.slice.call(
+        card.querySelectorAll('.item-view-qty, [data-testid="item-quantity"]')
+      );
+      var items = [];
+      for (var qi = 0; qi < asins.length; qi++) {
+        var badgeQty = qtyBadges[qi] ? parseInt(cleanText(qtyBadges[qi]), 10) : NaN;
+        items.push({
+          asin: asins[qi],
+          quantity: isFinite(badgeQty) && badgeQty >= 1 ? badgeQty : 1
+        });
+      }
+
+      var dateMatch = cardText.match(
+        /(?:Order placed|Ordered on)?\\s*((?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\\s+\\d{1,2},\\s+\\d{4})/i
+      );
+      var parsedDateMs = dateMatch && dateMatch[1] ? Date.parse(dateMatch[1]) : NaN;
+      var placedAtMs = isFinite(parsedDateMs) ? parsedDateMs : null;
 
       var imgEl = card.querySelector('img');
       var imageUrl = imgEl ? imgEl.getAttribute('src') : null;
@@ -921,6 +1013,9 @@ export function buildScrapeYourOrdersScript(reqId: string): string {
       orders.push({
         retailerOrderId: orderId,
         asin: asin,
+        asins: asins,
+        items: items,
+        placedAtMs: placedAtMs,
         productTitle: productTitle,
         imageUrl: imageUrl,
         totalCents: totalCents,

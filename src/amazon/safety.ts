@@ -1,4 +1,5 @@
 import type {
+  AmazonAuthChallenge,
   ApprovedBasketItem,
   CheckoutReviewLineItem,
   PlaceOrderExecutionStatus,
@@ -10,6 +11,31 @@ const ASIN_EXACT_RE = /^[A-Z0-9]{10}$/;
 
 export function isValidPositiveCents(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && Number.isInteger(value) && value > 0;
+}
+
+/**
+ * Preserve active `/ap/mfa`, `/ap/cvf`, `/ax/claim`, CAPTCHA, or checkout flows when reopening
+ * the browser sheet without an explicit `initialUrl`.
+ */
+export function shouldStartFreshSignInNavigation(params: {
+  initialUrl?: string;
+  isSignedIn: boolean;
+  currentUrl: string;
+  challenge: AmazonAuthChallenge;
+}): boolean {
+  if (params.initialUrl || params.isSignedIn) return false;
+  if (params.challenge !== 'none') return false;
+  const url = params.currentUrl || '';
+  if (
+    url.includes('/ap/') ||
+    url.includes('/ax/') ||
+    url.includes('/errors/validateCaptcha') ||
+    url.includes('/gp/buy/') ||
+    url.includes('/checkout/')
+  ) {
+    return false;
+  }
+  return true;
 }
 
 export function normalizeApprovedItems(input: {
@@ -173,7 +199,8 @@ export function verifyActiveBasketBinding(
 }
 
 /**
- * Verify that the SPC / Chewbacca checkout review page matches the approved ASINs & quantities.
+ * Verify that the SPC / Chewbacca checkout review page exposes complete, 1:1 ASIN-to-quantity
+ * evidence matching `approvedItems`. Rejects missing, partial, or unidentified line items.
  */
 export function verifyCheckoutReviewBinding(params: {
   approvedItems: ApprovedBasketItem[];
@@ -191,16 +218,6 @@ export function verifyCheckoutReviewBinding(params: {
 
   const hasSummaryCount =
     typeof params.summaryItemCount === 'number' && Number.isInteger(params.summaryItemCount);
-  const lineItems = params.lineItems ?? [];
-
-  if (!hasSummaryCount && lineItems.length === 0) {
-    return {
-      ok: false,
-      reason:
-        'Fail-closed: checkout review page did not expose verifiable item count or line items.',
-    };
-  }
-
   if (hasSummaryCount && params.summaryItemCount !== normalized.totalQuantity) {
     return {
       ok: false,
@@ -208,38 +225,62 @@ export function verifyCheckoutReviewBinding(params: {
     };
   }
 
-  if (lineItems.length > 0) {
-    const lineItemAsins = lineItems.filter((li) => Boolean(li.asin));
-    if (lineItemAsins.length > 0) {
-      const observedByAsin = new Map<string, number>();
-      for (const li of lineItemAsins) {
-        const asin = li.asin!.trim().toUpperCase();
-        if (!expectedByAsin.has(asin)) {
-          return {
-            ok: false,
-            reason: `Fail-closed: checkout review includes unapproved ASIN ${asin}.`,
-          };
-        }
-        observedByAsin.set(asin, (observedByAsin.get(asin) ?? 0) + li.quantity);
-      }
+  const lineItems = params.lineItems ?? [];
+  if (lineItems.length === 0) {
+    return {
+      ok: false,
+      reason:
+        'Fail-closed: checkout review page did not expose verifiable ASIN line items.',
+    };
+  }
 
-      for (const [asin, expectedQty] of expectedByAsin.entries()) {
-        const observedQty = observedByAsin.get(asin);
-        if (observedQty !== undefined && observedQty !== expectedQty) {
-          return {
-            ok: false,
-            reason: `Fail-closed: checkout review quantity (${observedQty}) for ${asin} differs from approved quantity (${expectedQty}).`,
-          };
-        }
-      }
-    } else {
-      const summedLineQty = lineItems.reduce((sum, li) => sum + li.quantity, 0);
-      if (summedLineQty !== normalized.totalQuantity) {
-        return {
-          ok: false,
-          reason: `Fail-closed: checkout line-item quantity sum (${summedLineQty}) differs from approved quantity (${normalized.totalQuantity}).`,
-        };
-      }
+  const observedByAsin = new Map<string, number>();
+  let observedTotalQty = 0;
+
+  for (const li of lineItems) {
+    const rawAsin = typeof li.asin === 'string' ? li.asin.trim().toUpperCase() : '';
+    if (!ASIN_EXACT_RE.test(rawAsin)) {
+      return {
+        ok: false,
+        reason: `Fail-closed: checkout review includes a line item ("${li.title || 'unknown'}") without a verifiable 10-character ASIN.`,
+      };
+    }
+    if (!expectedByAsin.has(rawAsin)) {
+      return {
+        ok: false,
+        reason: `Fail-closed: checkout review includes unapproved ASIN ${rawAsin}.`,
+      };
+    }
+    if (typeof li.quantity !== 'number' || !Number.isInteger(li.quantity) || li.quantity < 1) {
+      return {
+        ok: false,
+        reason: `Fail-closed: checkout review line item ${rawAsin} has invalid quantity (${String(li.quantity)}).`,
+      };
+    }
+    observedByAsin.set(rawAsin, (observedByAsin.get(rawAsin) ?? 0) + li.quantity);
+    observedTotalQty += li.quantity;
+  }
+
+  if (observedTotalQty !== normalized.totalQuantity) {
+    return {
+      ok: false,
+      reason: `Fail-closed: checkout line-item quantity sum (${observedTotalQty}) differs from approved quantity (${normalized.totalQuantity}).`,
+    };
+  }
+
+  for (const [asin, expectedQty] of expectedByAsin.entries()) {
+    const observedQty = observedByAsin.get(asin);
+    if (observedQty === undefined) {
+      return {
+        ok: false,
+        reason: `Fail-closed: approved ASIN ${asin} is missing from checkout review line items.`,
+      };
+    }
+    if (observedQty !== expectedQty) {
+      return {
+        ok: false,
+        reason: `Fail-closed: checkout review quantity (${observedQty}) for ${asin} differs from approved quantity (${expectedQty}).`,
+      };
     }
   }
 
@@ -394,50 +435,177 @@ export function resolveOrderConfirmationOutcome(confirmation: {
   };
 }
 
+export interface SyncedOrderCandidate {
+  retailerOrderId: string;
+  asin: string | null;
+  asins?: string[];
+  items?: ApprovedBasketItem[];
+  totalCents?: number | null;
+  placedAtMs?: number | null;
+  syncedAt: number;
+}
+
 export type LedgerEntry =
   | { state: 'placed'; retailerOrderId: string; placedAt: number }
-  | { state: 'unknown'; submittedAt: number; approvedAsins: string[] };
+  | {
+      state: 'unknown';
+      submittedAt: number;
+      approvedItems: ApprovedBasketItem[];
+      expectedTotalCents: number;
+      preExistingOrderIds: Set<string>;
+    };
 
 /**
- * Stateful idempotency ledger keyed by `orderRef`.
- * Prevents double-submission when an earlier attempt is already `'placed'` OR `'unknown'`
- * (uncertain post-submit outcome must reconcile via `syncOrders()` before retrying).
+ * Stateful idempotency & reconciliation ledger keyed by `orderRef`.
+ * - Prevents double-submission when an earlier attempt is `'placed'` OR `'unknown'`.
+ * - Never matches historical orders known before `submittedAt`, orders missing parsed ASINs,
+ *   orders with mismatched totals, orders dated prior to the submission day, or ambiguous multi-matches.
  */
 export class OrderSubmissionLedger {
   private readonly entries = new Map<string, LedgerEntry>();
+  private readonly observedHistoricalOrderIds = new Set<string>();
 
   get(orderRef: string): LedgerEntry | undefined {
     return this.entries.get(orderRef);
+  }
+
+  noteObservedOrderIds(orderIds: Iterable<string>): void {
+    for (const id of orderIds) {
+      if (AMAZON_ORDER_ID_RE.test(id)) {
+        this.observedHistoricalOrderIds.add(id);
+      }
+    }
   }
 
   recordPlaced(orderRef: string, retailerOrderId: string, placedAt: number): void {
     if (!AMAZON_ORDER_ID_RE.test(retailerOrderId)) {
       throw new Error(`Refusing to record non-Amazon order ID "${retailerOrderId}" as placed.`);
     }
+    this.observedHistoricalOrderIds.add(retailerOrderId);
     this.entries.set(orderRef, { state: 'placed', retailerOrderId, placedAt });
   }
 
-  recordUnknown(orderRef: string, submittedAt: number, approvedAsins: string[]): void {
-    const existing = this.entries.get(orderRef);
+  recordUnknown(params: {
+    orderRef: string;
+    submittedAt: number;
+    approvedItems: ApprovedBasketItem[];
+    expectedTotalCents: number;
+    preExistingOrderIds?: Iterable<string>;
+  }): void {
+    const existing = this.entries.get(params.orderRef);
     if (existing?.state === 'placed') return;
-    this.entries.set(orderRef, { state: 'unknown', submittedAt, approvedAsins });
+
+    const preExisting = new Set<string>(this.observedHistoricalOrderIds);
+    if (params.preExistingOrderIds) {
+      for (const id of params.preExistingOrderIds) {
+        if (AMAZON_ORDER_ID_RE.test(id)) preExisting.add(id);
+      }
+    }
+
+    this.entries.set(params.orderRef, {
+      state: 'unknown',
+      submittedAt: params.submittedAt,
+      approvedItems: params.approvedItems,
+      expectedTotalCents: params.expectedTotalCents,
+      preExistingOrderIds: preExisting,
+    });
   }
 
   /**
-   * Reconcile any `'unknown'` ledger entry when `syncOrders()` observes a matching placed order.
+   * Reconcile `'unknown'` entries strictly against newly observed orders with complete ASIN,
+   * total, and date alignment. Ambiguous (0 or >1) candidates stay `'unknown'`.
    */
   reconcileFromSyncedOrders(
-    syncedOrders: { retailerOrderId: string; asin: string | null; syncedAt: number }[],
+    syncedOrders: SyncedOrderCandidate[],
   ): { orderRef: string; retailerOrderId: string; placedAt: number }[] {
     const reconciled: { orderRef: string; retailerOrderId: string; placedAt: number }[] = [];
+    const claimedOrderIds = new Set<string>();
+    for (const entry of this.entries.values()) {
+      if (entry.state === 'placed') {
+        claimedOrderIds.add(entry.retailerOrderId);
+      }
+    }
+
     for (const [orderRef, entry] of this.entries.entries()) {
       if (entry.state !== 'unknown') continue;
-      const match = syncedOrders.find(
-        (ord) =>
-          AMAZON_ORDER_ID_RE.test(ord.retailerOrderId) &&
-          (!ord.asin || entry.approvedAsins.includes(ord.asin.toUpperCase())),
-      );
-      if (match) {
+      const expectedByAsin = new Map<string, number>();
+      for (const item of entry.approvedItems) {
+        const key = item.asin.trim().toUpperCase();
+        expectedByAsin.set(key, (expectedByAsin.get(key) ?? 0) + item.quantity);
+      }
+
+      // Start of local calendar day containing submittedAt (Your Orders headers carry calendar dates)
+      const submissionDayFloor = new Date(entry.submittedAt);
+      submissionDayFloor.setHours(0, 0, 0, 0);
+      const minOrderMs = submissionDayFloor.getTime();
+      const maxOrderMs = entry.submittedAt + 48 * 60 * 60 * 1000;
+
+      const candidates = syncedOrders.filter((ord) => {
+        if (!AMAZON_ORDER_ID_RE.test(ord.retailerOrderId)) return false;
+        if (claimedOrderIds.has(ord.retailerOrderId)) return false;
+        if (entry.preExistingOrderIds.has(ord.retailerOrderId)) return false;
+
+        // Require verified order date on or after submission day so historical orders never match
+        if (
+          typeof ord.placedAtMs !== 'number' ||
+          !Number.isFinite(ord.placedAtMs) ||
+          ord.placedAtMs < minOrderMs ||
+          ord.placedAtMs > maxOrderMs
+        ) {
+          return false;
+        }
+
+        // Require verified ASIN + quantity alignment (never match an order with missing/unparsed ASINs)
+        if (ord.items && ord.items.length > 0) {
+          const observedByAsin = new Map<string, number>();
+          for (const item of ord.items) {
+            const key = typeof item.asin === 'string' ? item.asin.trim().toUpperCase() : '';
+            if (!ASIN_EXACT_RE.test(key) || !expectedByAsin.has(key)) return false;
+            if (!Number.isInteger(item.quantity) || item.quantity < 1) return false;
+            observedByAsin.set(key, (observedByAsin.get(key) ?? 0) + item.quantity);
+          }
+          if (observedByAsin.size !== expectedByAsin.size) return false;
+          for (const [asin, expectedQty] of expectedByAsin.entries()) {
+            if (observedByAsin.get(asin) !== expectedQty) return false;
+          }
+        } else {
+          const ordAsins = (
+            ord.asins && ord.asins.length > 0
+              ? ord.asins
+              : ord.asin
+                ? [ord.asin]
+                : []
+          )
+            .map((a) => a.trim().toUpperCase())
+            .filter((a) => ASIN_EXACT_RE.test(a));
+
+          if (ordAsins.length === 0 || ordAsins.length !== expectedByAsin.size) {
+            return false;
+          }
+          for (const a of ordAsins) {
+            // Without per-item quantities on the card, only allow quantity === 1 per ASIN
+            if (expectedByAsin.get(a) !== 1) return false;
+          }
+        }
+
+        // Require total alignment (within 1 cent) and positive integer total on the order card
+        if (
+          typeof ord.totalCents !== 'number' ||
+          !Number.isInteger(ord.totalCents) ||
+          ord.totalCents <= 0 ||
+          Math.abs(ord.totalCents - entry.expectedTotalCents) > 1
+        ) {
+          return false;
+        }
+
+        return true;
+      });
+
+      // Only reconcile when a single unambiguous new order matches
+      if (candidates.length === 1) {
+        const match = candidates[0]!;
+        claimedOrderIds.add(match.retailerOrderId);
+        this.observedHistoricalOrderIds.add(match.retailerOrderId);
         this.entries.set(orderRef, {
           state: 'placed',
           retailerOrderId: match.retailerOrderId,
@@ -450,6 +618,13 @@ export class OrderSubmissionLedger {
         });
       }
     }
+
+    for (const ord of syncedOrders) {
+      if (AMAZON_ORDER_ID_RE.test(ord.retailerOrderId)) {
+        this.observedHistoricalOrderIds.add(ord.retailerOrderId);
+      }
+    }
+
     return reconciled;
   }
 }
