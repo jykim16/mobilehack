@@ -38,6 +38,7 @@ import type * as retail_index from "../retail/index.js";
 import type * as retail_pricing from "../retail/pricing.js";
 import type * as retail_simulatedAmazon from "../retail/simulatedAmazon.js";
 import type * as retail_simulatedStore from "../retail/simulatedStore.js";
+import type * as reviews from "../reviews.js";
 
 import type {
   ApiFromModules,
@@ -76,6 +77,7 @@ declare const fullApi: ApiFromModules<{
   "retail/pricing": typeof retail_pricing;
   "retail/simulatedAmazon": typeof retail_simulatedAmazon;
   "retail/simulatedStore": typeof retail_simulatedStore;
+  reviews: typeof reviews;
 }>;
 
 /**

@@ -9,10 +9,18 @@ import type {
 } from "./adapter";
 import { estimateTotals } from "./pricing";
 
-export const SIMULATED_SHIP_DELAY_MS = 20_000;
+/** USPS-style scan sequence. Compressed so the timeline advances during the demo. */
+const SCANS: { at: number; status: "ordered" | "shipped" | "out_for_delivery" | "delivered"; description: string; location: string }[] = [
+  { at: 0, status: "ordered", description: "Shipping label created, USPS awaiting item", location: "SEATTLE, WA" },
+  { at: 25_000, status: "shipped", description: "USPS in possession of item", location: "SEATTLE, WA" },
+  { at: 45_000, status: "shipped", description: "Departed USPS Regional Facility", location: "AUBURN, WA" },
+  { at: 70_000, status: "shipped", description: "Arrived at USPS Regional Facility", location: "SAN FRANCISCO, CA" },
+  { at: 90_000, status: "out_for_delivery", description: "Out for Delivery, Expected Delivery by 8:00pm", location: "SAN FRANCISCO, CA" },
+  { at: 110_000, status: "delivered", description: "Delivered, Front Door/Porch", location: "SAN FRANCISCO, CA" },
+];
 
-function etaFrom(ms: number) {
-  return new Date(ms + 3 * 24 * 3600_000).toISOString().slice(0, 10);
+function etaFor(placedAt: number) {
+  return new Date(placedAt).toISOString().slice(0, 10);
 }
 
 /**
@@ -57,20 +65,26 @@ export class SimulatedAmazonAdapter implements RetailerAdapter {
   async getOrderStatus({ orderRef }: { orderRef: string }): Promise<OrderStatusResult> {
     const found = await this.ctx.runQuery(internal.retail.simulatedStore.get, { orderRef });
     if (!found) return { status: "not_found" };
-    const shipped = Date.now() - found.placedAt >= SIMULATED_SHIP_DELAY_MS;
+    const elapsed = Date.now() - found.placedAt;
+    const scans = SCANS.filter((s) => elapsed >= s.at);
+    const current = scans[scans.length - 1];
     return {
       status: "placed",
       retailerOrderId: found.retailerOrderId,
       placedAt: found.placedAt,
-      shipment: shipped
-        ? {
-            status: "shipped",
-            carrier: "UPS (simulated)",
-            trackingNumber: found.trackingNumber,
-            trackingUrl: `https://www.ups.com/track?tracknum=${found.trackingNumber}`,
-            eta: etaFrom(found.placedAt),
-          }
-        : { status: "ordered", eta: etaFrom(found.placedAt) },
+      shipment: {
+        status: current.status,
+        carrier: "USPS (simulated)",
+        trackingNumber: found.trackingNumber,
+        trackingUrl: `https://tools.usps.com/go/TrackConfirmAction?tLabels=${found.trackingNumber}`,
+        eta: etaFor(found.placedAt),
+        events: scans.map((s) => ({
+          status: s.status,
+          description: s.description,
+          location: s.location,
+          occurredAt: found.placedAt + s.at,
+        })),
+      },
     };
   }
 }

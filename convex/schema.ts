@@ -145,6 +145,16 @@ export default defineSchema({
     trackingNumber: v.optional(v.string()),
     trackingUrl: v.optional(v.string()),
     eta: v.optional(v.string()),
+    events: v.optional(
+      v.array(
+        v.object({
+          status: v.string(),
+          description: v.string(),
+          location: v.union(v.string(), v.null()),
+          occurredAt: v.number(),
+        }),
+      ),
+    ),
     updatedAt: v.number(),
     simulated: v.boolean(),
   }).index("by_orderId", ["orderId"]),

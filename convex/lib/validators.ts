@@ -101,6 +101,13 @@ export const orderStatus = v.union(
   v.literal("failed"),
 );
 
+export const shipmentEvent = v.object({
+  status: v.string(),
+  description: v.string(),
+  location: v.union(v.string(), v.null()),
+  occurredAt: v.number(),
+});
+
 export const shipmentStatus = v.union(
   v.literal("ordered"),
   v.literal("shipped"),

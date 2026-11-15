@@ -31,12 +31,21 @@ export type PlaceOrderResult =
   | { status: "unknown"; detail?: string }
   | { status: "rejected"; reason: string };
 
+export type ShipmentEvent = {
+  status: string;
+  description: string;
+  location: string | null;
+  occurredAt: number;
+};
+
 export type ShipmentInfo = {
   status: "ordered" | "shipped" | "out_for_delivery" | "delivered";
   carrier?: string;
   trackingNumber?: string;
   trackingUrl?: string;
   eta?: string;
+  /** Carrier scan history, oldest first. */
+  events?: ShipmentEvent[];
 };
 
 export type OrderStatusResult =

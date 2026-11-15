@@ -130,6 +130,7 @@ export async function requestView(ctx: QueryCtx, req: Doc<"purchaseRequests">) {
           trackingNumber: shipment.trackingNumber ?? null,
           trackingUrl: shipment.trackingUrl ?? null,
           eta: shipment.eta ?? null,
+          events: shipment.events ?? [],
           updatedAt: shipment.updatedAt,
           simulated: shipment.simulated,
         }
@@ -288,6 +289,7 @@ export async function listPurchasesFor(ctx: QueryCtx, shopperId: Id<"users">) {
                 trackingNumber: shipment.trackingNumber ?? null,
                 trackingUrl: shipment.trackingUrl ?? null,
                 eta: shipment.eta ?? null,
+                events: shipment.events ?? [],
                 updatedAt: shipment.updatedAt,
                 simulated: shipment.simulated,
               }

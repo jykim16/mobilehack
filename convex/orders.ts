@@ -3,7 +3,7 @@ import { internalAction, internalMutation, internalQuery } from "./_generated/se
 import { internal } from "./_generated/api";
 import { getAdapter } from "./retail";
 import { materialTermsChanged } from "./retail/adapter";
-import { quote, shipmentStatus } from "./lib/validators";
+import { quote, shipmentEvent, shipmentStatus } from "./lib/validators";
 
 const MAX_SUBMIT_ATTEMPTS = 5;
 const SHIPMENT_POLL_MS = 10_000;
@@ -175,8 +175,9 @@ export const syncShipment = internalAction({
       trackingNumber: status.shipment.trackingNumber ?? "",
       trackingUrl: status.shipment.trackingUrl ?? "",
       eta: status.shipment.eta ?? "",
+      events: status.shipment.events ?? [],
     });
-    const done = status.shipment.status === "delivered" || status.shipment.status === "shipped";
+    const done = status.shipment.status === "delivered";
     if (!done && polls < 60) {
       await ctx.scheduler.runAfter(SHIPMENT_POLL_MS, internal.orders.syncShipment, { orderId, polls: polls + 1 });
     }
@@ -192,8 +193,9 @@ export const applyShipment = internalMutation({
     trackingNumber: v.string(),
     trackingUrl: v.string(),
     eta: v.string(),
+    events: v.array(shipmentEvent),
   },
-  handler: async (ctx, { orderId, status, carrier, trackingNumber, trackingUrl, eta }) => {
+  handler: async (ctx, { orderId, status, carrier, trackingNumber, trackingUrl, eta, events }) => {
     const shipment = await ctx.db
       .query("shipments")
       .withIndex("by_orderId", (q) => q.eq("orderId", orderId))
@@ -205,6 +207,7 @@ export const applyShipment = internalMutation({
       trackingNumber: trackingNumber || undefined,
       trackingUrl: trackingUrl || undefined,
       eta: eta || undefined,
+      events,
       updatedAt: Date.now(),
     });
     return null;
