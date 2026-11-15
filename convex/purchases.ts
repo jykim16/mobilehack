@@ -1,0 +1,159 @@
+import { v } from "convex/values";
+import {
+  action,
+  internalAction,
+  internalMutation,
+  internalQuery,
+  mutation,
+  query,
+} from "./_generated/server";
+import { internal } from "./_generated/api";
+import { requireShopper } from "./lib/auth";
+import { actor, quote } from "./lib/validators";
+import {
+  QUOTE_TTL_MS,
+  createRequestFor,
+  decideFor,
+  listPendingFor,
+  listPurchasesFor,
+  loadOwnedRequest,
+  requestPurchaseFor,
+  requestView,
+} from "./model/purchases";
+import { getAdapter } from "./retail";
+import type { OfferSnapshot } from "./retail/adapter";
+
+export const requestPurchaseArgs = {
+  itemId: v.id("cartItems"),
+  offerId: v.id("offers"),
+  quantity: v.number(),
+  reason: v.string(),
+  idempotencyKey: v.string(),
+};
+
+export const requestPurchase = action({
+  args: requestPurchaseArgs,
+  handler: async (ctx, args) => requestPurchaseFor(ctx, await requireShopper(ctx), args, "app"),
+});
+
+export const listPendingApprovals = query({
+  args: {},
+  handler: async (ctx) => listPendingFor(ctx, await requireShopper(ctx)),
+});
+
+export const decidePurchase = mutation({
+  args: {
+    requestId: v.id("purchaseRequests"),
+    quoteVersion: v.number(),
+    decision: v.union(v.literal("approve"), v.literal("defer")),
+  },
+  handler: async (ctx, args) => decideFor(ctx, await requireShopper(ctx), args),
+});
+
+export const getPurchaseStatus = query({
+  args: { requestId: v.id("purchaseRequests") },
+  handler: async (ctx, { requestId }) =>
+    requestView(ctx, await loadOwnedRequest(ctx, await requireShopper(ctx), requestId)),
+});
+
+export const listPurchases = query({
+  args: {},
+  handler: async (ctx) => listPurchasesFor(ctx, await requireShopper(ctx)),
+});
+
+// ---- internal plumbing ----
+
+export const createRequest = internalMutation({
+  args: { shopperId: v.id("users"), requestedBy: actor, ...requestPurchaseArgs },
+  handler: async (ctx, { shopperId, requestedBy, ...args }) =>
+    createRequestFor(ctx, shopperId, args, requestedBy),
+});
+
+export const getRequestInternal = internalQuery({
+  args: { requestId: v.id("purchaseRequests") },
+  handler: async (ctx, { requestId }) => await ctx.db.get("purchaseRequests", requestId),
+});
+
+export const offerSnapshot = internalQuery({
+  args: { offerId: v.id("offers") },
+  handler: async (ctx, { offerId }): Promise<OfferSnapshot | null> => {
+    const offer = await ctx.db.get("offers", offerId);
+    if (!offer) return null;
+    const product = await ctx.db.get("products", offer.productId);
+    const variant = await ctx.db.get("variants", offer.variantId);
+    return {
+      offerId: offer._id,
+      retailer: offer.retailer,
+      retailerName: offer.retailerName,
+      seller: offer.seller,
+      url: offer.url,
+      canonicalKey: offer.canonicalKey,
+      productTitle: product?.title ?? "Unknown product",
+      variantLabel: variant?.label ?? "Default",
+      imageUrl: product?.imageUrl,
+      priceCents: offer.priceCents,
+      shippingCents: offer.shippingCents,
+      currency: offer.currency,
+      deliveryEstimate: offer.deliveryEstimate,
+      returnSummary: offer.returnSummary,
+      inStock: offer.inStock,
+    };
+  },
+});
+
+export const resolveQuote = internalAction({
+  args: { requestId: v.id("purchaseRequests") },
+  handler: async (ctx, { requestId }) => {
+    const req = await ctx.runQuery(internal.purchases.getRequestInternal, { requestId });
+    if (!req || req.status !== "quoting") return null;
+    const offer = await ctx.runQuery(internal.purchases.offerSnapshot, { offerId: req.offerId });
+    if (!offer) {
+      await ctx.runMutation(internal.purchases.failRequest, { requestId, error: "Offer no longer exists." });
+      return null;
+    }
+    const fresh = await getAdapter(ctx, offer.retailer).getQuote({ offer, quantity: req.quantity });
+    await ctx.runMutation(internal.purchases.setQuote, { requestId, quote: fresh, expectStatus: "quoting" });
+    return null;
+  },
+});
+
+export const setQuote = internalMutation({
+  args: {
+    requestId: v.id("purchaseRequests"),
+    quote,
+    expectStatus: v.union(v.literal("quoting"), v.literal("approved")),
+  },
+  handler: async (ctx, { requestId, quote, expectStatus }) => {
+    const req = await ctx.db.get("purchaseRequests", requestId);
+    if (!req || req.status !== expectStatus) return null;
+    const expiresAt = Date.now() + QUOTE_TTL_MS;
+    await ctx.db.patch("purchaseRequests", requestId, {
+      status: "pending_approval",
+      quote,
+      quoteVersion: req.quoteVersion + 1,
+      expiresAt,
+      decidedAt: undefined,
+    });
+    await ctx.scheduler.runAt(expiresAt + 1000, internal.purchases.expire, { requestId });
+    return null;
+  },
+});
+
+export const expire = internalMutation({
+  args: { requestId: v.id("purchaseRequests") },
+  handler: async (ctx, { requestId }) => {
+    const req = await ctx.db.get("purchaseRequests", requestId);
+    if (req && req.status === "pending_approval" && Date.now() > req.expiresAt) {
+      await ctx.db.patch("purchaseRequests", requestId, { status: "expired" });
+    }
+    return null;
+  },
+});
+
+export const failRequest = internalMutation({
+  args: { requestId: v.id("purchaseRequests"), error: v.string() },
+  handler: async (ctx, { requestId, error }) => {
+    await ctx.db.patch("purchaseRequests", requestId, { status: "failed", error });
+    return null;
+  },
+});
