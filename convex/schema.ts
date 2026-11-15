@@ -50,6 +50,17 @@ export default defineSchema({
     deliveryEstimate: v.string(),
     returnSummary: v.string(),
     rating: v.optional(v.object({ average: v.number(), count: v.number() })),
+    condition: v.optional(v.string()),
+    provenance: v.optional(
+      v.object({
+        method: v.union(v.literal("firecrawl"), v.literal("opengraph"), v.literal("seed")),
+        sourceUrl: v.string(),
+        observedAt: v.number(),
+        supportingText: v.union(v.string(), v.null()),
+        verifiedKey: v.union(v.string(), v.null()),
+        note: v.union(v.string(), v.null()),
+      }),
+    ),
     inStock: v.boolean(),
     simulated: v.boolean(),
     updatedAt: v.number(),
@@ -95,7 +106,35 @@ export default defineSchema({
     summary: v.optional(v.string()),
     highlights: v.array(highlight),
     sources: v.array(source),
+    items: v.optional(
+      v.array(
+        v.object({
+          author: v.union(v.string(), v.null()),
+          text: v.string(),
+          url: v.string(),
+          createdAt: v.union(v.number(), v.null()),
+          score: v.union(v.number(), v.null()),
+          community: v.union(v.string(), v.null()),
+        }),
+      ),
+    ),
     checkedAt: v.optional(v.number()),
+    details: v.optional(
+      v.object({
+        returnWindowDays: v.union(v.number(), v.null()),
+        freeReturns: v.union(v.boolean(), v.null()),
+        openedItemRestrictions: v.union(v.string(), v.null()),
+        eligibilityScope: v.union(
+          v.literal("offer"),
+          v.literal("storewide"),
+          v.literal("unconfirmed"),
+          v.null(),
+        ),
+        status: v.union(v.literal("confirmed"), v.literal("unconfirmed")),
+        supportingText: v.union(v.string(), v.null()),
+        sourceUrl: v.union(v.string(), v.null()),
+      }),
+    ),
     simulated: v.boolean(),
     error: v.optional(v.string()),
   }).index("by_cartItemId_and_section", ["cartItemId", "section"]),
@@ -135,7 +174,8 @@ export default defineSchema({
   })
     .index("by_purchaseRequestId", ["purchaseRequestId"])
     .index("by_shopperId", ["shopperId"])
-    .index("by_orderRef", ["orderRef"]),
+    .index("by_orderRef", ["orderRef"])
+    .index("by_retailerOrderId", ["retailerOrderId"]),
 
   shipments: defineTable({
     shopperId: v.id("users"),
@@ -145,6 +185,16 @@ export default defineSchema({
     trackingNumber: v.optional(v.string()),
     trackingUrl: v.optional(v.string()),
     eta: v.optional(v.string()),
+    events: v.optional(
+      v.array(
+        v.object({
+          status: v.string(),
+          description: v.string(),
+          location: v.union(v.string(), v.null()),
+          occurredAt: v.number(),
+        }),
+      ),
+    ),
     updatedAt: v.number(),
     simulated: v.boolean(),
   }).index("by_orderId", ["orderId"]),

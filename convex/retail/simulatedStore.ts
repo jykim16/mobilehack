@@ -25,7 +25,7 @@ export const place = internalMutation({
       orderRef,
       retailer,
       retailerOrderId: `SIM-${d.slice(0, 3)}-${d.slice(3, 10)}-${d.slice(10, 17)}`,
-      trackingNumber: `1ZSIM${digits(orderRef + "t", 13)}`,
+      trackingNumber: `9400${digits(orderRef + "t", 18)}`,
       placedAt: Date.now(),
     };
     await ctx.db.insert("simulatedRetailerOrders", doc);

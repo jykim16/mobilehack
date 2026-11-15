@@ -145,8 +145,18 @@ export function historyTimestamp(daysAgo: number, now: number) {
   return now - daysAgo * DAY;
 }
 
+export type CollectedItem = {
+  author: string | null;
+  text: string;
+  url: string;
+  createdAt: number | null;
+  score: number | null;
+  community: string | null;
+};
+
 export type SectionResult = {
   scope: "product" | "offer";
+  items?: CollectedItem[];
   summary: string;
   highlights: {
     label: string;

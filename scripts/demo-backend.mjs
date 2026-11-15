@@ -51,6 +51,18 @@ for (let i = 0; i < 40; i++) {
   if (item.enrichmentStatus === "ready" || item.enrichmentStatus === "partial") break;
   await sleep(1000);
 }
+// Give the Firecrawl offer refresh a chance to land before the price beat.
+for (let i = 0; i < 30 && item.offer?.provenance?.method !== "firecrawl"; i++) {
+  await sleep(2000);
+  item = await client.query(api.cart.getItem, { itemId: added.itemId });
+}
+if (item.offer?.provenance?.method === "firecrawl") {
+  log(
+    `live offer from firecrawl: ${item.offer.seller}${item.offer.condition ? " (" + item.offer.condition + ")" : ""} ${usd(item.offer.priceCents)} | ${item.priceHistory.observationCount} observations`,
+  );
+} else {
+  log("firecrawl refresh did not land in time; showing the seeded demo offer");
+}
 const newCriterion = item.sections.find((s) => s.section === "categoryGuidance").highlights.find((h) => h.tone === "new_criterion");
 log("criterion you didn't ask about:", newCriterion?.label);
 log("enrichment:", item.enrichmentStatus, "| all-in now", usd(item.price.totalCents));

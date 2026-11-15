@@ -130,6 +130,7 @@ export async function requestView(ctx: QueryCtx, req: Doc<"purchaseRequests">) {
           trackingNumber: shipment.trackingNumber ?? null,
           trackingUrl: shipment.trackingUrl ?? null,
           eta: shipment.eta ?? null,
+          events: shipment.events ?? [],
           updatedAt: shipment.updatedAt,
           simulated: shipment.simulated,
         }
@@ -226,6 +227,11 @@ export async function decideFor(
     .query("orders")
     .withIndex("by_purchaseRequestId", (q) => q.eq("purchaseRequestId", req._id))
     .unique();
+  // A quote the shopper's own device scraped is executed by that device. The
+  // server never submits it, or the simulated adapter would race the WebView
+  // and burn the order reference.
+  const serverSubmits = req.quote.simulated;
+  const nextStatus = serverSubmits ? ("submitting" as const) : ("awaiting_client" as const);
   let orderId: Id<"orders">;
   if (existingOrder) {
     if (existingOrder.status === "placed" || existingOrder.status === "submitting" || existingOrder.status === "unknown") {
@@ -233,7 +239,7 @@ export async function decideFor(
     }
     orderId = existingOrder._id;
     await ctx.db.patch("orders", orderId, {
-      status: "submitting",
+      status: nextStatus,
       quote: req.quote,
       quoteVersion: req.quoteVersion,
       error: undefined,
@@ -246,14 +252,16 @@ export async function decideFor(
       cartItemId: req.cartItemId,
       orderRef: orderRefFor(req._id),
       retailer: offer?.retailer ?? req.quote.retailer,
-      status: "submitting",
+      status: nextStatus,
       quoteVersion: req.quoteVersion,
       quote: req.quote,
       submitAttempts: 0,
       simulated: req.quote.simulated,
     });
   }
-  await ctx.scheduler.runAfter(0, internal.orders.submitOrder, { orderId });
+  if (serverSubmits) {
+    await ctx.scheduler.runAfter(0, internal.orders.submitOrder, { orderId });
+  }
   return await result("approved");
 }
 
@@ -288,6 +296,7 @@ export async function listPurchasesFor(ctx: QueryCtx, shopperId: Id<"users">) {
                 trackingNumber: shipment.trackingNumber ?? null,
                 trackingUrl: shipment.trackingUrl ?? null,
                 eta: shipment.eta ?? null,
+                events: shipment.events ?? [],
                 updatedAt: shipment.updatedAt,
                 simulated: shipment.simulated,
               }

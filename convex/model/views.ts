@@ -19,6 +19,8 @@ export function offerView(offer: Doc<"offers">, variantLabel: string | null) {
     deliveryEstimate: offer.deliveryEstimate,
     returnSummary: offer.returnSummary,
     rating: offer.rating ?? null,
+    condition: offer.condition ?? null,
+    provenance: offer.provenance ?? null,
     inStock: offer.inStock,
     purchasable: offer.inStock && offer.priceCents > 0,
     simulated: offer.simulated,
@@ -40,6 +42,7 @@ async function priceHistoryFor(ctx: QueryCtx, offer: Doc<"offers">) {
       source: o.source,
       simulated: o.simulated,
     })),
+    observationCount: obs.length,
     lowCents: prices.length ? Math.min(...prices) : offer.priceCents,
     highCents: prices.length ? Math.max(...prices) : offer.priceCents,
     currentCents: offer.priceCents,
@@ -114,7 +117,14 @@ export async function cartItemView(
       summary: e.summary ?? null,
     };
     return detail === "full"
-      ? { ...base, scope: e.scope, highlights: e.highlights, sources: e.sources, error: e.error ?? null }
+      ? {
+          ...base,
+          scope: e.scope,
+          highlights: e.highlights,
+          sources: e.sources,
+          details: e.details ?? null,
+          error: e.error ?? null,
+        }
       : base;
   });
 

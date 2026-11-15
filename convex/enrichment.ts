@@ -2,7 +2,7 @@ import { v } from "convex/values";
 import { internalAction, internalMutation, internalQuery } from "./_generated/server";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
-import type { MutationCtx } from "./_generated/server";
+import { env, type MutationCtx } from "./_generated/server";
 import { SECTION_NAMES, sectionName, highlight, source, type SectionName } from "./lib/validators";
 import {
   RETAILER_RETURN_TERMS,
@@ -29,6 +29,224 @@ const SECTION_SCOPE: Record<SectionName, "product" | "offer"> = {
   retailerReviews: "offer",
   reddit: "product",
 };
+
+
+export const RETURN_POLICY_URLS: Record<string, string> = {
+  amazon: "https://www.amazon.com/gp/help/customer/display.html?nodeId=GKM69DUUYKQWKWX7",
+  bestbuy: "https://www.bestbuy.com/site/help-topics/return-exchange-policy/pcmcat260800050014.c",
+};
+
+/** Runs the Firecrawl offer + return-terms steps. No key means nothing happens. */
+export const enrichOfferFromWeb = internalAction({
+  args: { cartItemId: v.id("cartItems") },
+  handler: async (ctx, { cartItemId }) => {
+    if (!env.FIRECRAWL_API_KEY) return null;
+    const data = await ctx.runQuery(internal.enrichment.getSectionContext, { cartItemId });
+    if (!data) return null;
+    const extraction = await ctx.runAction(internal.firecrawl.extractOffer, {
+      url: data.offer.url,
+      expectedKey: data.offer.canonicalKey,
+    });
+    if (!extraction.ok || !extraction.offer) {
+      await ctx.runMutation(internal.enrichment.recordExtractionFailure, {
+        offerId: data.offer._id,
+        error: extraction.error ?? "no structured data returned",
+      });
+    } else {
+      await ctx.runMutation(internal.enrichment.applyExtractedOffer, {
+        offerId: data.offer._id,
+        extraction: extraction.offer,
+        sourceUrl: extraction.sourceUrl ?? data.offer.url,
+        variantMatches: extraction.variantMatches,
+        observedAt: Date.now(),
+      });
+    }
+    // The policy page is a separate scrape and stands on its own, even when the
+    // listing itself could not be extracted.
+    const policyUrl = RETURN_POLICY_URLS[data.offer.retailer];
+    if (!policyUrl) return null;
+    const terms = await ctx.runAction(internal.firecrawl.extractReturnTerms, { url: policyUrl });
+    if (!terms.ok || !terms.terms) return null;
+    // Keep whatever we already had when the policy page yielded nothing usable.
+    const stated =
+      terms.terms.windowDays !== null ||
+      terms.terms.freeReturns !== null ||
+      terms.terms.openedItemRestrictions !== null;
+    if (!stated) return null;
+    await ctx.runMutation(internal.enrichment.applyExtractedReturnTerms, {
+      cartItemId,
+      offerId: data.offer._id,
+      terms: terms.terms,
+      sourceUrl: terms.sourceUrl ?? policyUrl,
+    });
+    return null;
+  },
+});
+
+const extractedOffer = v.object({
+  model: v.union(v.string(), v.null()),
+  variant: v.union(v.string(), v.null()),
+  retailer: v.union(v.string(), v.null()),
+  seller: v.union(v.string(), v.null()),
+  condition: v.union(v.string(), v.null()),
+  priceCents: v.union(v.number(), v.null()),
+  currency: v.union(v.string(), v.null()),
+  availability: v.union(v.string(), v.null()),
+  starRating: v.union(v.number(), v.null()),
+  ratingCount: v.union(v.number(), v.null()),
+  asinOrSku: v.union(v.string(), v.null()),
+  evidence: v.union(v.string(), v.null()),
+});
+
+export const applyExtractedOffer = internalMutation({
+  args: {
+    offerId: v.id("offers"),
+    extraction: extractedOffer,
+    sourceUrl: v.string(),
+    variantMatches: v.boolean(),
+    observedAt: v.number(),
+  },
+  handler: async (ctx, { offerId, extraction, sourceUrl, variantMatches, observedAt }) => {
+    const offer = await ctx.db.get("offers", offerId);
+    if (!offer) return null;
+    const provenance = {
+      method: "firecrawl" as const,
+      sourceUrl,
+      observedAt,
+      supportingText: extraction.evidence,
+      verifiedKey: extraction.asinOrSku,
+      note: variantMatches ? null : "The scraped page named a different variant, so its price was not applied.",
+    };
+    if (!variantMatches) {
+      await ctx.db.patch("offers", offerId, { provenance });
+      return null;
+    }
+    const hasPrice = extraction.priceCents !== null && extraction.priceCents > 0;
+    await ctx.db.patch("offers", offerId, {
+      provenance,
+      simulated: false,
+      updatedAt: observedAt,
+      priceCents: hasPrice ? extraction.priceCents! : offer.priceCents,
+      seller: extraction.seller ?? offer.seller,
+      condition: extraction.condition ?? offer.condition,
+      inStock: extraction.availability
+        ? !/out of stock|unavailable/i.test(extraction.availability)
+        : offer.inStock,
+      rating:
+        extraction.starRating !== null && extraction.ratingCount !== null
+          ? { average: extraction.starRating, count: extraction.ratingCount }
+          : offer.rating,
+    });
+    if (hasPrice) {
+      await ctx.db.insert("priceObservations", {
+        offerId,
+        priceCents: extraction.priceCents!,
+        shippingCents: offer.shippingCents,
+        observedAt,
+        source: "Firecrawl",
+        simulated: false,
+      });
+      await ctx.runMutation(internal.enrichment.refreshPriceHistoryForOffer, { offerId });
+    }
+    return null;
+  },
+});
+
+export const recordExtractionFailure = internalMutation({
+  args: { offerId: v.id("offers"), error: v.string() },
+  handler: async (ctx, { offerId, error }) => {
+    const offer = await ctx.db.get("offers", offerId);
+    if (!offer || offer.provenance?.method === "firecrawl") return null;
+    await ctx.db.patch("offers", offerId, {
+      provenance: {
+        method: offer.simulated ? ("seed" as const) : ("seed" as const),
+        sourceUrl: offer.url,
+        observedAt: Date.now(),
+        supportingText: null,
+        verifiedKey: null,
+        note: `Firecrawl extraction failed, so this offer keeps its seeded demo values: ${error.slice(0, 200)}`,
+      },
+    });
+    return null;
+  },
+});
+
+export const applyExtractedReturnTerms = internalMutation({
+  args: {
+    cartItemId: v.id("cartItems"),
+    offerId: v.id("offers"),
+    terms: v.object({
+      windowDays: v.union(v.number(), v.null()),
+      freeReturns: v.union(v.boolean(), v.null()),
+      openedItemRestrictions: v.union(v.string(), v.null()),
+      appliesTo: v.union(v.literal("offer"), v.literal("storewide"), v.null()),
+      evidence: v.union(v.string(), v.null()),
+    }),
+    sourceUrl: v.string(),
+  },
+  handler: async (ctx, { cartItemId, offerId, terms, sourceUrl }) => {
+    const ev = await findSection(ctx, cartItemId, "returnTerms");
+    if (!ev) return null;
+    const offer = await ctx.db.get("offers", offerId);
+    const thirdParty = !!offer && offer.seller !== offer.retailerName && offer.retailer === "amazon";
+    // A storewide policy only settles this offer when the seller is the retailer
+    // itself; a marketplace seller can differ.
+    const status: "confirmed" | "unconfirmed" =
+      terms.appliesTo === null || thirdParty ? "unconfirmed" : "confirmed";
+    const eligibilityScope = status === "confirmed" ? terms.appliesTo ?? "storewide" : "unconfirmed";
+    const highlights = [
+      terms.windowDays !== null
+        ? { label: "Return window", detail: `${terms.windowDays} days`, tone: "neutral" as const }
+        : { label: "Return window", detail: "Not stated on the policy page", tone: "neutral" as const },
+      terms.freeReturns !== null
+        ? {
+            label: "Return shipping",
+            detail: terms.freeReturns ? "Free" : "Paid by the shopper",
+            tone: terms.freeReturns ? ("positive" as const) : ("negative" as const),
+          }
+        : { label: "Return shipping", detail: "Not stated", tone: "neutral" as const },
+      terms.openedItemRestrictions !== null
+        ? { label: "Opened items", detail: terms.openedItemRestrictions, tone: "neutral" as const }
+        : { label: "Opened items", detail: "No restriction stated", tone: "neutral" as const },
+      {
+        label: "Eligibility",
+        detail:
+          status === "confirmed"
+            ? "Confirmed for this offer's seller"
+            : "Unconfirmed: the policy is storewide and this offer's seller is a marketplace seller",
+        tone: status === "confirmed" ? ("positive" as const) : ("neutral" as const),
+      },
+    ];
+    await ctx.db.patch("evidence", ev._id, {
+      status: "ready",
+      checkedAt: Date.now(),
+      simulated: false,
+      summary:
+        terms.windowDays !== null
+          ? `${terms.windowDays}-day return window${terms.freeReturns ? " with free return shipping" : ""}.${status === "unconfirmed" ? " Applies storewide; confirm for this seller at checkout." : ""}`
+          : "Return policy page did not state a window.",
+      highlights,
+      sources: [
+        {
+          title: `${offer?.retailerName ?? "Retailer"} return policy`,
+          url: sourceUrl,
+          publisher: offer?.retailerName,
+        },
+      ],
+      details: {
+        returnWindowDays: terms.windowDays,
+        freeReturns: terms.freeReturns,
+        openedItemRestrictions: terms.openedItemRestrictions,
+        eligibilityScope,
+        status,
+        supportingText: terms.evidence,
+        sourceUrl,
+      },
+      error: undefined,
+    });
+    return null;
+  },
+});
 
 export const start = internalMutation({
   args: { cartItemId: v.id("cartItems") },
@@ -58,6 +276,9 @@ export const start = internalMutation({
       });
     }
     await ctx.db.patch("cartItems", cartItemId, { enrichmentStatus: "enriching" });
+    if (env.FIRECRAWL_API_KEY) {
+      await ctx.scheduler.runAfter(200, internal.enrichment.enrichOfferFromWeb, { cartItemId });
+    }
     return null;
   },
 });
@@ -67,6 +288,27 @@ export const resolveOffer = internalAction({
   handler: async (ctx, { cartItemId }) => {
     const item = await ctx.runQuery(internal.enrichment.getItemInternal, { cartItemId });
     if (!item || item.offerId) return null;
+    if (env.FIRECRAWL_API_KEY) {
+      const extraction = await ctx.runAction(internal.firecrawl.extractOffer, {
+        url: item.url,
+        expectedKey: canonicalKeyForUrl(item.url),
+      });
+      if (
+        extraction.ok &&
+        extraction.offer &&
+        extraction.variantMatches &&
+        extraction.offer.priceCents !== null &&
+        extraction.offer.priceCents > 0
+      ) {
+        await ctx.runMutation(internal.enrichment.attachExtractedOffer, {
+          cartItemId,
+          extraction: extraction.offer,
+          sourceUrl: extraction.sourceUrl ?? item.url,
+          observedAt: Date.now(),
+        });
+        return null;
+      }
+    }
     let og: Awaited<ReturnType<typeof fetchOpenGraph>> = {};
     try {
       og = await fetchOpenGraph(item.url);
@@ -80,6 +322,84 @@ export const resolveOffer = internalAction({
       description: og.description ?? "",
       priceCents: og.priceCents ?? 0,
     });
+    return null;
+  },
+});
+
+/** Creates the offer straight from a verified Firecrawl extraction. */
+export const attachExtractedOffer = internalMutation({
+  args: {
+    cartItemId: v.id("cartItems"),
+    extraction: extractedOffer,
+    sourceUrl: v.string(),
+    observedAt: v.number(),
+  },
+  handler: async (ctx, { cartItemId, extraction, sourceUrl, observedAt }) => {
+    const item = await ctx.db.get("cartItems", cartItemId);
+    if (!item || item.offerId) return null;
+    const { retailer, retailerName } = retailerFromHost(new URL(item.url).hostname);
+    const canonicalKey = canonicalKeyForUrl(item.url)!;
+    const existing = await ctx.db
+      .query("offers")
+      .withIndex("by_canonicalKey", (q) => q.eq("canonicalKey", canonicalKey))
+      .first();
+    if (existing) {
+      await ctx.db.patch("cartItems", item._id, {
+        productId: existing.productId,
+        variantId: existing.variantId,
+        offerId: existing._id,
+      });
+      await ctx.runMutation(internal.enrichment.start, { cartItemId: item._id });
+      return null;
+    }
+    const productId = await ctx.db.insert("products", {
+      title: (extraction.model ?? titleFromUrl(item.url)).slice(0, 200),
+      category: "general",
+    });
+    const variantId = await ctx.db.insert("variants", { productId, label: extraction.variant ?? "Default" });
+    const outOfStock = extraction.availability ? /out of stock|unavailable/i.test(extraction.availability) : false;
+    const offerId = await ctx.db.insert("offers", {
+      productId,
+      variantId,
+      retailer: extraction.retailer && extraction.retailer.length > 0 ? retailer : retailer,
+      retailerName: extraction.retailer ?? retailerName,
+      seller: extraction.seller ?? retailerName,
+      url: item.url,
+      canonicalKey,
+      priceCents: extraction.priceCents ?? 0,
+      shippingCents: 0,
+      currency: extraction.currency ?? "USD",
+      deliveryEstimate: "Delivery estimate unavailable",
+      returnSummary: RETAILER_RETURN_TERMS[retailer]?.summary ?? "See retailer for return terms.",
+      condition: extraction.condition ?? undefined,
+      rating:
+        extraction.starRating !== null && extraction.ratingCount !== null
+          ? { average: extraction.starRating, count: extraction.ratingCount }
+          : undefined,
+      provenance: {
+        method: "firecrawl",
+        sourceUrl,
+        observedAt,
+        supportingText: extraction.evidence,
+        verifiedKey: extraction.asinOrSku,
+        note: null,
+      },
+      inStock: !outOfStock,
+      simulated: false,
+      updatedAt: observedAt,
+    });
+    if (extraction.priceCents && extraction.priceCents > 0) {
+      await ctx.db.insert("priceObservations", {
+        offerId,
+        priceCents: extraction.priceCents,
+        shippingCents: 0,
+        observedAt,
+        source: "Firecrawl",
+        simulated: false,
+      });
+    }
+    await ctx.db.patch("cartItems", item._id, { productId, variantId, offerId });
+    await ctx.runMutation(internal.enrichment.start, { cartItemId: item._id });
     return null;
   },
 });
@@ -215,7 +535,20 @@ async function redditResult(product: Doc<"products">): Promise<SectionResult> {
   );
   if (!res.ok) throw new Error(`Reddit HTTP ${res.status}`);
   const body = (await res.json()) as {
-    data?: { children?: { data: { title: string; permalink: string; subreddit_name_prefixed: string; score: number; num_comments: number } }[] };
+    data?: {
+      children?: {
+        data: {
+          title: string;
+          permalink: string;
+          subreddit_name_prefixed: string;
+          score: number;
+          num_comments: number;
+          author?: string | null;
+          created_utc?: number;
+          selftext?: string;
+        };
+      }[];
+    };
   };
   const posts = (body.data?.children ?? []).map((c) => c.data).slice(0, 3);
   if (posts.length === 0) throw new Error("No Reddit threads found");
@@ -229,6 +562,14 @@ async function redditResult(product: Doc<"products">): Promise<SectionResult> {
       tone: "neutral" as const,
     })),
     sources: posts.map((p) => ({ title: p.title, url: `https://www.reddit.com${p.permalink}`, publisher: "Reddit" })),
+    items: posts.map((p) => ({
+      author: p.author ?? null,
+      text: p.selftext ? `${p.title} — ${p.selftext.slice(0, 240)}` : p.title,
+      url: `https://www.reddit.com${p.permalink}`,
+      createdAt: p.created_utc ? p.created_utc * 1000 : null,
+      score: typeof p.score === "number" ? p.score : null,
+      community: p.subreddit_name_prefixed,
+    })),
   };
 }
 
@@ -348,6 +689,18 @@ export const publishSection = internalMutation({
     highlights: v.array(highlight),
     sources: v.array(source),
     simulated: v.boolean(),
+    items: v.optional(
+      v.array(
+        v.object({
+          author: v.union(v.string(), v.null()),
+          text: v.string(),
+          url: v.string(),
+          createdAt: v.union(v.number(), v.null()),
+          score: v.union(v.number(), v.null()),
+          community: v.union(v.string(), v.null()),
+        }),
+      ),
+    ),
   },
   handler: async (ctx, { cartItemId, section, ...result }) => {
     const ev = await findSection(ctx, cartItemId, section);
@@ -391,6 +744,23 @@ async function recomputeStatus(ctx: MutationCtx, cartItemId: Id<"cartItems">) {
 }
 
 /** Re-run priceHistory for every active cart item on an offer (after a new price observation). */
+export const refreshPriceHistoryForOffer = internalMutation({
+  args: { offerId: v.id("offers") },
+  handler: async (ctx, { offerId }) => {
+    const items = await ctx.db
+      .query("cartItems")
+      .withIndex("by_offerId_and_status", (q) => q.eq("offerId", offerId).eq("status", "active"))
+      .take(500);
+    for (const item of items) {
+      await ctx.scheduler.runAfter(0, internal.enrichment.runSection, {
+        cartItemId: item._id,
+        section: "priceHistory",
+      });
+    }
+    return items.length;
+  },
+});
+
 export const refreshPriceHistory = internalMutation({
   args: { offerId: v.id("offers") },
   handler: async (ctx, { offerId }) => {

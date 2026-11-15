@@ -1,4 +1,4 @@
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import {
   action,
   internalAction,
@@ -10,6 +10,7 @@ import {
 import { internal } from "./_generated/api";
 import { requireShopper } from "./lib/auth";
 import { actor, quote } from "./lib/validators";
+import { clientQuote } from "./lib/clientPayloads";
 import {
   QUOTE_TTL_MS,
   createRequestFor,
@@ -34,6 +35,51 @@ export const requestPurchaseArgs = {
 export const requestPurchase = action({
   args: requestPurchaseArgs,
   handler: async (ctx, args) => requestPurchaseFor(ctx, await requireShopper(ctx), args, "app"),
+});
+
+/**
+ * Patches a pending request with the quote the shopper's own device scraped from
+ * the live retailer page (the WKWebView Amazon engine). The client never decides
+ * which request it owns: ownership comes from the session.
+ */
+export const attachClientQuote = mutation({
+  args: { requestId: v.id("purchaseRequests"), quoteVersion: v.number(), quote: clientQuote },
+  returns: v.object({ quoteVersion: v.number(), quote }),
+  handler: async (ctx, { requestId, quoteVersion, quote: incoming }) => {
+    const shopperId = await requireShopper(ctx);
+    const req = await loadOwnedRequest(ctx, shopperId, requestId);
+    if (req.status !== "quoting" && req.status !== "pending_approval") {
+      throw new ConvexError({ code: "INVALID_STATE", message: "This request is no longer awaiting a quote." });
+    }
+    if (req.quoteVersion !== quoteVersion) {
+      throw new ConvexError({ code: "STALE_QUOTE", message: "A newer quote already exists for this request." });
+    }
+    const cents = [
+      incoming.unitPriceCents,
+      incoming.subtotalCents,
+      incoming.taxCents,
+      incoming.shippingCents,
+      incoming.totalCents,
+      incoming.quantity,
+    ];
+    if (cents.some((n) => !Number.isInteger(n) || n < 0)) {
+      throw new ConvexError({ code: "INVALID_QUOTE", message: "Quote amounts must be non-negative integer cents." });
+    }
+    const stored = {
+      ...incoming,
+      variantLabel: incoming.variantLabel ?? "Default",
+      imageUrl: incoming.imageUrl ?? undefined,
+      quotedAt: incoming.quotedAt || Date.now(),
+    };
+    const nextVersion = req.quoteVersion + 1;
+    await ctx.db.patch("purchaseRequests", requestId, {
+      quote: stored,
+      quoteVersion: nextVersion,
+      status: "pending_approval",
+      expiresAt: Date.now() + QUOTE_TTL_MS,
+    });
+    return { quoteVersion: nextVersion, quote: stored };
+  },
 });
 
 export const listPendingApprovals = query({

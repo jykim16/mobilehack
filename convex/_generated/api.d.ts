@@ -13,9 +13,12 @@ import type * as auth from "../auth.js";
 import type * as cart from "../cart.js";
 import type * as demo from "../demo.js";
 import type * as enrichment from "../enrichment.js";
+import type * as firecrawl from "../firecrawl.js";
 import type * as http from "../http.js";
 import type * as lib_auth from "../lib/auth.js";
+import type * as lib_clientPayloads from "../lib/clientPayloads.js";
 import type * as lib_demoData from "../lib/demoData.js";
+import type * as lib_firecrawlExtract from "../lib/firecrawlExtract.js";
 import type * as lib_opengraph from "../lib/opengraph.js";
 import type * as lib_tokens from "../lib/tokens.js";
 import type * as lib_urls from "../lib/urls.js";
@@ -38,6 +41,7 @@ import type * as retail_index from "../retail/index.js";
 import type * as retail_pricing from "../retail/pricing.js";
 import type * as retail_simulatedAmazon from "../retail/simulatedAmazon.js";
 import type * as retail_simulatedStore from "../retail/simulatedStore.js";
+import type * as reviews from "../reviews.js";
 
 import type {
   ApiFromModules,
@@ -51,9 +55,12 @@ declare const fullApi: ApiFromModules<{
   cart: typeof cart;
   demo: typeof demo;
   enrichment: typeof enrichment;
+  firecrawl: typeof firecrawl;
   http: typeof http;
   "lib/auth": typeof lib_auth;
+  "lib/clientPayloads": typeof lib_clientPayloads;
   "lib/demoData": typeof lib_demoData;
+  "lib/firecrawlExtract": typeof lib_firecrawlExtract;
   "lib/opengraph": typeof lib_opengraph;
   "lib/tokens": typeof lib_tokens;
   "lib/urls": typeof lib_urls;
@@ -76,6 +83,7 @@ declare const fullApi: ApiFromModules<{
   "retail/pricing": typeof retail_pricing;
   "retail/simulatedAmazon": typeof retail_simulatedAmazon;
   "retail/simulatedStore": typeof retail_simulatedStore;
+  reviews: typeof reviews;
 }>;
 
 /**

@@ -95,11 +95,19 @@ export type PurchaseStatus = Infer<typeof purchaseStatus>;
 
 export const orderStatus = v.union(
   v.literal("submitting"),
+  v.literal("awaiting_client"),
   v.literal("placed"),
   v.literal("unknown"),
   v.literal("requote_required"),
   v.literal("failed"),
 );
+
+export const shipmentEvent = v.object({
+  status: v.string(),
+  description: v.string(),
+  location: v.union(v.string(), v.null()),
+  occurredAt: v.number(),
+});
 
 export const shipmentStatus = v.union(
   v.literal("ordered"),
