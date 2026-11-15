@@ -1,0 +1,48 @@
+project:
+    id: 19e48932-08ed-421e-8550-0b6d4370b4ed
+session:
+    idle_timeout_seconds: 1800
+build:
+    framework: expo
+    profiles:
+        development:
+            ios:
+                setup_commands:
+                    - npm install
+                    - if [ ! -d ios ]; then npx expo prebuild --platform ios --no-install; fi
+                build_commands:
+                    - cd ios && if [ ! -d Pods ]; then pod install; fi && WS=$(ls -d *.xcworkspace | head -n 1) && xcodebuild -workspace "$WS" -scheme "${WS%.xcworkspace}" -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' ARCHS=arm64 -derivedDataPath build
+                output_path: ios/build/Build/Products/Debug-iphonesimulator/*.app
+            android:
+                setup_commands:
+                    - npm install
+                    - if [ ! -d android ]; then npx expo prebuild --platform android --no-install; fi
+                build_commands:
+                    - cd android && ./gradlew assembleDebug -PreactNativeArchitectures=x86_64
+                output_path: android/app/build/outputs/apk/debug/app-debug.apk
+        preview:
+            ios:
+                app_id: cf50e3e3-4bb3-46b4-9f7b-fe488aac29ac
+                setup_commands:
+                    - npm ci
+                    - if [ ! -d ios ]; then npx expo prebuild --platform ios --no-install; fi
+                build_commands:
+                    - cd ios && if [ ! -d Pods ]; then pod install; fi && WS=$(ls -d *.xcworkspace | head -n 1) && xcodebuild -workspace "$WS" -scheme "${WS%.xcworkspace}" -configuration Release -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' ARCHS=arm64 -derivedDataPath build
+                output_path: ios/build/Build/Products/Release-iphonesimulator/*.app
+            android:
+                app_id: 9e5d8a6c-6a0d-4602-a62f-7ecd96e70ea1
+                setup_commands:
+                    - npm ci
+                    - if [ ! -d android ]; then npx expo prebuild --platform android --no-install; fi
+                build_commands:
+                    - cd android && ./gradlew assembleRelease -PreactNativeArchitectures=x86_64
+                output_path: android/app/build/outputs/apk/release/app-release.apk
+pr_review:
+    enabled: true
+    build:
+        kind: revyl
+        profile: preview
+    proof_of_changes:
+        enabled: true
+        harness:
+            kind: revyl
