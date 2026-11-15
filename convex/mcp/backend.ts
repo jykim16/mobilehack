@@ -8,14 +8,6 @@ import type { ActionCtx } from "../_generated/server";
  * returns the same shapes iOS sees.
  */
 
-export async function demoLoginShopperId(ctx: ActionCtx, login: string): Promise<Id<"users">> {
-  const existing = await ctx.runQuery(internal.mcp.store.demoShopper, { login });
-  if (existing) return existing;
-  const shopperId = await ctx.runMutation(internal.demo.createDemoShopper, { name: `Demo shopper (${login})` });
-  await ctx.runMutation(internal.mcp.connection.rememberDemoShopper, { login, shopperId });
-  return shopperId;
-}
-
 export async function addItem(
   ctx: ActionCtx,
   shopperId: Id<"users">,
