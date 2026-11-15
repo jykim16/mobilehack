@@ -1,0 +1,31 @@
+# Open a cart item's full-height detail page and close it with the X button.
+test:
+  metadata:
+    name: cart-item-detail
+    platform: ios
+    tags:
+      - cart
+      - details
+  build:
+    name: capy--org_01M7EXXJQYFBXQJNNW82GRTS5Z--mobilehack-ios
+  variables:
+    password: cart-e2e-demo-pass
+  blocks:
+    - type: code_execution
+      step_description: |
+        import uuid
+        print(f"cart-e2e-{uuid.uuid4().hex[:10]}@example.com")
+      code_execution_runtime: python
+      variable_name: shopper_email
+    - type: module_import
+      module: "cart-sign-up"
+    - type: instructions
+      step_description: "Tap the product title of the first item card in the Cart tab."
+    - type: validation
+      step_description: "A full-screen item detail page shows a large product image, the product title, a rating line, and a Purchase details section with Subtotal, Estimated tax, Delivery, and Total."
+    - type: validation
+      step_description: "A Payment and delivery section shows a Visa logo with •••• 4242 and a Demo Shopper address."
+    - type: instructions
+      step_description: "Tap the X button at the top left."
+    - type: validation
+      step_description: "The Cart tab is visible again with the item card and its Buy button."

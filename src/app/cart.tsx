@@ -134,7 +134,8 @@ function CartTab({ bottomInset }: { bottomInset: number }) {
                 actionLabel={item.pendingRequest ? 'Review' : 'Buy'}
                 actionVariant="strong"
                 actionDisabled={!canBuy(item)}
-                onAction={() => checkout([item.id])}>
+                onAction={() => checkout([item.id])}
+                onOpen={() => router.push({ pathname: '/item/[id]', params: { id: item.id } })}>
                 {item.price && (
                   <View style={styles.priceRow}>
                     <PriceText priceCents={item.price.currentCents} listPriceCents={item.price.listPriceCents} />
@@ -203,7 +204,8 @@ function PurchasesTab({ bottomInset }: { bottomInset: number }) {
               rating={item?.rating ?? null}
               actionLabel="Buy again"
               actionVariant="secondary"
-              onAction={() => item && addItem(item.url)}>
+              onAction={() => item && addItem(item.url)}
+              onOpen={() => router.push({ pathname: '/purchase/[id]', params: { id: purchase.orderId } })}>
               <View style={styles.delivery}>
                 <Text style={[styles.status, purchase.shipment?.status === 'delivered' && styles.delivered]}>
                   {statusLine(purchase)}

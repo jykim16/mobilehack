@@ -54,6 +54,19 @@ export function useThemedStyles<T>(create: (colors: Palette) => T): T {
   return useMemo(() => create(colors), [create, colors]);
 }
 
+/** Third-party brand marks keep their own colors in every appearance. */
+export const BrandColors = {
+  visa: '#1434CB',
+  mastercardRed: '#EB001B',
+  mastercardYellow: '#F79E1B',
+  mastercardOverlap: '#FF5F00',
+  amex: '#006FCF',
+  reddit: '#FF4500',
+  youtube: '#FF0000',
+  x: '#000000',
+  onBrand: '#FFFFFF',
+} as const;
+
 export const Spacing = {
   xs: 4,
   sm: 8,

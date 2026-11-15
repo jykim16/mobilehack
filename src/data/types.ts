@@ -117,6 +117,7 @@ export interface Shipment {
   eta: string | null;
   updatedAt: number;
   simulated: boolean;
+  events?: ShipmentEvent[];
 }
 
 export interface Order {
@@ -160,3 +161,33 @@ export interface Purchase {
   simulated: boolean;
   shipment: Shipment | null;
 }
+
+/** A carrier scan, oldest first. status is usually a ShipmentStatus; client-reported carriers may send others. */
+export interface ShipmentEvent {
+  status: string;
+  description: string;
+  location: string | null;
+  occurredAt: number;
+}
+
+export type ReviewSource = 'reddit' | 'x' | 'amazon' | 'bestbuy' | 'youtube' | 'other';
+
+export interface Review {
+  id: string;
+  source: ReviewSource;
+  sourceName: string;
+  author: string | null;
+  text: string;
+  rating: number | null;
+  postedAt: number | null;
+  url: string;
+  score: number | null;
+  simulated: boolean;
+}
+
+/** reviews:list: newest first, deduped by url and text; partial while enrichment runs. bySource counts returned rows. */
+export interface ReviewList {
+  reviews: Review[];
+  bySource: { source: ReviewSource; count: number; average: number | null }[];
+}
+

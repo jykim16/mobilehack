@@ -1,5 +1,5 @@
 import { Image } from 'expo-image';
-import { StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { Radius, Type, tabularNumbers, useColors, useThemedStyles, type Palette } from '@/constants/theme';
 import type { Rating } from '@/data/types';
@@ -28,15 +28,20 @@ export function RetailerLogo({ retailer, retailerName, size = 40 }: { retailer: 
   );
 }
 
-export function RatingText({ rating }: { rating: Rating | null }) {
+export function RatingText({ rating, onPress }: { rating: Rating | null; onPress?: () => void }) {
   const styles = useThemedStyles(createStyles);
   if (!rating) return null;
-  return (
-    <Text
-      style={styles.rating}
-      accessibilityLabel={`Rated ${rating.average} out of 5 from ${rating.count} reviews across ${rating.retailers.length} stores`}>
+  const label = `Rated ${rating.average} out of 5 from ${rating.count} reviews across ${rating.retailers.length} stores`;
+  const text = (pressed: boolean) => (
+    <Text style={[styles.rating, pressed && styles.ratingPressed]} accessibilityLabel={onPress ? undefined : label}>
       <Text style={styles.ratingValue}>{rating.average.toFixed(1)} ★</Text> ({formatCount(rating.count)} reviews)
     </Text>
+  );
+  if (!onPress) return text(false);
+  return (
+    <Pressable accessibilityRole="link" accessibilityLabel={label} accessibilityHint="Opens reviews" hitSlop={8} onPress={onPress} style={styles.ratingLink}>
+      {({ pressed }) => text(pressed)}
+    </Pressable>
   );
 }
 
@@ -68,6 +73,8 @@ const createStyles = (Colors: Palette) => StyleSheet.create({
   logoText: { fontWeight: '800', letterSpacing: -0.3 },
   rating: { ...Type.secondary, color: Colors.textSecondary },
   ratingValue: { color: Colors.text },
+  ratingPressed: { opacity: 0.6 },
+  ratingLink: { alignSelf: 'flex-start' },
   price: { ...Type.headline, ...tabularNumbers, color: Colors.text },
   originalPrice: {
     ...Type.secondary,

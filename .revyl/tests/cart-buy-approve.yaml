@@ -1,0 +1,30 @@
+# Buy an item, review the order, approve it, and land on Purchases.
+test:
+  metadata:
+    name: cart-buy-approve
+    platform: ios
+    tags:
+      - cart
+      - checkout
+      - smoke
+  build:
+    name: capy--org_01M7EXXJQYFBXQJNNW82GRTS5Z--mobilehack-ios
+  variables:
+    password: cart-e2e-demo-pass
+  blocks:
+    - type: code_execution
+      step_description: |
+        import uuid
+        print(f"cart-e2e-{uuid.uuid4().hex[:10]}@example.com")
+      code_execution_runtime: python
+      variable_name: shopper_email
+    - type: module_import
+      module: "cart-sign-up"
+    - type: instructions
+      step_description: "Tap Buy on the first item card."
+    - type: validation
+      step_description: "The Review order sheet shows the item, Subtotal, Estimated tax, Shipping, Total, and an Approve button with the total on it."
+    - type: instructions
+      step_description: "Tap the Approve button."
+    - type: validation
+      step_description: "The Purchases tab is selected and shows the purchased item with a delivery status line such as Order placed or Shipped."
