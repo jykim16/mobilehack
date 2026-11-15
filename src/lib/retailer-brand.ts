@@ -1,4 +1,4 @@
-import { Colors } from '@/constants/theme';
+import type { Palette } from '@/constants/theme';
 
 const brands: Record<string, { mark: string; background: string; foreground: string }> = {
   amazon: { mark: 'a', background: '#232F3E', foreground: '#FF9900' },
@@ -9,6 +9,6 @@ const brands: Record<string, { mark: string; background: string; foreground: str
   walmart: { mark: 'W', background: '#0071DC', foreground: '#FFC220' },
 };
 
-export function retailerBrand(retailer: string, retailerName: string) {
+export function retailerBrand(retailer: string, retailerName: string, Colors: Palette) {
   return brands[retailer] ?? { mark: retailerName.charAt(0).toUpperCase(), background: Colors.control, foreground: Colors.text };
 }

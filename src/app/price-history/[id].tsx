@@ -4,11 +4,13 @@ import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from
 
 import { PriceChart } from '@/components/price-chart';
 import { RetailerLogo } from '@/components/product-bits';
-import { Colors, Radius, Spacing, Type, tabularNumbers } from '@/constants/theme';
+import { Radius, Spacing, Type, tabularNumbers, useColors, useThemedStyles, type Palette } from '@/constants/theme';
 import { useItem } from '@/data/shop-store';
 import { formatPrice } from '@/lib/format';
 
 export default function PriceHistorySheet() {
+  const Colors = useColors();
+  const styles = useThemedStyles(createStyles);
   const { id } = useLocalSearchParams<{ id: string }>();
   const item = useItem(id);
 
@@ -78,6 +80,7 @@ export default function PriceHistorySheet() {
 }
 
 function Stat({ label, value }: { label: string; value: number }) {
+  const styles = useThemedStyles(createStyles);
   return (
     <View style={styles.stat}>
       <Text style={styles.muted}>{label}</Text>
@@ -86,9 +89,9 @@ function Stat({ label, value }: { label: string; value: number }) {
   );
 }
 
-const styles = StyleSheet.create({
-  loading: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.surface },
-  sheet: { flex: 1, backgroundColor: Colors.surface },
+const createStyles = (Colors: Palette) => StyleSheet.create({
+  loading: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.sheet },
+  sheet: { flex: 1, backgroundColor: Colors.sheet },
   content: { padding: Spacing.xxl, paddingTop: Spacing.xxxl, gap: Spacing.xxl },
   titleRow: { flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.lg },
   titleText: { flex: 1, gap: 2 },

@@ -6,11 +6,13 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { PillButton } from '@/components/pill-button';
 import { ProductImage } from '@/components/product-bits';
-import { Colors, Radius, Spacing, Type, tabularNumbers } from '@/constants/theme';
+import { Radius, Spacing, Type, tabularNumbers, useColors, useThemedStyles, type Palette } from '@/constants/theme';
 import { errorMessage, useShop, type PendingQuote } from '@/data/shop-store';
 import { formatPrice } from '@/lib/format';
 
 export default function CheckoutSheet() {
+  const Colors = useColors();
+  const styles = useThemedStyles(createStyles);
   const insets = useSafeAreaInsets();
   const { items: itemParam } = useLocalSearchParams<{ items: string }>();
   const { ready, items, quoteItem, decide: decidePurchase, setCartTab } = useShop();
@@ -145,6 +147,7 @@ export default function CheckoutSheet() {
 }
 
 function Row({ label, value }: { label: string; value: string }) {
+  const styles = useThemedStyles(createStyles);
   return (
     <View style={styles.row}>
       <Text style={styles.rowLabel}>{label}</Text>
@@ -153,9 +156,9 @@ function Row({ label, value }: { label: string; value: string }) {
   );
 }
 
-const styles = StyleSheet.create({
-  loading: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: Spacing.sm, backgroundColor: Colors.surface },
-  sheet: { flex: 1, backgroundColor: Colors.surface },
+const createStyles = (Colors: Palette) => StyleSheet.create({
+  loading: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: Spacing.sm, backgroundColor: Colors.sheet },
+  sheet: { flex: 1, backgroundColor: Colors.sheet },
   content: { padding: Spacing.xxl, paddingTop: Spacing.xxxl, gap: Spacing.xxl },
   titleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   title: { ...Type.title, color: Colors.text },

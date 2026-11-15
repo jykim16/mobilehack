@@ -4,7 +4,7 @@ import { KeyboardAvoidingView, Pressable, StyleSheet, Text, TextInput, View } fr
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { PillButton } from '@/components/pill-button';
-import { Colors, Radius, Spacing, Type } from '@/constants/theme';
+import { Radius, Spacing, Type, useColors, useThemedStyles, type Palette } from '@/constants/theme';
 
 type Flow = 'signUp' | 'signIn';
 
@@ -18,6 +18,8 @@ function authError(error: unknown, flow: Flow) {
 }
 
 export default function SignInScreen() {
+  const Colors = useColors();
+  const styles = useThemedStyles(createStyles);
   const insets = useSafeAreaInsets();
   const { signIn } = useAuthActions();
   const [flow, setFlow] = useState<Flow>('signUp');
@@ -103,7 +105,7 @@ export default function SignInScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const createStyles = (Colors: Palette) => StyleSheet.create({
   screen: { flex: 1, backgroundColor: Colors.background },
   content: { paddingHorizontal: Spacing.xxl, gap: Spacing.lg },
   wordmark: { fontSize: 24, lineHeight: 30, fontWeight: '700', letterSpacing: -1, color: Colors.accent, marginBottom: Spacing.xl },

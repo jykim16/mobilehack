@@ -1,28 +1,23 @@
-import { DarkTheme, Stack, ThemeProvider } from 'expo-router';
+import { DarkTheme, DefaultTheme, Stack, ThemeProvider } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
+import { useColorScheme } from 'react-native';
 
-import { Colors } from '@/constants/theme';
+import { useColors } from '@/constants/theme';
 import { ShopProvider } from '@/data/shop-store';
 import { SessionProvider, useSession } from '@/lib/session';
 
-const theme = {
-  ...DarkTheme,
-  colors: { ...DarkTheme.colors, background: Colors.background, card: Colors.background, primary: Colors.accent },
-};
-
-const sheetOptions = {
-  presentation: 'formSheet',
-  sheetGrabberVisible: true,
-  sheetCornerRadius: 24,
-  contentStyle: { backgroundColor: Colors.surface },
-} as const;
-
 export default function RootLayout() {
+  const Colors = useColors();
+  const base = useColorScheme() === 'light' ? DefaultTheme : DarkTheme;
+  const theme = {
+    ...base,
+    colors: { ...base.colors, background: Colors.background, card: Colors.background, primary: Colors.accent },
+  };
   return (
     <ThemeProvider value={theme}>
       <SessionProvider>
         <ShopProvider>
-          <StatusBar style="light" />
+          <StatusBar style="auto" />
           <RootStack />
         </ShopProvider>
       </SessionProvider>
@@ -31,6 +26,13 @@ export default function RootLayout() {
 }
 
 function RootStack() {
+  const Colors = useColors();
+  const sheetOptions = {
+    presentation: 'formSheet',
+    sheetGrabberVisible: true,
+    sheetCornerRadius: 24,
+    contentStyle: { backgroundColor: Colors.sheet },
+  } as const;
   const needsSignIn = useSession() === 'signed_out';
   return (
     <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: Colors.background } }}>

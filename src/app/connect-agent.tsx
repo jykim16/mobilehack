@@ -8,13 +8,15 @@ import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { PillButton } from '@/components/pill-button';
-import { Colors, Radius, Spacing, Type } from '@/constants/theme';
+import { Radius, Spacing, Type, useColors, useThemedStyles, type Palette } from '@/constants/theme';
 import { api, mcpUrl } from '@/data/convex-api';
 import { errorMessage } from '@/data/shop-store';
 import { formatShortDate } from '@/lib/format';
 import { convexConfigured, useSession } from '@/lib/session';
 
 export default function ConnectAgentScreen() {
+  const Colors = useColors();
+  const styles = useThemedStyles(createStyles);
   const insets = useSafeAreaInsets();
   return (
     <View style={[styles.screen, { paddingTop: insets.top + Spacing.sm }]}>
@@ -41,6 +43,8 @@ export default function ConnectAgentScreen() {
 }
 
 function ConnectAgent({ mcpUrl, bottomInset }: { mcpUrl: string; bottomInset: number }) {
+  const Colors = useColors();
+  const styles = useThemedStyles(createStyles);
   const signedIn = useSession() === 'signed_in';
   const { signOut } = useAuthActions();
   const connections = useQuery(api.agentConnections.list, signedIn ? {} : 'skip');
@@ -140,6 +144,7 @@ function ConnectAgent({ mcpUrl, bottomInset }: { mcpUrl: string; bottomInset: nu
 }
 
 function CopyButton({ value }: { value: string }) {
+  const styles = useThemedStyles(createStyles);
   const [copied, setCopied] = useState(false);
   return (
     <PillButton
@@ -156,7 +161,7 @@ function CopyButton({ value }: { value: string }) {
   );
 }
 
-const styles = StyleSheet.create({
+const createStyles = (Colors: Palette) => StyleSheet.create({
   screen: { flex: 1, backgroundColor: Colors.background },
   header: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, paddingHorizontal: Spacing.lg, paddingBottom: Spacing.md },
   back: {

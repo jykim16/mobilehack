@@ -2,15 +2,15 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import type { ComponentProps } from 'react';
 import { Pressable, StyleSheet, Text, type StyleProp, type ViewStyle } from 'react-native';
 
-import { Colors, Radius, Spacing, Type } from '@/constants/theme';
+import { Radius, Spacing, Type, useColors, useThemedStyles, type Palette } from '@/constants/theme';
 
 type Variant = 'accent' | 'strong' | 'secondary';
 
-const palette: Record<Variant, { background: string; pressed: string; text: string }> = {
+const palette = (Colors: Palette): Record<Variant, { background: string; pressed: string; text: string }> => ({
   accent: { background: Colors.accent, pressed: Colors.accentPressed, text: Colors.onAccent },
-  strong: { background: Colors.strong, pressed: '#D8D8DC', text: Colors.onStrong },
+  strong: { background: Colors.strong, pressed: Colors.strongPressed, text: Colors.onStrong },
   secondary: { background: Colors.control, pressed: Colors.controlPressed, text: Colors.text },
-};
+});
 
 export function PillButton({
   label,
@@ -29,7 +29,8 @@ export function PillButton({
   disabled?: boolean;
   style?: StyleProp<ViewStyle>;
 }) {
-  const colors = palette[variant];
+  const styles = useThemedStyles(createStyles);
+  const colors = palette(useColors())[variant];
   return (
     <Pressable
       accessibilityRole="button"
@@ -48,7 +49,7 @@ export function PillButton({
   );
 }
 
-const styles = StyleSheet.create({
+const createStyles = (Colors: Palette) => StyleSheet.create({
   base: {
     flexDirection: 'row',
     alignItems: 'center',
