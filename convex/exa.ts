@@ -441,6 +441,7 @@ export const acceptCandidates = internalAction({
         }),
         source: "exa",
         simulated: false,
+        token: null,
       });
     }
     return null;
@@ -738,6 +739,7 @@ export const pollRedditLookup = internalAction({
           }),
           source: "exa",
           simulated: false,
+          token: null,
         });
       }
       return null;
@@ -834,6 +836,7 @@ export const resolveProductQuery = internalAction({
       key: cacheKey,
       source: "exa",
     });
+    const queryToken = claim.token;
     if (!claim.claimed) {
       if (stored) {
         return { ok: true, error: null, candidates: stored.candidates, cachedAt: cached!.fetchedAt, stale: true };
@@ -858,7 +861,12 @@ export const resolveProductQuery = internalAction({
     }
     const key = env.EXA_API_KEY;
     if (!key) {
-      await ctx.runMutation(internal.cache.fail, { kind: "query", key: cacheKey, error: "EXA_API_KEY is not set" });
+      await ctx.runMutation(internal.cache.fail, {
+        kind: "query",
+        key: cacheKey,
+        error: "EXA_API_KEY is not set",
+        token: queryToken,
+      });
       return { ok: false, error: "EXA_API_KEY is not set", candidates: [], cachedAt: null, stale: false };
     }
     let res: Response;
@@ -875,7 +883,7 @@ export const resolveProductQuery = internalAction({
       });
     } catch (e) {
       const error = `Exa search failed: ${e instanceof Error ? e.message : String(e)}`;
-      await ctx.runMutation(internal.cache.fail, { kind: "query", key: cacheKey, error });
+      await ctx.runMutation(internal.cache.fail, { kind: "query", key: cacheKey, error, token: queryToken });
       return stored
         ? { ok: true, error, candidates: stored.candidates, cachedAt: cached!.fetchedAt, stale: true }
         : { ok: false, error, candidates: [], cachedAt: null, stale: false };
@@ -883,7 +891,7 @@ export const resolveProductQuery = internalAction({
     const text = await res.text();
     if (!res.ok) {
       const error = `Exa search HTTP ${res.status}: ${text.slice(0, 160)}`;
-      await ctx.runMutation(internal.cache.fail, { kind: "query", key: cacheKey, error });
+      await ctx.runMutation(internal.cache.fail, { kind: "query", key: cacheKey, error, token: queryToken });
       return stored
         ? { ok: true, error, candidates: stored.candidates, cachedAt: cached!.fetchedAt, stale: true }
         : { ok: false, error, candidates: [], cachedAt: null, stale: false };
@@ -892,7 +900,12 @@ export const resolveProductQuery = internalAction({
     try {
       body = JSON.parse(text);
     } catch {
-      await ctx.runMutation(internal.cache.fail, { kind: "query", key: cacheKey, error: "Exa search returned non-JSON" });
+      await ctx.runMutation(internal.cache.fail, {
+        kind: "query",
+        key: cacheKey,
+        error: "Exa search returned non-JSON",
+        token: queryToken,
+      });
       return { ok: false, error: "Exa search returned non-JSON", candidates: [], cachedAt: null, stale: false };
     }
     const results: any[] = Array.isArray(body?.results) ? body.results : [];
@@ -915,6 +928,7 @@ export const resolveProductQuery = internalAction({
         kind: "query",
         key: cacheKey,
         error: "Exa returned no product pages",
+        token: queryToken,
       });
       return { ok: false, error: "Exa returned no product pages", candidates: [], cachedAt: null, stale: false };
     }
@@ -924,6 +938,7 @@ export const resolveProductQuery = internalAction({
       payload: JSON.stringify({ candidates }),
       source: "exa",
       simulated: false,
+      token: queryToken,
     });
     return { ok: true, error: null, candidates, cachedAt: Date.now(), stale: false };
   },

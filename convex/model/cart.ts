@@ -222,11 +222,9 @@ export async function retryItemFor(
   const item = await loadOwnedItem(ctx, shopperId, itemId);
   const requests = await ctx.db
     .query("purchaseRequests")
-    .withIndex("by_shopperId_and_status", (q) => q.eq("shopperId", shopperId))
-    .take(200);
-  const committed = requests.find(
-    (r) => r.cartItemId === itemId && (r.status === "approved" || r.status === "ordered"),
-  );
+    .withIndex("by_cartItemId_and_status", (q) => q.eq("cartItemId", itemId))
+    .take(20);
+  const committed = requests.find((r) => r.status === "approved" || r.status === "ordered");
   if (committed || item.status === "purchased") {
     throw new ConvexError({
       code: "INVALID_STATE",
@@ -237,8 +235,10 @@ export async function retryItemFor(
 
   if (options.force) {
     // A forced refresh must go upstream even when the cache is still warm; the
-    // payload stays behind as the stale fallback if the page refuses us.
-    const canonicalKey = canonicalKeyForUrl(item.url);
+    // payload stays behind as the stale fallback if the page refuses us. The offer
+    // carries the key its row was written under, which a variant URL would miss.
+    const offer = item.offerId ? await ctx.db.get("offers", item.offerId) : null;
+    const canonicalKey = offer?.canonicalKey ?? canonicalKeyForUrl(item.url);
     if (canonicalKey) {
       await ctx.runMutation(internal.cache.invalidate, { kind: "offer", key: canonicalKey });
     }

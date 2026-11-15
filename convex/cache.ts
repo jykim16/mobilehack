@@ -57,20 +57,25 @@ export const lockIsLive = (pendingStartedAt: number | null, now = Date.now()) =>
  * treated as abandoned so one crashed attempt cannot wedge the key.
  */
 export const claim = internalMutation({
-  returns: v.object({ claimed: v.boolean() }),
+  returns: v.object({ claimed: v.boolean(), token: v.union(v.string(), v.null()) }),
   args: { kind, key: v.string(), source: v.string() },
   handler: async (ctx, { kind: k, key, source }) => {
     const now = Date.now();
+    const token = crypto.randomUUID();
     const row = await ctx.db
       .query("extractionCache")
       .withIndex("by_kind_and_key", (q) => q.eq("kind", k).eq("key", key))
       .unique();
     if (row) {
       if (row.pendingStartedAt && now - row.pendingStartedAt < SINGLE_FLIGHT_MS) {
-        return { claimed: false };
+        return { claimed: false, token: null };
       }
-      await ctx.db.patch("extractionCache", row._id, { pendingStartedAt: now, source });
-      return { claimed: true };
+      await ctx.db.patch("extractionCache", row._id, {
+        pendingStartedAt: now,
+        pendingToken: token,
+        source,
+      });
+      return { claimed: true, token };
     }
     await ctx.db.insert("extractionCache", {
       kind: k,
@@ -81,10 +86,11 @@ export const claim = internalMutation({
       simulated: false,
       attempts: 0,
       pendingStartedAt: now,
+      pendingToken: token,
       lastAttemptAt: now,
       error: undefined,
     });
-    return { claimed: true };
+    return { claimed: true, token };
   },
 });
 
@@ -96,13 +102,16 @@ export const finish = internalMutation({
     payload: v.string(),
     source: v.string(),
     simulated: v.boolean(),
+    token: v.union(v.string(), v.null()),
   },
-  handler: async (ctx, { kind: k, key, payload, source, simulated }) => {
+  handler: async (ctx, { kind: k, key, payload, source, simulated, token }) => {
     const now = Date.now();
     const row = await ctx.db
       .query("extractionCache")
       .withIndex("by_kind_and_key", (q) => q.eq("kind", k).eq("key", key))
       .unique();
+    // A run that lost its lock must not overwrite what the run holding it wrote.
+    if (row && token !== null && row.pendingToken && row.pendingToken !== token) return null;
     if (!row) {
       await ctx.db.insert("extractionCache", {
         kind: k,
@@ -124,6 +133,7 @@ export const finish = internalMutation({
       attempts: row.attempts + 1,
       lastAttemptAt: now,
       pendingStartedAt: undefined,
+      pendingToken: undefined,
       invalidatedAt: undefined,
       error: undefined,
     });
@@ -134,13 +144,14 @@ export const finish = internalMutation({
 /** A failed attempt is recorded, never cached as an answer: the next call retries. */
 export const fail = internalMutation({
   returns: v.null(),
-  args: { kind, key: v.string(), error: v.string() },
-  handler: async (ctx, { kind: k, key, error }) => {
+  args: { kind, key: v.string(), error: v.string(), token: v.optional(v.union(v.string(), v.null())) },
+  handler: async (ctx, { kind: k, key, error, token }) => {
     const now = Date.now();
     const row = await ctx.db
       .query("extractionCache")
       .withIndex("by_kind_and_key", (q) => q.eq("kind", k).eq("key", key))
       .unique();
+    if (row && token && row.pendingToken && row.pendingToken !== token) return null;
     if (!row) {
       await ctx.db.insert("extractionCache", {
         kind: k,
@@ -158,6 +169,7 @@ export const fail = internalMutation({
       attempts: row.attempts + 1,
       lastAttemptAt: now,
       pendingStartedAt: undefined,
+      pendingToken: undefined,
       error,
     });
     return null;
@@ -177,10 +189,9 @@ export const invalidate = internalMutation({
       .withIndex("by_kind_and_key", (q) => q.eq("kind", k).eq("key", key))
       .unique();
     if (!row) return null;
-    await ctx.db.patch("extractionCache", row._id, {
-      invalidatedAt: Date.now(),
-      pendingStartedAt: undefined,
-    });
+    // Leaves the lock alone: a run that is in flight still owns the write, and
+    // clearing the lock here would let a second run race it.
+    await ctx.db.patch("extractionCache", row._id, { invalidatedAt: Date.now() });
     return null;
   },
 });

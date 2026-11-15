@@ -24,13 +24,16 @@ const check = (label, ok, detail) => {
 
 // Cache rows are shared state, so they are seeded through the admin CLI against an
 // internal mutation rather than from a client anyone could call.
-function seed(fn, args) {
-  const out = execFileSync("npx", ["convex", "run", `demo:${fn}`, JSON.stringify(args)], {
-    encoding: "utf8",
-  });
+function cli(fn, args) {
+  const out = execFileSync("npx", ["convex", "run", fn, JSON.stringify(args)], { encoding: "utf8" });
   const text = out.trim();
-  return JSON.parse(text.slice(text.indexOf("{")));
+  const start = text.indexOf("{");
+  return start === -1 ? null : JSON.parse(text.slice(start));
 }
+
+const seed = (fn, args) => cli(`demo:${fn}`, args);
+// Cache inspection is internal too: no client may probe cached keys.
+const stats = (kind, key) => cli("demo:cacheStats", { kind, key });
 
 async function signIn() {
   const client = new ConvexHttpClient(url);
@@ -40,13 +43,13 @@ async function signIn() {
 }
 
 // A scrape is asynchronous: wait for the cache to record the attempt it made.
-async function waitForAttempts(client, key, atLeast) {
-  let stats = await client.query(api.demo.cacheStats, { kind: "offer", key });
-  for (let i = 0; i < 15 && (stats?.attempts ?? 0) < atLeast; i++) {
+async function waitForAttempts(key, atLeast) {
+  let current = stats("offer", key);
+  for (let i = 0; i < 15 && (current?.attempts ?? 0) < atLeast; i++) {
     await sleep(2000);
-    stats = await client.query(api.demo.cacheStats, { kind: "offer", key });
+    current = stats("offer", key);
   }
-  return stats;
+  return current;
 }
 
 async function settled(client, itemId) {
@@ -72,7 +75,7 @@ const addedWarm = await shopperA.mutation(api.cart.addItem, {
   idempotencyKey: "cache-warm-" + Date.now(),
 });
 const warmItem = await settled(shopperA, addedWarm.itemId);
-const warmStats = await shopperA.query(api.demo.cacheStats, { kind: "offer", key: warm.key });
+const warmStats = stats("offer", warm.key);
 check("the warm row is used as-is", warmItem.offer?.priceCents === 27999, warmItem.offer?.priceCents);
 check("serving a warm row makes zero provider calls", warmStats.attempts === 0, warmStats.attempts);
 check("the offer is not marked simulated", warmItem.offer?.simulated === false, warmItem.offer?.simulated);
@@ -81,7 +84,7 @@ check("the offer is not marked simulated", warmItem.offer?.simulated === false, 
 const shopperB = await signIn();
 await shopperB.mutation(api.cart.addItem, { url: warmUrl, idempotencyKey: "cache-warm-b-" + Date.now() });
 await sleep(3000);
-const warmStatsAfter = await shopperB.query(api.demo.cacheStats, { kind: "offer", key: warm.key });
+const warmStatsAfter = stats("offer", warm.key);
 check("a second shopper's add of the same URL makes zero provider calls", warmStatsAfter.attempts === 0, warmStatsAfter.attempts);
 
 // --- 3. A stale row is served, marked stale, when the provider refuses ---------
@@ -97,7 +100,7 @@ const addedStale = await shopperC.mutation(api.cart.addItem, {
   idempotencyKey: "cache-stale-" + Date.now(),
 });
 const staleItem = await settled(shopperC, addedStale.itemId);
-const staleStats = await waitForAttempts(shopperC, stale.key, 1);
+const staleStats = await waitForAttempts(stale.key, 1);
 const providerHealthy = staleItem.offer?.provenance?.note === null || staleItem.offer?.provenance?.note === undefined;
 check("a stale row still yields the price we read earlier", staleItem.offer?.priceCents === 24999 || !providerHealthy, staleItem.offer?.priceCents);
 check("the stale read was attempted once upstream", staleStats.attempts >= 1, staleStats.attempts);
@@ -114,9 +117,9 @@ if (!providerHealthy) {
 }
 
 // --- 4. A forced refresh does go upstream -------------------------------------
-const beforeRefresh = await shopperA.query(api.demo.cacheStats, { kind: "offer", key: warm.key });
+const beforeRefresh = stats("offer", warm.key);
 await shopperA.mutation(api.cart.refreshItem, { cartItemId: addedWarm.itemId });
-const afterRefresh = await waitForAttempts(shopperA, warm.key, beforeRefresh.attempts + 1);
+const afterRefresh = await waitForAttempts(warm.key, beforeRefresh.attempts + 1);
 check("refreshItem forces a real provider call", afterRefresh.attempts >= 1, afterRefresh.attempts);
 
 // --- 5. A repeated query resolution costs nothing -----------------------------
@@ -144,7 +147,7 @@ const queryAdd = await shopperD.action(api.cart.addItemFromQuery, {
   idempotencyKey: "cache-query-" + Date.now(),
 });
 check("the query resolved from the cache", queryAdd.resolvedUrl.includes("bestbuy.com"), queryAdd.resolvedUrl);
-const queryStats = await shopperD.query(api.demo.cacheStats, { kind: "query", key: seededQuery.key });
+const queryStats = stats("query", seededQuery.key);
 check("resolving from cache makes zero Exa calls", queryStats.attempts === 0, queryStats.attempts);
 check("the cached alternatives come back with it", queryAdd.alternatives.length === 1, queryAdd.alternatives.length);
 

@@ -104,6 +104,9 @@ export default defineSchema({
     attempts: v.number(),
     lastAttemptAt: v.optional(v.number()),
     pendingStartedAt: v.optional(v.number()),
+    /** Identifies the run that owns the lock, so a slow run cannot clear or
+     * overwrite what a later run wrote. */
+    pendingToken: v.optional(v.string()),
     /** Set when a forced refresh asked for a fresh read; the payload and its real
      * read time survive so a refusal can still serve it, honestly dated. */
     invalidatedAt: v.optional(v.number()),

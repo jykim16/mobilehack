@@ -126,21 +126,40 @@ async function extractWithCache(
     };
   }
 
-  const extraction = await ctx.runAction(internal.firecrawl.extractOffer, {
-    url,
-    expectedKey: canonicalKey,
-  });
-  const usable =
-    extraction.ok &&
-    extraction.offer !== null &&
-    (extraction.offer.priceCents !== null || extraction.offer.seller !== null);
-  if (usable && extraction.offer) {
+  const token = claim.token;
+  let extraction: Awaited<ReturnType<typeof ctx.runAction<typeof internal.firecrawl.extractOffer>>>;
+  try {
+    extraction = await ctx.runAction(internal.firecrawl.extractOffer, {
+      url,
+      expectedKey: canonicalKey,
+    });
+  } catch (e) {
+    const error = e instanceof Error ? e.message : String(e);
+    await ctx.runMutation(internal.cache.fail, { kind: "offer", key: canonicalKey, error, token });
+    if (payload) {
+      return {
+        offer: payload,
+        sourceUrl: url,
+        observedAt: cached!.fetchedAt,
+        stale: true,
+        note: `This page could not be read right now, so this is the price read ${describeAge(cached!.fetchedAt)}.`,
+        error,
+        variantMatches,
+      };
+    }
+    return { offer: null, sourceUrl: url, observedAt: now, stale: false, note: null, error, variantMatches: true };
+  }
+  // A page can answer with no price (a bot wall). That must never overwrite a priced
+  // cache entry, or the honest fallback disappears for a whole TTL.
+  const hasPrice = extraction.ok && extraction.offer !== null && (extraction.offer.priceCents ?? 0) > 0;
+  if (hasPrice && extraction.offer) {
     await ctx.runMutation(internal.cache.finish, {
       kind: "offer",
       key: canonicalKey,
       payload: JSON.stringify({ offer: extraction.offer, variantMatches: extraction.variantMatches }),
       source: "firecrawl",
       simulated: false,
+      token,
     });
     return {
       offer: extraction.offer,
@@ -153,8 +172,8 @@ async function extractWithCache(
     };
   }
 
-  const error = extraction.error ?? "the page returned no price or seller";
-  await ctx.runMutation(internal.cache.fail, { kind: "offer", key: canonicalKey, error });
+  const error = extraction.error ?? "the page returned no price";
+  await ctx.runMutation(internal.cache.fail, { kind: "offer", key: canonicalKey, error, token });
   if (payload) {
     return {
       offer: payload,

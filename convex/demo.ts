@@ -1,5 +1,5 @@
 import { ConvexError, v } from "convex/values";
-import { internalMutation, mutation, query, type MutationCtx } from "./_generated/server";
+import { internalMutation, internalQuery, mutation, type MutationCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { requireShopper } from "./lib/auth";
@@ -422,7 +422,7 @@ export const seedCachedQueryResolution = internalMutation({
   },
 });
 
-export const cacheStats = query({
+export const cacheStats = internalQuery({
   args: {
     kind: v.union(v.literal("offer"), v.literal("comparison"), v.literal("query"), v.literal("reddit")),
     key: v.string(),
