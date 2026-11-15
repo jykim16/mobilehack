@@ -1,12 +1,11 @@
 import { httpRouter } from "convex/server";
 import { auth } from "./auth";
+import { registerMcpRoutes } from "./mcp/http";
 
 const http = httpRouter();
 
 auth.addHttpRoutes(http);
 
-// MCP routes are mounted by convex/mcp/** (owned by the MCP thread), e.g.:
-// import { registerMcpRoutes } from "./mcp/routes";
-// registerMcpRoutes(http);
+registerMcpRoutes(http);
 
 export default http;
