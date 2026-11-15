@@ -1,3 +1,4 @@
+import * as SecureStore from 'expo-secure-store';
 import React, {
   createContext,
   useCallback,
@@ -9,6 +10,7 @@ import React, {
 } from 'react';
 import {
   AppState,
+  BackHandler,
   Platform,
   Pressable,
   StyleSheet,
@@ -21,6 +23,7 @@ import { WebView, type WebViewMessageEvent, type WebViewNavigation } from 'react
 
 import { type Palette, Spacing, Type, useThemedStyles } from '@/constants/theme';
 
+import { AmazonSyncDaemon } from './AmazonSyncDaemon';
 import {
   AMAZON_CART_URL,
   AMAZON_ORDERS_URL,
@@ -35,10 +38,30 @@ import {
   parseDeliveryEtaIso,
 } from './asin';
 import {
+  type AttachClientQuoteArgs,
   buildAttachClientQuoteArgs,
   buildSyncClientShipmentArgs,
   type ConvexAmazonSyncClient,
+  type SyncClientShipmentArgs,
 } from './convex-sync';
+import {
+  AmazonDaemonBridgeContext,
+  type AmazonDaemonBridgeValue,
+} from './daemon-bridge-context';
+import {
+  type CartSnapshotScrape,
+  type ConvexCheckoutCoordinator,
+  executeDeterministicItemCheckout,
+  HEARTBEAT_INTERVAL_MS,
+  InMemoryKeyValueStorage,
+  type KeyValueStorageAdapter,
+  quoteIsolatedSingleCartItem,
+  selectBrowserEngine,
+  selectBrowserUserAgent,
+  shouldRunIdleHeartbeat,
+  type SpcReviewInspection,
+  SyncedCartLedger,
+} from './daemon-engine';
 import {
   applyLedgerReconciliationsToState,
   computeLiveCartQuantityPlan,
@@ -66,9 +89,11 @@ import {
   buildClearWebViewSessionScript,
   buildClickProceedToCheckoutScript,
   buildInspectCheckoutReviewScript,
+  buildMoveSavedToCartScript,
   buildMutateCartRowScript,
   buildProductScrapeAndAddScript,
   buildResolvePageAsinScript,
+  buildSaveCartRowForLaterScript,
   buildScrapeCartScript,
   buildScrapeOrderConfirmationScript,
   buildScrapeProgressTrackerScript,
@@ -81,6 +106,7 @@ import type {
   AmazonAddToCartResult,
   AmazonAuthChallenge,
   AmazonCartAdapterValue,
+  AmazonCheckoutItemInput,
   AmazonCheckoutQuoteInput,
   AmazonCheckoutQuoteResult,
   AmazonPlaceOrderInput,
@@ -105,11 +131,40 @@ import type {
 
 type NativeWebViewInstance = WebView<Record<string, unknown>>;
 
-const IPHONE_SAFARI_USER_AGENT =
-  'Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1';
-
 const ESTIMATED_TAX_RATE = 0.0825;
 const QUOTE_TTL_MS = 30 * 60 * 1000;
+
+function createPlatformStorageAdapter(): KeyValueStorageAdapter {
+  if (Platform.OS === 'web') {
+    return new InMemoryKeyValueStorage();
+  }
+  const memoryFallback = new InMemoryKeyValueStorage();
+  return {
+    getItem: async (key: string) => {
+      try {
+        return await SecureStore.getItemAsync(key);
+      } catch {
+        return memoryFallback.getItem(key);
+      }
+    },
+    setItem: async (key: string, value: string) => {
+      memoryFallback.setItem(key, value);
+      try {
+        await SecureStore.setItemAsync(key, value);
+      } catch {
+        // Retained in memoryFallback if SecureStore rejects or is unavailable
+      }
+    },
+    removeItem: async (key: string) => {
+      memoryFallback.removeItem(key);
+      try {
+        await SecureStore.deleteItemAsync(key);
+      } catch {
+        // Ignore SecureStore deletion errors
+      }
+    },
+  };
+}
 
 interface ProductMetadataCacheEntry {
   asin: string;
@@ -266,22 +321,38 @@ export interface AmazonBrowserProviderProps {
   /**
    * Optional 5-line bridge to Convex client-sync mutations (`MOBI-9`):
    * `attachClientQuote`, `recordClientPlacement`, and `syncClientShipment`.
+   * When omitted inside `<ConvexProvider>`, `<AmazonSyncDaemon />` wires it automatically.
    */
   convexSync?: ConvexAmazonSyncClient;
+  /**
+   * Mount `<AmazonSyncDaemon />` automatically inside `<AmazonBrowserProvider>` when Convex
+   * context is active. Defaults to `true` (safely skips in standalone harnesses without Convex).
+   */
+  enableBackendDaemon?: boolean;
 }
 
 export function AmazonBrowserProvider({
   children,
   shopperId = null,
   convexSync,
+  enableBackendDaemon = true,
 }: AmazonBrowserProviderProps) {
   const insets = useSafeAreaInsets();
   const dimensions = useWindowDimensions();
   const styles = useThemedStyles(createProviderStyles);
   const webViewRef = useRef<NativeWebViewInstance | null>(null);
+  const autoConvexSyncRef = useRef<ConvexAmazonSyncClient | undefined>(undefined);
+  const autoCheckoutCoordinatorRef = useRef<ConvexCheckoutCoordinator | undefined>(undefined);
   const convexSyncRef = useRef<ConvexAmazonSyncClient | undefined>(convexSync);
   const [sessionBarrier] = useState(() => new SessionResetBarrier());
+  const checkoutInFlightCountRef = useRef(0);
+  const canGoBackRef = useRef(false);
+  const lastHeartbeatAtRef = useRef(0);
   const prevShopperIdRef = useRef<string | null | undefined>(shopperId);
+  const knownConvexOrderRefByRetailerIdRef = useRef<Map<string, string>>(new Map());
+  const [syncedCartLedger] = useState(
+    () => new SyncedCartLedger(createPlatformStorageAdapter(), shopperId),
+  );
 
   const [isSignedIn, setIsSignedIn] = useState(false);
   const [busyCount, setBusyCount] = useState(0);
@@ -303,6 +374,8 @@ export function AmazonBrowserProvider({
   const purchasedItemsRef = useRef<Record<string, CartItem>>(purchasedItems);
   const pendingRequestsRef = useRef<PurchaseRequest[]>(pendingRequests);
   const isSignedInRef = useRef(isSignedIn);
+  const busyCountRef = useRef(busyCount);
+  const isSheetOpenRef = useRef(isSheetOpen);
   const challengeRef = useRef<AmazonAuthChallenge>(challenge);
   const lastSyncedAtRef = useRef<number | null>(lastSyncedAt);
   const currentUrlRef = useRef(currentUrl);
@@ -316,11 +389,28 @@ export function AmazonBrowserProvider({
   );
 
   useEffect(() => {
-    convexSyncRef.current = convexSync;
-    if (convexSync) {
-      void syncQueue.flush(convexSync);
+    const effective = convexSync ?? autoConvexSyncRef.current;
+    convexSyncRef.current = effective;
+    if (effective && !sessionBarrier.isLogoutPending) {
+      void syncQueue.flush(effective);
     }
-  }, [convexSync, syncQueue]);
+  }, [convexSync, sessionBarrier, syncQueue]);
+
+  const registerAutoConvexBridge = useCallback(
+    (bridge: {
+      syncClient: ConvexAmazonSyncClient | undefined;
+      checkoutCoordinator: ConvexCheckoutCoordinator | undefined;
+    }) => {
+      autoConvexSyncRef.current = bridge.syncClient;
+      autoCheckoutCoordinatorRef.current = bridge.checkoutCoordinator;
+      const effective = convexSync ?? bridge.syncClient;
+      convexSyncRef.current = effective;
+      if (effective && !sessionBarrier.isLogoutPending) {
+        void syncQueue.flush(effective);
+      }
+    },
+    [convexSync, sessionBarrier, syncQueue],
+  );
 
   useEffect(() => {
     itemsRef.current = items;
@@ -337,6 +427,12 @@ export function AmazonBrowserProvider({
   useEffect(() => {
     isSignedInRef.current = isSignedIn;
   }, [isSignedIn]);
+  useEffect(() => {
+    busyCountRef.current = busyCount;
+  }, [busyCount]);
+  useEffect(() => {
+    isSheetOpenRef.current = isSheetOpen;
+  }, [isSheetOpen]);
   useEffect(() => {
     challengeRef.current = challenge;
   }, [challenge]);
@@ -429,6 +525,7 @@ export function AmazonBrowserProvider({
 
   const handleNavigationStateChange = useCallback((navState: WebViewNavigation) => {
     setIsPageLoading(Boolean(navState.loading));
+    canGoBackRef.current = Boolean(navState.canGoBack);
     if (navState.url) {
       setCurrentUrl(navState.url);
       currentUrlRef.current = navState.url;
@@ -515,6 +612,8 @@ export function AmazonBrowserProvider({
       idempotencyMap: idempotencyMapRef.current,
       productCache: productCacheRef.current,
     });
+    knownConvexOrderRefByRetailerIdRef.current.clear();
+    void syncedCartLedger.reset(shopperId);
 
     setIsSignedIn(empty.isSignedIn);
     isSignedInRef.current = empty.isSignedIn;
@@ -532,7 +631,7 @@ export function AmazonBrowserProvider({
     lastSyncedAtRef.current = empty.lastSyncedAt;
     setLastSyncError(empty.lastSyncError);
     setPendingSyncCount(empty.pendingSyncCount);
-  }, [syncQueue]);
+  }, [shopperId, syncQueue, syncedCartLedger]);
 
   const runVerifiedBrowserLogout = useCallback(
     async (targetEpoch: number): Promise<void> => {
@@ -757,6 +856,7 @@ export function AmazonBrowserProvider({
       challengeRef.current = res.challenge;
       setLastSyncedAt(res.checkedAt);
       lastSyncedAtRef.current = res.checkedAt;
+      lastHeartbeatAtRef.current = res.checkedAt;
       return res;
     });
   }, [enqueueCommand, ensureReadySessionEpoch, evalStep, navigateTo, sessionBarrier]);
@@ -772,6 +872,217 @@ export function AmazonBrowserProvider({
     });
   }, [checkSession, openBrowserSheet]);
 
+  const runAddToCartUnlocked = useCallback(
+    async (input: AmazonAddToCartInput, opEpoch: number): Promise<AmazonAddToCartResult> => {
+      const requestedQty = Math.max(1, Math.min(10, Math.floor(input.quantity ?? 1)));
+      let asin = extractAsin(input.asin ?? input.url);
+
+      if (!asin && input.url && isAmazonShortLink(input.url)) {
+        await navigateTo(input.url);
+        if (!sessionBarrier.isCurrent(opEpoch)) {
+          throw new Error('Amazon session was reset.');
+        }
+        const resolved = await evalStep<{ asin: string | null; url: string }>((reqId) =>
+          buildResolvePageAsinScript(reqId),
+        );
+        if (!sessionBarrier.isCurrent(opEpoch)) {
+          throw new Error('Amazon session was reset.');
+        }
+        asin = resolved.asin;
+      }
+
+      if (!asin) {
+        throw new Error('Could not extract a 10-character Amazon ASIN from the provided URL.');
+      }
+
+      await navigateTo(canonicalAmazonProductUrl(asin));
+      if (!sessionBarrier.isCurrent(opEpoch)) {
+        throw new Error('Amazon session was reset.');
+      }
+      const productAttempt = await evalStep<{
+        status: 'captcha' | 'needs_aod_fallback' | 'clicked_primary';
+        productMeta?: {
+          title: string;
+          unitPriceCents: number | null;
+          listPriceCents: number | null;
+          imageUrl: string | null;
+          deliveryEstimate: string;
+          seller: string;
+          rating: { average: number; count: number } | null;
+        };
+      }>((reqId) => buildProductScrapeAndAddScript(reqId, requestedQty));
+
+      if (!sessionBarrier.isCurrent(opEpoch)) {
+        throw new Error('Amazon session was reset.');
+      }
+
+      if (productAttempt.status === 'captcha') {
+        setChallenge('captcha');
+        challengeRef.current = 'captcha';
+        return {
+          ok: false,
+          asin,
+          usedAodFallback: false,
+          cartCount: 0,
+          subtotalCents: 0,
+          addedItem: null,
+          cartRows: [],
+          syncedAt: Date.now(),
+          error: 'Amazon requested CAPTCHA verification. Open the Amazon Browser sheet to continue.',
+        };
+      }
+
+      if (productAttempt.productMeta) {
+        productCacheRef.current.set(asin, {
+          asin,
+          title: productAttempt.productMeta.title,
+          unitPriceCents: productAttempt.productMeta.unitPriceCents,
+          listPriceCents: productAttempt.productMeta.listPriceCents,
+          imageUrl: productAttempt.productMeta.imageUrl,
+          deliveryEstimate: productAttempt.productMeta.deliveryEstimate,
+          seller: productAttempt.productMeta.seller,
+          variantLabel: input.variantLabel ?? 'Standard',
+          rating: productAttempt.productMeta.rating,
+        });
+      }
+
+      let usedAodFallback = false;
+      let aodAppliedQuantity = true;
+      if (productAttempt.status === 'needs_aod_fallback') {
+        usedAodFallback = true;
+        await navigateTo(amazonOfferListingUrl(asin));
+        if (!sessionBarrier.isCurrent(opEpoch)) {
+          throw new Error('Amazon session was reset.');
+        }
+        const aodRes = await evalStep<{
+          clicked: boolean;
+          appliedQuantity: boolean;
+          seller: string | null;
+          priceCents: number | null;
+        }>((reqId) => buildAodAddToCartScript(reqId, requestedQty), 14_000);
+
+        if (!sessionBarrier.isCurrent(opEpoch)) {
+          throw new Error('Amazon session was reset.');
+        }
+
+        if (!aodRes.clicked) {
+          return {
+            ok: false,
+            asin,
+            usedAodFallback: true,
+            cartCount: 0,
+            subtotalCents: 0,
+            addedItem: null,
+            cartRows: [],
+            syncedAt: Date.now(),
+            error: `No active Add to Cart offer found on Amazon for ASIN ${asin}.`,
+          };
+        }
+
+        aodAppliedQuantity = aodRes.appliedQuantity;
+        const cached = productCacheRef.current.get(asin);
+        if (cached) {
+          productCacheRef.current.set(asin, {
+            ...cached,
+            seller: aodRes.seller ?? cached.seller,
+            unitPriceCents: aodRes.priceCents ?? cached.unitPriceCents,
+          });
+        }
+      }
+
+      await delay(2200);
+      if (!sessionBarrier.isCurrent(opEpoch)) {
+        throw new Error('Amazon session was reset.');
+      }
+      await navigateTo(AMAZON_CART_URL);
+      if (!sessionBarrier.isCurrent(opEpoch)) {
+        throw new Error('Amazon session was reset.');
+      }
+
+      let scrapedCart = await evalStep<{
+        signedIn: boolean;
+        challenge: AmazonAuthChallenge;
+        currentUrl: string;
+        cartCount: number;
+        subtotalCents: number;
+        items: ScrapedAmazonCartRow[];
+      }>((reqId) => buildScrapeCartScript(reqId));
+
+      if (!sessionBarrier.isCurrent(opEpoch)) {
+        throw new Error('Amazon session was reset.');
+      }
+
+      // When AOD fallback added a single-unit offer without an in-form quantity selector,
+      // step the cart row up to requestedQty on /gp/cart/view.html and re-verify.
+      if (usedAodFallback && !aodAppliedQuantity && requestedQty > 1) {
+        const livePlan = computeLiveCartQuantityPlan(scrapedCart.items, asin, requestedQty);
+        if (livePlan.found && livePlan.operation === 'increment' && livePlan.steps > 0) {
+          for (let i = 0; i < livePlan.steps; i += 1) {
+            if (!sessionBarrier.isCurrent(opEpoch)) {
+              throw new Error('Amazon session was reset.');
+            }
+            const mutRes = await evalStep<{ mutated: boolean; reason?: string }>((reqId) =>
+              buildMutateCartRowScript(reqId, asin!, 'increment'),
+            );
+            if (!mutRes.mutated) break;
+            await delay(1100);
+          }
+          if (!sessionBarrier.isCurrent(opEpoch)) {
+            throw new Error('Amazon session was reset.');
+          }
+          scrapedCart = await evalStep<{
+            signedIn: boolean;
+            challenge: AmazonAuthChallenge;
+            currentUrl: string;
+            cartCount: number;
+            subtotalCents: number;
+            items: ScrapedAmazonCartRow[];
+          }>((reqId) => buildScrapeCartScript(reqId));
+        }
+      }
+
+      if (!sessionBarrier.isCurrent(opEpoch)) {
+        throw new Error('Amazon session was reset.');
+      }
+
+      setIsSignedIn(scrapedCart.signedIn);
+      isSignedInRef.current = scrapedCart.signedIn;
+      setChallenge(scrapedCart.challenge);
+      challengeRef.current = scrapedCart.challenge;
+
+      const syncedAt = Date.now();
+      lastHeartbeatAtRef.current = syncedAt;
+      const nextItems = syncCartRowsToState(scrapedCart.items, syncedAt, opEpoch);
+      const addedItem = selectVerifiedAddedCartItem(nextItems, asin, requestedQty);
+
+      if (!addedItem) {
+        return {
+          ok: false,
+          asin,
+          usedAodFallback,
+          cartCount: scrapedCart.cartCount,
+          subtotalCents: scrapedCart.subtotalCents,
+          addedItem: null,
+          cartRows: scrapedCart.items,
+          syncedAt,
+          error: `Amazon cart did not reflect ASIN ${asin} at requested quantity (${requestedQty}).`,
+        };
+      }
+
+      return {
+        ok: true,
+        asin,
+        usedAodFallback,
+        cartCount: scrapedCart.cartCount,
+        subtotalCents: scrapedCart.subtotalCents,
+        addedItem,
+        cartRows: scrapedCart.items,
+        syncedAt,
+      };
+    },
+    [evalStep, navigateTo, sessionBarrier, syncCartRowsToState],
+  );
+
   const addToCart = useCallback(
     (input: AmazonAddToCartInput): Promise<AmazonAddToCartResult> => {
       const callerEpoch = sessionBarrier.epoch;
@@ -779,213 +1090,10 @@ export function AmazonBrowserProvider({
         const opEpoch = await ensureReadySessionEpoch(
           sessionBarrier.isLogoutPending ? undefined : callerEpoch,
         );
-        const requestedQty = Math.max(1, Math.min(10, Math.floor(input.quantity ?? 1)));
-        let asin = extractAsin(input.asin ?? input.url);
-
-        if (!asin && input.url && isAmazonShortLink(input.url)) {
-          await navigateTo(input.url);
-          if (!sessionBarrier.isCurrent(opEpoch)) {
-            throw new Error('Amazon session was reset.');
-          }
-          const resolved = await evalStep<{ asin: string | null; url: string }>((reqId) =>
-            buildResolvePageAsinScript(reqId),
-          );
-          if (!sessionBarrier.isCurrent(opEpoch)) {
-            throw new Error('Amazon session was reset.');
-          }
-          asin = resolved.asin;
-        }
-
-        if (!asin) {
-          throw new Error('Could not extract a 10-character Amazon ASIN from the provided URL.');
-        }
-
-        await navigateTo(canonicalAmazonProductUrl(asin));
-        if (!sessionBarrier.isCurrent(opEpoch)) {
-          throw new Error('Amazon session was reset.');
-        }
-        const productAttempt = await evalStep<{
-          status: 'captcha' | 'needs_aod_fallback' | 'clicked_primary';
-          productMeta?: {
-            title: string;
-            unitPriceCents: number | null;
-            listPriceCents: number | null;
-            imageUrl: string | null;
-            deliveryEstimate: string;
-            seller: string;
-            rating: { average: number; count: number } | null;
-          };
-        }>((reqId) => buildProductScrapeAndAddScript(reqId, requestedQty));
-
-        if (!sessionBarrier.isCurrent(opEpoch)) {
-          throw new Error('Amazon session was reset.');
-        }
-
-        if (productAttempt.status === 'captcha') {
-          setChallenge('captcha');
-          challengeRef.current = 'captcha';
-          return {
-            ok: false,
-            asin,
-            usedAodFallback: false,
-            cartCount: 0,
-            subtotalCents: 0,
-            addedItem: null,
-            cartRows: [],
-            syncedAt: Date.now(),
-            error: 'Amazon requested CAPTCHA verification. Open the Amazon Browser sheet to continue.',
-          };
-        }
-
-        if (productAttempt.productMeta) {
-          productCacheRef.current.set(asin, {
-            asin,
-            title: productAttempt.productMeta.title,
-            unitPriceCents: productAttempt.productMeta.unitPriceCents,
-            listPriceCents: productAttempt.productMeta.listPriceCents,
-            imageUrl: productAttempt.productMeta.imageUrl,
-            deliveryEstimate: productAttempt.productMeta.deliveryEstimate,
-            seller: productAttempt.productMeta.seller,
-            variantLabel: input.variantLabel ?? 'Standard',
-            rating: productAttempt.productMeta.rating,
-          });
-        }
-
-        let usedAodFallback = false;
-        let aodAppliedQuantity = true;
-        if (productAttempt.status === 'needs_aod_fallback') {
-          usedAodFallback = true;
-          await navigateTo(amazonOfferListingUrl(asin));
-          if (!sessionBarrier.isCurrent(opEpoch)) {
-            throw new Error('Amazon session was reset.');
-          }
-          const aodRes = await evalStep<{
-            clicked: boolean;
-            appliedQuantity: boolean;
-            seller: string | null;
-            priceCents: number | null;
-          }>((reqId) => buildAodAddToCartScript(reqId, requestedQty), 14_000);
-
-          if (!sessionBarrier.isCurrent(opEpoch)) {
-            throw new Error('Amazon session was reset.');
-          }
-
-          if (!aodRes.clicked) {
-            return {
-              ok: false,
-              asin,
-              usedAodFallback: true,
-              cartCount: 0,
-              subtotalCents: 0,
-              addedItem: null,
-              cartRows: [],
-              syncedAt: Date.now(),
-              error: `No active Add to Cart offer found on Amazon for ASIN ${asin}.`,
-            };
-          }
-
-          aodAppliedQuantity = aodRes.appliedQuantity;
-          const cached = productCacheRef.current.get(asin);
-          if (cached) {
-            productCacheRef.current.set(asin, {
-              ...cached,
-              seller: aodRes.seller ?? cached.seller,
-              unitPriceCents: aodRes.priceCents ?? cached.unitPriceCents,
-            });
-          }
-        }
-
-        await delay(2200);
-        if (!sessionBarrier.isCurrent(opEpoch)) {
-          throw new Error('Amazon session was reset.');
-        }
-        await navigateTo(AMAZON_CART_URL);
-        if (!sessionBarrier.isCurrent(opEpoch)) {
-          throw new Error('Amazon session was reset.');
-        }
-
-        let scrapedCart = await evalStep<{
-          signedIn: boolean;
-          challenge: AmazonAuthChallenge;
-          currentUrl: string;
-          cartCount: number;
-          subtotalCents: number;
-          items: ScrapedAmazonCartRow[];
-        }>((reqId) => buildScrapeCartScript(reqId));
-
-        if (!sessionBarrier.isCurrent(opEpoch)) {
-          throw new Error('Amazon session was reset.');
-        }
-
-        // When AOD fallback added a single-unit offer without an in-form quantity selector,
-        // step the cart row up to requestedQty on /gp/cart/view.html and re-verify.
-        if (usedAodFallback && !aodAppliedQuantity && requestedQty > 1) {
-          const livePlan = computeLiveCartQuantityPlan(scrapedCart.items, asin, requestedQty);
-          if (livePlan.found && livePlan.operation === 'increment' && livePlan.steps > 0) {
-            for (let i = 0; i < livePlan.steps; i += 1) {
-              if (!sessionBarrier.isCurrent(opEpoch)) {
-                throw new Error('Amazon session was reset.');
-              }
-              const mutRes = await evalStep<{ mutated: boolean; reason?: string }>((reqId) =>
-                buildMutateCartRowScript(reqId, asin!, 'increment'),
-              );
-              if (!mutRes.mutated) break;
-              await delay(1100);
-            }
-            if (!sessionBarrier.isCurrent(opEpoch)) {
-              throw new Error('Amazon session was reset.');
-            }
-            scrapedCart = await evalStep<{
-              signedIn: boolean;
-              challenge: AmazonAuthChallenge;
-              currentUrl: string;
-              cartCount: number;
-              subtotalCents: number;
-              items: ScrapedAmazonCartRow[];
-            }>((reqId) => buildScrapeCartScript(reqId));
-          }
-        }
-
-        if (!sessionBarrier.isCurrent(opEpoch)) {
-          throw new Error('Amazon session was reset.');
-        }
-
-        setIsSignedIn(scrapedCart.signedIn);
-        isSignedInRef.current = scrapedCart.signedIn;
-        setChallenge(scrapedCart.challenge);
-        challengeRef.current = scrapedCart.challenge;
-
-        const syncedAt = Date.now();
-        const nextItems = syncCartRowsToState(scrapedCart.items, syncedAt, opEpoch);
-        const addedItem = selectVerifiedAddedCartItem(nextItems, asin, requestedQty);
-
-        if (!addedItem) {
-          return {
-            ok: false,
-            asin,
-            usedAodFallback,
-            cartCount: scrapedCart.cartCount,
-            subtotalCents: scrapedCart.subtotalCents,
-            addedItem: null,
-            cartRows: scrapedCart.items,
-            syncedAt,
-            error: `Amazon cart did not reflect ASIN ${asin} at requested quantity (${requestedQty}).`,
-          };
-        }
-
-        return {
-          ok: true,
-          asin,
-          usedAodFallback,
-          cartCount: scrapedCart.cartCount,
-          subtotalCents: scrapedCart.subtotalCents,
-          addedItem,
-          cartRows: scrapedCart.items,
-          syncedAt,
-        };
+        return runAddToCartUnlocked(input, opEpoch);
       });
     },
-    [enqueueCommand, ensureReadySessionEpoch, evalStep, navigateTo, sessionBarrier, syncCartRowsToState],
+    [enqueueCommand, ensureReadySessionEpoch, runAddToCartUnlocked, sessionBarrier],
   );
 
   const getCheckoutQuote = useCallback(
@@ -1513,24 +1621,8 @@ export function AmazonBrowserProvider({
     [enqueueCommand, evalStep, getCheckoutQuote, runVerifiedBrowserLogout, sessionBarrier, syncQueue, waitForNextPageReady],
   );
 
-  const syncOrders = useCallback((): Promise<AmazonSyncOrdersResult> => {
-    const callerEpoch = sessionBarrier.epoch;
-    return enqueueCommand(async () => {
-      let opEpoch: number;
-      try {
-        opEpoch = await ensureReadySessionEpoch(
-          sessionBarrier.isLogoutPending ? undefined : callerEpoch,
-        );
-      } catch (err) {
-        return {
-          ok: false,
-          requiresSignIn: true,
-          purchases: [],
-          syncedAt: Date.now(),
-          error: err instanceof Error ? err.message : String(err),
-        };
-      }
-
+  const runSyncOrdersUnlocked = useCallback(
+    async (opEpoch: number): Promise<AmazonSyncOrdersResult> => {
       await navigateTo(AMAZON_ORDERS_URL);
       if (!sessionBarrier.isCurrent(opEpoch)) {
         return {
@@ -1778,14 +1870,22 @@ export function AmazonBrowserProvider({
       purchasesRef.current = applied.purchases;
 
       for (const placementArgs of applied.placementsToSync) {
+        knownConvexOrderRefByRetailerIdRef.current.set(
+          placementArgs.retailerOrderId,
+          placementArgs.orderRef,
+        );
         void syncQueue.enqueuePlacement(placementArgs, convexSyncRef.current);
       }
 
       for (const purchase of applied.purchases) {
         if (!purchase.retailerOrderId || !purchase.shipment) continue;
+        const isSyntheticScrapedOrder = purchase.orderId.startsWith('amz-ord-');
+        const canonicalOrderRef = isSyntheticScrapedOrder
+          ? knownConvexOrderRefByRetailerIdRef.current.get(purchase.retailerOrderId)
+          : purchase.orderRef;
         void syncQueue.enqueueShipment(
           buildSyncClientShipmentArgs({
-            orderRef: purchase.orderRef,
+            orderRef: canonicalOrderRef,
             retailerOrderId: purchase.retailerOrderId,
             shipment: purchase.shipment,
           }),
@@ -1794,6 +1894,7 @@ export function AmazonBrowserProvider({
       }
 
       const syncFlush = await syncQueue.flush(convexSyncRef.current);
+      lastHeartbeatAtRef.current = syncedAt;
 
       return {
         ok: true,
@@ -1802,8 +1903,286 @@ export function AmazonBrowserProvider({
         syncedAt,
         syncError: syncFlush.lastSyncError,
       };
+    },
+    [evalStep, navigateTo, sessionBarrier, syncQueue],
+  );
+
+  const syncOrders = useCallback((): Promise<AmazonSyncOrdersResult> => {
+    const callerEpoch = sessionBarrier.epoch;
+    return enqueueCommand(async () => {
+      let opEpoch: number;
+      try {
+        opEpoch = await ensureReadySessionEpoch(
+          sessionBarrier.isLogoutPending ? undefined : callerEpoch,
+        );
+      } catch (err) {
+        return {
+          ok: false,
+          requiresSignIn: true,
+          purchases: [],
+          syncedAt: Date.now(),
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+      return runSyncOrdersUnlocked(opEpoch);
     });
-  }, [enqueueCommand, ensureReadySessionEpoch, evalStep, navigateTo, sessionBarrier, syncQueue]);
+  }, [enqueueCommand, ensureReadySessionEpoch, runSyncOrdersUnlocked, sessionBarrier]);
+
+  const makeUnlockedIsolationDeps = useCallback(
+    (getOpEpoch: () => number) => ({
+      navigateToCart: async () => {
+        if (!sessionBarrier.isCurrent(getOpEpoch())) {
+          throw new Error('Amazon session was reset.');
+        }
+        await navigateTo(AMAZON_CART_URL);
+      },
+      scrapeCart: async () => {
+        const opEpoch = getOpEpoch();
+        if (!sessionBarrier.isCurrent(opEpoch)) {
+          throw new Error('Amazon session was reset.');
+        }
+        const snap = await evalStep<CartSnapshotScrape>((reqId) => buildScrapeCartScript(reqId));
+        if (sessionBarrier.isCurrent(opEpoch)) {
+          setIsSignedIn(snap.signedIn);
+          isSignedInRef.current = snap.signedIn;
+          setChallenge(snap.challenge);
+          challengeRef.current = snap.challenge;
+        }
+        return snap;
+      },
+      moveSavedToCart: (targetAsin: string) =>
+        evalStep<{ mutated: boolean; reason?: string }>((reqId) =>
+          buildMoveSavedToCartScript(reqId, targetAsin),
+        ),
+      addTargetToCart: (input: AmazonAddToCartInput) => runAddToCartUnlocked(input, getOpEpoch()),
+      stepRowQuantity: (targetAsin: string, op: 'increment' | 'decrement') =>
+        evalStep<{ mutated: boolean; reason?: string }>((reqId) =>
+          buildMutateCartRowScript(reqId, targetAsin, op),
+        ),
+      saveRowForLater: (extraAsin: string) =>
+        evalStep<{ mutated: boolean; reason?: string }>((reqId) =>
+          buildSaveCartRowForLaterScript(reqId, extraAsin),
+        ),
+      waitMs: delay,
+    }),
+    [evalStep, navigateTo, runAddToCartUnlocked, sessionBarrier],
+  );
+
+  const proceedToCheckoutAndInspectUnlocked = useCallback(
+    async (opEpoch: number): Promise<SpcReviewInspection> => {
+      if (!sessionBarrier.isCurrent(opEpoch)) {
+        throw new Error('Amazon session was reset.');
+      }
+      const navWait = waitForNextPageReady(() => true, 12_000);
+      const ptc = await evalStep<{ clicked: boolean; currentUrl: string }>((reqId) =>
+        buildClickProceedToCheckoutScript(reqId),
+      );
+      if (ptc.clicked) {
+        await navWait;
+        await delay(1200);
+      }
+      if (!sessionBarrier.isCurrent(opEpoch)) {
+        throw new Error('Amazon session was reset.');
+      }
+      const review = await evalStep<SpcReviewInspection>((reqId) =>
+        buildInspectCheckoutReviewScript(reqId),
+      );
+      if (!sessionBarrier.isCurrent(opEpoch)) {
+        throw new Error('Amazon session was reset.');
+      }
+      const now = Date.now();
+      lastHeartbeatAtRef.current = now;
+      setLastSyncedAt(now);
+      lastSyncedAtRef.current = now;
+      if (review.stage === 'signin_gate' || review.stage === 'captcha_gate') {
+        setIsSignedIn(false);
+        isSignedInRef.current = false;
+        const ch: AmazonAuthChallenge = review.stage === 'captcha_gate' ? 'captcha' : 'signin';
+        setChallenge(ch);
+        challengeRef.current = ch;
+      } else {
+        setIsSignedIn(true);
+        isSignedInRef.current = true;
+        setChallenge('none');
+        challengeRef.current = 'none';
+      }
+      return review;
+    },
+    [evalStep, sessionBarrier, waitForNextPageReady],
+  );
+
+  const quoteSingleItem = useCallback(
+    (params: {
+      asin: string;
+      url: string;
+      quantity: number;
+      productTitle?: string;
+      seller?: string;
+      imageUrl?: string | null;
+      variantLabel?: string | null;
+      returnSummary?: string;
+    }): Promise<AmazonCheckoutQuoteResult> => {
+      const callerEpoch = sessionBarrier.epoch;
+      return enqueueCommand(async () => {
+        const opEpoch = await ensureReadySessionEpoch(
+          sessionBarrier.isLogoutPending ? undefined : callerEpoch,
+        );
+        return quoteIsolatedSingleCartItem({
+          ...params,
+          isolationDeps: makeUnlockedIsolationDeps(() => opEpoch),
+          syncCartRowsToState: (rows, syncedAt) => syncCartRowsToState(rows, syncedAt, opEpoch),
+          proceedToCheckoutAndInspect: () => proceedToCheckoutAndInspectUnlocked(opEpoch),
+        });
+      });
+    },
+    [
+      enqueueCommand,
+      ensureReadySessionEpoch,
+      makeUnlockedIsolationDeps,
+      proceedToCheckoutAndInspectUnlocked,
+      sessionBarrier,
+      syncCartRowsToState,
+    ],
+  );
+
+  const checkoutAmazonItem = useCallback(
+    async (input: AmazonCheckoutItemInput): Promise<AmazonPlaceOrderResult> => {
+      if (sessionBarrier.isLogoutPending) {
+        await enqueueCommand(() => runVerifiedBrowserLogout(sessionBarrier.epoch));
+      }
+      const startEpoch = sessionBarrier.epoch;
+      let activeEpoch = startEpoch;
+
+      return executeDeterministicItemCheckout({
+        input,
+        isSignedIn: () => isSignedInRef.current && sessionBarrier.isCurrent(startEpoch),
+        ensureSignedIn,
+        closeBrowserSheet,
+        runExclusive: async <T,>(fn: () => Promise<T>): Promise<T> => {
+          checkoutInFlightCountRef.current += 1;
+          try {
+            return await enqueueCommand(async () => {
+              activeEpoch = await ensureReadySessionEpoch(
+                sessionBarrier.isLogoutPending ? undefined : startEpoch,
+              );
+              return fn();
+            });
+          } finally {
+            checkoutInFlightCountRef.current = Math.max(0, checkoutInFlightCountRef.current - 1);
+          }
+        },
+        isolationDeps: makeUnlockedIsolationDeps(() => activeEpoch),
+        syncCartRowsToState: (rows, syncedAt) => syncCartRowsToState(rows, syncedAt, activeEpoch),
+        proceedToCheckoutAndInspect: () => proceedToCheckoutAndInspectUnlocked(activeEpoch),
+        submitCheckoutOrder: async (guard) => {
+          if (!sessionBarrier.isCurrent(activeEpoch)) {
+            return {
+              submitted: false,
+              haltedBySafetyGate: true,
+              code: 'safety_blocked',
+              reason: 'Amazon session was reset before Place Order submission.',
+            };
+          }
+          const navWait = waitForNextPageReady(() => true, 18_000);
+          const submitRes = await evalStep<{
+            submitted: boolean;
+            haltedBySafetyGate: boolean;
+            code?: string;
+            reason?: string;
+          }>((reqId) => buildSubmitCheckoutOrderScript(reqId, guard));
+          if (submitRes.submitted) {
+            await navWait;
+            await delay(1500);
+          }
+          return submitRes;
+        },
+        readConfirmation: () =>
+          evalStep<{
+            retailerOrderId: string | null;
+            deliveryEstimate?: string | null;
+            isConfirmationSurface?: boolean;
+            hasAuthOrErrorBarrier?: boolean;
+            currentUrl: string;
+          }>((reqId) => buildScrapeOrderConfirmationScript(reqId)),
+        reconcileViaSyncOrders: () => runSyncOrdersUnlocked(activeEpoch),
+        getPreExistingOrderIds: () =>
+          purchasesRef.current
+            .map((p) => p.retailerOrderId)
+            .filter((id): id is string => Boolean(id)),
+        onOrderPlacedLocalState: async ({
+          item,
+          orderRef,
+          requestId,
+          retailerOrderId,
+          placedAt,
+          quote,
+          shipment,
+        }) => {
+          if (!sessionBarrier.isCurrent(activeEpoch)) return;
+          knownConvexOrderRefByRetailerIdRef.current.set(retailerOrderId, orderRef);
+          await syncedCartLedger.remove(item.id);
+
+          const orderId = `order_${placedAt.toString(36)}`;
+          const newPurchase: Purchase = {
+            orderId,
+            orderRef,
+            requestId,
+            itemId: item.id,
+            status: 'placed',
+            retailerOrderId,
+            placedAt,
+            quote,
+            simulated: false,
+            shipment,
+          };
+
+          const nextPurchased = {
+            ...purchasedItemsRef.current,
+            [item.id]: { ...item, status: 'purchased' as const },
+          };
+          setPurchasedItems(nextPurchased);
+          purchasedItemsRef.current = nextPurchased;
+
+          const targetAsin = extractAsin(item.url);
+          const nextActiveItems = itemsRef.current.filter(
+            (i) => i.id !== item.id && (targetAsin ? extractAsin(i.url) !== targetAsin : true),
+          );
+          setItems(nextActiveItems);
+          itemsRef.current = nextActiveItems;
+
+          const dedupedPurchases = [
+            newPurchase,
+            ...purchasesRef.current.filter((p) => p.retailerOrderId !== retailerOrderId),
+          ];
+          setPurchases(dedupedPurchases);
+          purchasesRef.current = dedupedPurchases;
+          setLastSyncedAt(placedAt);
+          lastSyncedAtRef.current = placedAt;
+        },
+        submissionLedger: submissionLedgerRef.current,
+        syncQueue,
+        convexSync: convexSyncRef.current,
+        convexCoordinator: autoCheckoutCoordinatorRef.current,
+        isSessionCurrent: () => sessionBarrier.isCurrent(activeEpoch),
+      });
+    },
+    [
+      closeBrowserSheet,
+      enqueueCommand,
+      ensureReadySessionEpoch,
+      ensureSignedIn,
+      evalStep,
+      makeUnlockedIsolationDeps,
+      proceedToCheckoutAndInspectUnlocked,
+      runSyncOrdersUnlocked,
+      runVerifiedBrowserLogout,
+      sessionBarrier,
+      syncCartRowsToState,
+      syncQueue,
+      syncedCartLedger,
+      waitForNextPageReady,
+    ],
+  );
 
   const refreshCart = useCallback((): Promise<CartItem[]> => {
     const callerEpoch = sessionBarrier.epoch;
@@ -1836,7 +2215,34 @@ export function AmazonBrowserProvider({
     return res.purchases;
   }, [syncOrders]);
 
+  // Background WebKit / Chromium 60s idle session keep-alive + AppState foreground wakeup
   useEffect(() => {
+    if (Platform.OS === 'web') return;
+
+    const maybeRunHeartbeat = (forceOnForeground = false) => {
+      const now = Date.now();
+      if (
+        shouldRunIdleHeartbeat({
+          appState: AppState.currentState,
+          busyCount: busyCountRef.current,
+          isSheetOpen: isSheetOpenRef.current,
+          isResetting: sessionBarrier.isLogoutPending,
+          currentUrl: currentUrlRef.current,
+          challenge: challengeRef.current,
+          lastHeartbeatAt: lastHeartbeatAtRef.current,
+          now,
+          forceOnForeground,
+        })
+      ) {
+        lastHeartbeatAtRef.current = now;
+        void checkSession().catch(() => undefined);
+      }
+    };
+
+    const interval = setInterval(() => {
+      maybeRunHeartbeat(false);
+    }, HEARTBEAT_INTERVAL_MS);
+
     let prevState: string | null | undefined = AppState.currentState;
     const sub = AppState.addEventListener('change', (nextState) => {
       const returningToForeground =
@@ -1844,6 +2250,8 @@ export function AmazonBrowserProvider({
       prevState = nextState;
 
       if (!returningToForeground) return;
+      maybeRunHeartbeat(true);
+
       const last = lastSyncedAtRef.current ?? 0;
       if (Date.now() - last < 15_000) return;
 
@@ -1853,8 +2261,26 @@ export function AmazonBrowserProvider({
         void refreshCart().catch(() => undefined);
       }
     });
+
+    return () => {
+      clearInterval(interval);
+      sub.remove();
+    };
+  }, [checkSession, refreshCart, sessionBarrier, syncOrders]);
+
+  // Android hardware Back button handling while the interactive Amazon browser sheet is open
+  useEffect(() => {
+    if (Platform.OS !== 'android' || !isSheetOpen) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (canGoBackRef.current && webViewRef.current) {
+        webViewRef.current.goBack();
+        return true;
+      }
+      closeBrowserSheet();
+      return true;
+    });
     return () => sub.remove();
-  }, [refreshCart, syncOrders]);
+  }, [closeBrowserSheet, isSheetOpen]);
 
   const listItems = useCallback(async (): Promise<CartItem[]> => {
     return [...itemsRef.current]
@@ -2321,13 +2747,92 @@ export function AmazonBrowserProvider({
 
   const status: AmazonSessionStatus =
     busyCount > 0 ? 'busy' : isSignedIn ? 'connected' : 'signed_out';
+  const browserEngine = selectBrowserEngine(Platform.OS);
 
   const normalizedShopperId =
     typeof shopperId === 'string' && shopperId.trim().length > 0 ? shopperId.trim() : null;
 
+  const noteKnownConvexPurchases = useCallback((convexPurchases: Purchase[]) => {
+    for (const p of convexPurchases) {
+      if (p.retailerOrderId && p.orderRef) {
+        knownConvexOrderRefByRetailerIdRef.current.set(p.retailerOrderId, p.orderRef);
+      }
+    }
+  }, []);
+
+  const enqueueQuoteSync = useCallback(
+    (args: AttachClientQuoteArgs) => {
+      if (sessionBarrier.isLogoutPending) {
+        return Promise.resolve({
+          synced: 0,
+          remaining: syncQueue.pendingCount,
+          lastSyncError: 'Amazon sign-out verification is pending.',
+        });
+      }
+      return syncQueue.enqueueQuote(args, convexSyncRef.current);
+    },
+    [sessionBarrier, syncQueue],
+  );
+
+  const enqueueShipmentSync = useCallback(
+    (args: SyncClientShipmentArgs) => {
+      if (sessionBarrier.isLogoutPending) {
+        return Promise.resolve({
+          synced: 0,
+          remaining: syncQueue.pendingCount,
+          lastSyncError: 'Amazon sign-out verification is pending.',
+        });
+      }
+      return syncQueue.enqueueShipment(args, convexSyncRef.current);
+    },
+    [sessionBarrier, syncQueue],
+  );
+
+  const daemonBridgeValue = useMemo<AmazonDaemonBridgeValue>(
+    () => ({
+      hasCustomConvexSync: Boolean(convexSync),
+      registerAutoConvexBridge,
+      getSyncedCartLedger: () => syncedCartLedger,
+      getShopperId: () => normalizedShopperId,
+      isSignedIn: () => isSignedInRef.current,
+      isSheetOpen: () => isSheetOpenRef.current,
+      isResetting: () => sessionBarrier.isLogoutPending,
+      isCheckoutInFlight: () => checkoutInFlightCountRef.current > 0,
+      isSignedInReactive: isSignedIn,
+      shopperIdReactive: normalizedShopperId,
+      localPurchasesReactive: purchases,
+      noteKnownConvexPurchases,
+      addToCart,
+      setQuantity,
+      refreshCart,
+      quoteSingleItem,
+      syncOrders,
+      enqueueQuoteSync,
+      enqueueShipmentSync,
+    }),
+    [
+      addToCart,
+      convexSync,
+      enqueueQuoteSync,
+      enqueueShipmentSync,
+      isSignedIn,
+      normalizedShopperId,
+      noteKnownConvexPurchases,
+      purchases,
+      quoteSingleItem,
+      refreshCart,
+      registerAutoConvexBridge,
+      sessionBarrier,
+      setQuantity,
+      syncOrders,
+      syncedCartLedger,
+    ],
+  );
+
   const sessionValue = useMemo<AmazonSessionHookValue>(
     () => ({
       status,
+      browserEngine,
       shopperId: normalizedShopperId,
       isSheetOpen,
       currentUrl,
@@ -2344,11 +2849,13 @@ export function AmazonBrowserProvider({
       addToCart,
       getCheckoutQuote,
       placeOrder,
+      checkoutAmazonItem,
       syncOrders,
       flushPendingSync,
     }),
     [
       status,
+      browserEngine,
       normalizedShopperId,
       isSheetOpen,
       currentUrl,
@@ -2364,6 +2871,7 @@ export function AmazonBrowserProvider({
       addToCart,
       getCheckoutQuote,
       placeOrder,
+      checkoutAmazonItem,
       syncOrders,
       flushPendingSync,
     ],
@@ -2386,6 +2894,7 @@ export function AmazonBrowserProvider({
       listPurchases,
       requestPurchase,
       decidePurchase,
+      checkoutAmazonItem,
       refreshCart,
       refreshPurchases,
       resetSession,
@@ -2407,6 +2916,7 @@ export function AmazonBrowserProvider({
       listPurchases,
       requestPurchase,
       decidePurchase,
+      checkoutAmazonItem,
       refreshCart,
       refreshPurchases,
       resetSession,
@@ -2422,63 +2932,75 @@ export function AmazonBrowserProvider({
   const offscreenOffset = Math.max(dimensions.height * 2, 2400);
 
   return (
-    <AmazonContext.Provider value={contextValue}>
-      <View style={styles.root}>
-        {children}
+    <AmazonDaemonBridgeContext.Provider value={daemonBridgeValue}>
+      <AmazonContext.Provider value={contextValue}>
+        <AmazonSyncDaemon enabled={enableBackendDaemon} />
+        <View style={styles.root}>
+          {children}
 
-        {Platform.OS !== 'web' && (
-          <View
-            pointerEvents={isSheetOpen ? 'auto' : 'none'}
-            accessibilityElementsHidden={!isSheetOpen}
-            importantForAccessibility={isSheetOpen ? 'yes' : 'no-hide-descendants'}
-            style={[
-              styles.sheetOverlay,
-              {
-                width: dimensions.width,
-                height: dimensions.height,
-                paddingTop: insets.top,
-                transform: [{ translateY: isSheetOpen ? 0 : offscreenOffset }],
-              },
-            ]}>
-            <View style={styles.sheetHeader}>
-              <Text style={styles.sheetSubtitle} numberOfLines={1}>
-                Sign in to Amazon so Cart can check out and track orders for you
-              </Text>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Close Amazon browser"
-                hitSlop={12}
-                onPress={closeBrowserSheet}
-                style={({ pressed }) => [styles.closeButton, pressed && styles.closeButtonPressed]}>
-                <Text style={styles.closeButtonLabel}>Close</Text>
-              </Pressable>
+          {Platform.OS !== 'web' && (
+            <View
+              collapsable={false}
+              pointerEvents={isSheetOpen ? 'auto' : 'none'}
+              accessibilityElementsHidden={!isSheetOpen}
+              importantForAccessibility={isSheetOpen ? 'yes' : 'no-hide-descendants'}
+              style={[
+                styles.sheetOverlay,
+                {
+                  width: dimensions.width,
+                  height: dimensions.height,
+                  paddingTop: insets.top,
+                  transform: [{ translateY: isSheetOpen ? 0 : offscreenOffset }],
+                },
+              ]}>
+              <View style={styles.sheetHeader}>
+                <Text style={styles.sheetSubtitle} numberOfLines={1}>
+                  Sign in to Amazon so Cart can check out and track orders for you
+                </Text>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Close Amazon browser"
+                  hitSlop={12}
+                  onPress={closeBrowserSheet}
+                  style={({ pressed }) => [
+                    styles.closeButton,
+                    pressed && styles.closeButtonPressed,
+                  ]}>
+                  <Text style={styles.closeButtonLabel}>Close</Text>
+                </Pressable>
+              </View>
+
+              {isPageLoading && <View style={styles.loadingBar} />}
+
+              <View collapsable={false} style={styles.webViewFrame}>
+                <WebView<Record<string, unknown>>
+                  ref={webViewRef}
+                  source={{ uri: AMAZON_CART_URL }}
+                  userAgent={selectBrowserUserAgent(Platform.OS)}
+                  sharedCookiesEnabled
+                  thirdPartyCookiesEnabled
+                  domStorageEnabled
+                  javaScriptEnabled
+                  javaScriptCanOpenWindowsAutomatically
+                  setSupportMultipleWindows={false}
+                  mixedContentMode="compatibility"
+                  cacheEnabled
+                  overScrollMode="never"
+                  useSharedProcessPool
+                  allowsBackForwardNavigationGestures
+                  contentMode="mobile"
+                  injectedJavaScript={AMAZON_PAGE_BOOTSTRAP_JS}
+                  onMessage={handleWebViewMessage}
+                  onNavigationStateChange={handleNavigationStateChange}
+                  onLoadEnd={handleLoadEnd}
+                  style={styles.webView}
+                />
+              </View>
             </View>
-
-            {isPageLoading && <View style={styles.loadingBar} />}
-
-            <View style={styles.webViewFrame}>
-              <WebView<Record<string, unknown>>
-                ref={webViewRef}
-                source={{ uri: AMAZON_CART_URL }}
-                userAgent={Platform.OS === 'ios' ? IPHONE_SAFARI_USER_AGENT : undefined}
-                sharedCookiesEnabled
-                thirdPartyCookiesEnabled
-                domStorageEnabled
-                javaScriptEnabled
-                useSharedProcessPool
-                allowsBackForwardNavigationGestures
-                contentMode="mobile"
-                injectedJavaScript={AMAZON_PAGE_BOOTSTRAP_JS}
-                onMessage={handleWebViewMessage}
-                onNavigationStateChange={handleNavigationStateChange}
-                onLoadEnd={handleLoadEnd}
-                style={styles.webView}
-              />
-            </View>
-          </View>
-        )}
-      </View>
-    </AmazonContext.Provider>
+          )}
+        </View>
+      </AmazonContext.Provider>
+    </AmazonDaemonBridgeContext.Provider>
   );
 }
 

@@ -455,22 +455,54 @@ export type LedgerEntry =
       preExistingOrderIds: Set<string>;
     };
 
+export interface ItemCheckoutBinding {
+  itemId: string;
+  requestId: string;
+  quoteVersion: number;
+  orderRef: string;
+  asin: string;
+  quantity: number;
+}
+
 /**
- * Stateful idempotency & reconciliation ledger keyed by `orderRef`.
- * - Prevents double-submission when an earlier attempt is `'placed'` OR `'unknown'`.
+ * Stateful idempotency & reconciliation ledger keyed by `orderRef`, paired with a per-item
+ * checkout identity map (`itemId -> { requestId, quoteVersion, orderRef, asin, quantity }`).
+ * - Prevents double-submission when an earlier attempt is `'placed'` OR `'unknown'`, even if
+ *   the caller retries `checkoutAmazonItem({ item })` without passing `orderRef` / `requestId`.
  * - Never matches historical orders known before `submittedAt`, orders missing parsed ASINs,
  *   orders with mismatched totals, orders dated prior to the submission day, or ambiguous multi-matches.
  */
 export class OrderSubmissionLedger {
   private readonly entries = new Map<string, LedgerEntry>();
+  private readonly itemBindings = new Map<string, ItemCheckoutBinding>();
   private readonly observedHistoricalOrderIds = new Set<string>();
 
   get(orderRef: string): LedgerEntry | undefined {
     return this.entries.get(orderRef);
   }
 
+  getItemBinding(itemId: string): ItemCheckoutBinding | undefined {
+    return this.itemBindings.get(itemId);
+  }
+
+  bindItemCheckout(binding: ItemCheckoutBinding): void {
+    this.itemBindings.set(binding.itemId, {
+      itemId: binding.itemId,
+      requestId: binding.requestId,
+      quoteVersion: binding.quoteVersion,
+      orderRef: binding.orderRef,
+      asin: binding.asin.trim().toUpperCase(),
+      quantity: binding.quantity,
+    });
+  }
+
+  clearItemBinding(itemId: string): void {
+    this.itemBindings.delete(itemId);
+  }
+
   clear(): void {
     this.entries.clear();
+    this.itemBindings.clear();
     this.observedHistoricalOrderIds.clear();
   }
 
