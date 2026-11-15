@@ -11,7 +11,12 @@ export const OFFER_SCHEMA = {
     variant: { type: ["string", "null"], description: "Colour, size or configuration shown for this offer" },
     retailer: { type: ["string", "null"], description: "Retailer name" },
     seller: { type: ["string", "null"], description: "Who sells or ships this specific offer" },
-    condition: { type: ["string", "null"], description: "New, renewed, used - as stated" },
+    condition: {
+      type: ["string", "null"],
+      description:
+        "The condition of this exact offer as the page states it. Report \"New\" whenever the page sells a new item, " +
+        "even if the word only appears in a condition row. Use null only when the page states no condition at all.",
+    },
     displayedPrice: { type: ["number", "null"], description: "The price shown for this offer, in the page currency" },
     currency: { type: ["string", "null"], description: "ISO currency code" },
     availability: { type: ["string", "null"], description: "In stock, out of stock, or the stated availability text" },
@@ -36,9 +41,11 @@ export const RETURN_TERMS_SCHEMA = {
 } as const;
 
 export const OFFER_PROMPT =
-  "Extract the single purchasable offer shown on this product page. Use only values printed on the page. " +
-  "If the page shows no price for this exact variant, return null for displayedPrice. " +
-  "Quote the snippet that supports the price and seller in evidence.";
+  "Extract the single purchasable offer shown on this product page: the Buy Box offer, or the best available offer " +
+  "when there is no Buy Box. Use only values printed on the page. Always state the offer's condition explicitly - " +
+  "\"New\" for a new item, or the used/refurbished wording the page uses - and use null only when the page never " +
+  "mentions condition. If the page shows no price for this exact variant, return null for displayedPrice. " +
+  "Quote the snippet that supports the price, seller and condition in evidence.";
 
 export const RETURN_PROMPT =
   "Extract the store's return policy: the return window in days, whether return shipping is free, " +
@@ -135,7 +142,11 @@ export function parseReturnTerms(raw: RawExtraction): ExtractedReturnTerms {
  */
 export function sameVariant(expectedKey: string | null, extractedKey: string | null): boolean {
   if (expectedKey === null) return extractedKey === null;
-  if (extractedKey === null) return true;
   const want = expectedKey.split(":").pop()!.toUpperCase();
+  // Retailers we cannot key by SKU fall back to a URL-shaped key
+  // ("walmart:walmart.com/ip/Widget/123456"). There the scraped page is the
+  // authority, so only a clearly different id vetoes the extraction.
+  if (want.includes("/") || want.includes(".")) return true;
+  if (extractedKey === null) return true;
   return extractedKey.toUpperCase().includes(want);
 }

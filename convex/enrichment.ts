@@ -2,7 +2,7 @@ import { v } from "convex/values";
 import { internalAction, internalMutation, internalQuery } from "./_generated/server";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
-import { env, type MutationCtx } from "./_generated/server";
+import { env, type ActionCtx, type MutationCtx } from "./_generated/server";
 import { SECTION_NAMES, sectionName, highlight, source, type SectionName } from "./lib/validators";
 import {
   RETAILER_RETURN_TERMS,
@@ -12,6 +12,8 @@ import {
 } from "./lib/demoData";
 import { fetchOpenGraph, titleFromUrl } from "./lib/opengraph";
 import { canonicalKeyForUrl, retailerFromHost } from "./lib/urls";
+import { keepaProductUrl } from "./lib/keepa";
+import { classifyCondition, isWithheldCondition } from "./lib/conditions";
 
 const MAX_ATTEMPTS = 3;
 /** Staggered so the demo shows sections filling in one by one. */
@@ -47,12 +49,16 @@ export const enrichOfferFromWeb = internalAction({
       url: data.offer.url,
       expectedKey: data.offer.canonicalKey,
     });
-    if (!extraction.ok || !extraction.offer) {
+    const usable =
+      extraction.ok &&
+      extraction.offer !== null &&
+      (extraction.offer.priceCents !== null || extraction.offer.seller !== null);
+    if (!usable) {
       await ctx.runMutation(internal.enrichment.recordExtractionFailure, {
         offerId: data.offer._id,
-        error: extraction.error ?? "no structured data returned",
+        error: extraction.error ?? "the page returned no price or seller",
       });
-    } else {
+    } else if (extraction.offer) {
       await ctx.runMutation(internal.enrichment.applyExtractedOffer, {
         offerId: data.offer._id,
         extraction: extraction.offer,
@@ -63,8 +69,10 @@ export const enrichOfferFromWeb = internalAction({
     }
     // The policy page is a separate scrape and stands on its own, even when the
     // listing itself could not be extracted.
-    const policyUrl = RETURN_POLICY_URLS[data.offer.retailer];
-    if (!policyUrl) return null;
+    // Cross-store comparison starts once the saved product is resolved.
+    await ctx.scheduler.runAfter(0, internal.exa.startLookup, { cartItemId });
+    // Retailers without a known policy page: read the terms off the listing itself.
+    const policyUrl = RETURN_POLICY_URLS[data.offer.retailer] ?? data.offer.url;
     const terms = await ctx.runAction(internal.firecrawl.extractReturnTerms, { url: policyUrl });
     if (!terms.ok || !terms.terms) return null;
     // Keep whatever we already had when the policy page yielded nothing usable.
@@ -121,11 +129,44 @@ export const applyExtractedOffer = internalMutation({
       await ctx.db.patch("offers", offerId, { provenance });
       return null;
     }
+    const conditionClass = classifyCondition(extraction.condition);
+    if (isWithheldCondition({ condition: extraction.condition ?? undefined, conditionClass })) {
+      // Only a new-condition offer may stand in for the item. Record what the page
+      // really sells as a labeled alternate and leave the offer untouched.
+      const alternates = [
+        ...(offer.alternates ?? []).filter(
+          (a) =>
+            a.seller !== extraction.seller ||
+            a.priceCents !== extraction.priceCents ||
+            a.condition !== extraction.condition,
+        ),
+        {
+          conditionClass,
+          condition: extraction.condition ?? null,
+          seller: extraction.seller,
+          priceCents: extraction.priceCents,
+          sourceUrl,
+          observedAt,
+        },
+      ].slice(-10);
+      await ctx.db.patch("offers", offerId, {
+        alternates,
+        provenance: {
+          ...provenance,
+          note: `The live page lists a ${extraction.condition ?? "non-new"} offer from ${
+            extraction.seller ?? "an unknown seller"
+          } at ${extraction.priceCents !== null ? "$" + (extraction.priceCents / 100).toFixed(2) : "an unknown price"}; it is not applied because the offer is not new.`,
+        },
+      });
+      return null;
+    }
     const hasPrice = extraction.priceCents !== null && extraction.priceCents > 0;
     await ctx.db.patch("offers", offerId, {
       provenance,
-      simulated: false,
+      // A page that yields no price (a bot wall) must never look live.
+      simulated: hasPrice ? false : offer.simulated,
       updatedAt: observedAt,
+      conditionClass,
       priceCents: hasPrice ? extraction.priceCents! : offer.priceCents,
       seller: extraction.seller ?? offer.seller,
       condition: extraction.condition ?? offer.condition,
@@ -248,6 +289,122 @@ export const applyExtractedReturnTerms = internalMutation({
   },
 });
 
+
+/** Amazon items get their history from Keepa; the listing scrape runs in parallel. */
+function keepaUrlFor(item: { url: string; offerId?: unknown }, canonicalKey: string | null): string | null {
+  if (!canonicalKey || !canonicalKey.startsWith("amazon:")) return null;
+  const asin = canonicalKey.slice("amazon:".length);
+  try {
+    return keepaProductUrl(new URL(item.url).hostname, asin);
+  } catch {
+    return null;
+  }
+}
+
+export const enrichHistoryFromKeepa = internalAction({
+  args: { cartItemId: v.id("cartItems") },
+  handler: async (ctx, { cartItemId }) => {
+    const data = await ctx.runQuery(internal.enrichment.getSectionContext, { cartItemId });
+    if (!data) return null;
+    const keepaUrl = keepaUrlFor(data.item, data.offer.canonicalKey);
+    if (!keepaUrl) {
+      await ctx.runMutation(internal.enrichment.publishHistory, {
+        cartItemId,
+        mode: "observations",
+        summary: null,
+        note: "Not an Amazon listing, so history comes from observations we recorded.",
+        seriesLabel: null,
+        currency: "USD",
+        sourceUrl: data.offer.url,
+        points: [],
+      });
+      return null;
+    }
+    const result = await ctx.runAction(internal.keepa.extractPriceHistory, { url: keepaUrl });
+    if (result.ok && result.points.length > 0) {
+      await ctx.runMutation(internal.enrichment.publishHistory, {
+        cartItemId,
+        mode: result.mode === "sampled" ? "sampled" : "live",
+        summary:
+          result.mode === "sampled"
+            ? `Sampled from Keepa: ${result.points.length} price points read off the chart.`
+            : `Keepa history for ${result.seriesLabel ?? "Amazon"}: ${result.points.length} price points.`,
+        note: result.note,
+        seriesLabel: result.seriesLabel,
+        currency: result.currency ?? "USD",
+        sourceUrl: keepaUrl,
+        points: result.points,
+      });
+      return null;
+    }
+    await ctx.runMutation(internal.enrichment.publishHistory, {
+      cartItemId,
+      mode: "fallback",
+      summary: "View price history on Keepa",
+      note: result.note ?? "Keepa returned no readable points.",
+      seriesLabel: result.seriesLabel,
+      currency: result.currency,
+      sourceUrl: keepaUrl,
+      points: [],
+    });
+    return null;
+  },
+});
+
+export const publishHistory = internalMutation({
+  args: {
+    cartItemId: v.id("cartItems"),
+    mode: v.union(
+      v.literal("live"),
+      v.literal("sampled"),
+      v.literal("fallback"),
+      v.literal("observations"),
+    ),
+    summary: v.union(v.string(), v.null()),
+    note: v.union(v.string(), v.null()),
+    seriesLabel: v.union(v.string(), v.null()),
+    currency: v.union(v.string(), v.null()),
+    sourceUrl: v.string(),
+    points: v.array(v.object({ at: v.union(v.number(), v.null()), priceCents: v.number() })),
+  },
+  handler: async (ctx, { cartItemId, mode, summary, note, seriesLabel, currency, sourceUrl, points }) => {
+    const ev = await findSection(ctx, cartItemId, "priceHistory");
+    if (!ev) return null;
+    if (mode === "observations") {
+      // Let the observation-based section compute itself as before.
+      await ctx.scheduler.runAfter(0, internal.enrichment.runSection, { cartItemId, section: "priceHistory" });
+      return null;
+    }
+    await ctx.db.patch("evidence", ev._id, {
+      status: "ready",
+      checkedAt: Date.now(),
+      simulated: false,
+      summary: summary ?? undefined,
+      highlights:
+        mode === "fallback"
+          ? [
+              {
+                label: "Price history",
+                detail: note ?? "Keepa returned no readable points.",
+                tone: "neutral" as const,
+              },
+            ]
+          : [
+              {
+                label: mode === "sampled" ? "Sampled from Keepa" : (seriesLabel ?? "Keepa"),
+                detail: `${points.length} dated points`,
+                tone: "neutral" as const,
+              },
+            ],
+      sources: [{ title: "Keepa price history", url: sourceUrl, publisher: "Keepa" }],
+      history: { mode, seriesLabel, currency, sourceUrl, sampled: mode === "sampled", note, points },
+      error: undefined,
+    });
+    await recomputeStatus(ctx, cartItemId);
+    return null;
+  },
+});
+
 export const start = internalMutation({
   args: { cartItemId: v.id("cartItems") },
   handler: async (ctx, { cartItemId }) => {
@@ -259,17 +416,24 @@ export const start = internalMutation({
         .withIndex("by_cartItemId_and_section", (q) => q.eq("cartItemId", cartItemId).eq("section", section))
         .unique();
       if (existing) continue;
+      const isAmazon = !!item.url && /amazon\./i.test(item.url);
       await ctx.db.insert("evidence", {
         shopperId: item.shopperId,
         cartItemId,
         section,
-        status: "pending",
+        status: section === "priceHistory" && isAmazon ? "loading" : "pending",
         attempts: 0,
         scope: SECTION_SCOPE[section],
         highlights: [],
         sources: [],
         simulated: false,
       });
+      if (section === "priceHistory" && isAmazon) {
+        await ctx.scheduler.runAfter(SECTION_DELAY_MS[section], internal.enrichment.enrichHistoryFromKeepa, {
+          cartItemId,
+        });
+        continue;
+      }
       await ctx.scheduler.runAfter(SECTION_DELAY_MS[section], internal.enrichment.runSection, {
         cartItemId,
         section,
@@ -372,6 +536,7 @@ export const attachExtractedOffer = internalMutation({
       deliveryEstimate: "Delivery estimate unavailable",
       returnSummary: RETAILER_RETURN_TERMS[retailer]?.summary ?? "See retailer for return terms.",
       condition: extraction.condition ?? undefined,
+      conditionClass: classifyCondition(extraction.condition),
       rating:
         extraction.starRating !== null && extraction.ratingCount !== null
           ? { average: extraction.starRating, count: extraction.ratingCount }
@@ -444,6 +609,7 @@ export const attachOffer = internalMutation({
         currency: "USD",
         deliveryEstimate: "Delivery estimate unavailable",
         returnSummary: RETAILER_RETURN_TERMS[retailer]?.summary ?? "See retailer for return terms.",
+        conditionClass: "unknown" as const,
         inStock: args.priceCents > 0,
         simulated: args.priceCents <= 0,
         updatedAt: now,
@@ -467,6 +633,19 @@ export const attachOffer = internalMutation({
     });
     await ctx.runMutation(internal.enrichment.start, { cartItemId: item._id });
     return null;
+  },
+});
+
+export const sectionHistoryMode = internalQuery({
+  args: { cartItemId: v.id("cartItems"), section: sectionName },
+  handler: async (ctx, { cartItemId, section }) => {
+    const ev = await ctx.db
+      .query("evidence")
+      .withIndex("by_cartItemId_and_section", (q) =>
+        q.eq("cartItemId", cartItemId).eq("section", section),
+      )
+      .unique();
+    return ev?.history?.mode ?? null;
   },
 });
 
@@ -574,6 +753,7 @@ async function redditResult(product: Doc<"products">): Promise<SectionResult> {
 }
 
 async function produce(
+  ctx: ActionCtx,
   section: SectionName,
   ctxData: { product: Doc<"products">; offer: Doc<"offers">; observations: Doc<"priceObservations">[] },
 ): Promise<SectionResult> {
@@ -587,13 +767,21 @@ async function produce(
     case "priceHistory":
       return priceHistoryResult(offer, observations);
     case "returnTerms":
+      // Seeded policy text is a fallback for seeded offers only; a live offer uses
+      // its own return summary until the policy scrape lands.
       return (
         seeded ??
-        RETAILER_RETURN_TERMS[offer.retailer] ?? {
+        (offer.simulated ? RETAILER_RETURN_TERMS[offer.retailer] : undefined) ?? {
           scope: "offer",
           simulated: false,
           summary: offer.returnSummary,
-          highlights: [],
+          highlights: [
+            {
+              label: "Return summary",
+              detail: offer.returnSummary,
+              tone: "neutral" as const,
+            },
+          ],
           sources: [{ title: `${offer.retailerName} listing`, url: offer.url, publisher: offer.retailerName }],
         }
       );
@@ -604,19 +792,33 @@ async function produce(
         if (seeded) return seeded;
         throw e;
       }
-    case "categoryGuidance":
-      return (
-        seeded ?? {
-          scope: "product",
-          simulated: true,
-          summary: `General buying guidance for ${product.category}.`,
-          highlights: [
-            { label: "Compare total cost", detail: "Check tax, shipping, and price history before buying.", tone: "neutral" },
-            { label: "Return window", detail: "Prefer offers with free returns for items you haven't tried.", tone: "neutral" },
-          ],
-          sources: [],
-        }
-      );
+    case "categoryGuidance": {
+      if (seeded) return seeded;
+      const guidance = await ctx.runAction(internal.firecrawl.extractGuidance, { url: offer.url });
+      if (!guidance.ok || guidance.criteria.length === 0) {
+        throw new Error(guidance.error ?? "No category guidance could be read from the page");
+      }
+      return {
+        scope: "product",
+        simulated: false,
+        summary:
+          guidance.criteria.find((c: { overlooked: boolean | null }) => c.overlooked)?.detail ??
+          `Buying criteria read from the ${guidance.category ?? product.category} listing.`,
+        highlights: guidance.criteria.map((c: { label: string; detail: string | null; whyItMatters: string | null; tone: string | null; overlooked: boolean | null }) => ({
+          label: c.label,
+          detail: [c.detail, c.whyItMatters].filter(Boolean).join(" ") || "Read from the listing.",
+          tone:
+            c.overlooked === true
+              ? ("new_criterion" as const)
+              : c.tone === "positive"
+                ? ("positive" as const)
+                : c.tone === "negative"
+                  ? ("negative" as const)
+                  : ("neutral" as const),
+        })),
+        sources: [{ title: `${offer.retailerName} listing`, url: offer.url, publisher: offer.retailerName }],
+      };
+    }
     case "retailerReviews":
       if (seeded) return seeded;
       return offer.rating
@@ -640,16 +842,31 @@ async function produce(
 export const runSection = internalAction({
   args: { cartItemId: v.id("cartItems"), section: sectionName },
   handler: async (ctx, { cartItemId, section }) => {
+    if (section === "priceHistory") {
+      // A resolved Keepa series is the record; local observations must not replace it.
+      const existing = await ctx.runQuery(internal.enrichment.sectionHistoryMode, {
+        cartItemId,
+        section,
+      });
+      if (existing === "live" || existing === "sampled") return null;
+    }
     const attempt = await ctx.runMutation(internal.enrichment.markRunning, { cartItemId, section });
     if (attempt === null) return null;
     const data = await ctx.runQuery(internal.enrichment.getSectionContext, { cartItemId });
     if (!data) return null;
     try {
-      const { scope: _scope, ...result } = await produce(section, data);
+      const { scope: _scope, ...result } = await produce(ctx, section, data);
       await ctx.runMutation(internal.enrichment.publishSection, {
         cartItemId,
         section,
         ...result,
+        highlights:
+          section === "categoryGuidance"
+            ? [...result.highlights].sort(
+                (a: { tone: string }, b: { tone: string }) =>
+                  Number(b.tone === "new_criterion") - Number(a.tone === "new_criterion"),
+              )
+            : result.highlights,
       });
     } catch (e) {
       const error = e instanceof Error ? e.message : String(e);

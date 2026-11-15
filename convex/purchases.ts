@@ -72,12 +72,15 @@ export const attachClientQuote = mutation({
       quotedAt: incoming.quotedAt || Date.now(),
     };
     const nextVersion = req.quoteVersion + 1;
+    const expiresAt = Date.now() + QUOTE_TTL_MS;
     await ctx.db.patch("purchaseRequests", requestId, {
       quote: stored,
       quoteVersion: nextVersion,
       status: "pending_approval",
-      expiresAt: Date.now() + QUOTE_TTL_MS,
+      expiresAt,
     });
+    // The original expiry job now fires before this new deadline.
+    await ctx.scheduler.runAt(expiresAt + 1000, internal.purchases.expire, { requestId });
     return { quoteVersion: nextVersion, quote: stored };
   },
 });
