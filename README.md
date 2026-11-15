@@ -11,11 +11,25 @@ npm start
 
 Use `npm run ios`, `npm run android`, or `npm run web` for a specific platform.
 
-## Convex
+## Convex backend
 
-The Convex dependency and empty schema (`convex/schema.ts`) are ready. No backend deployment, authentication, queries, or mutations have been created.
+The Cart backend is deployed and live. Use these URLs from the app, the demo scripts and Muse:
 
-Run `npm run convex` to sign in and select or create a Convex project. When adding backend-powered screens, configure `EXPO_PUBLIC_CONVEX_URL` in `.env.local` and wrap the app in ConvexProvider. Never commit credentials or real env files.
+- `EXPO_PUBLIC_CONVEX_URL=https://hearty-skunk-641.convex.cloud` (client API, queries/mutations/actions)
+- `EXPO_PUBLIC_CONVEX_SITE_URL=https://hearty-skunk-641.convex.site` (HTTP actions: auth routes, MCP endpoint)
+
+The full API contract is in the project drive at `handoffs/api-contract.md`. In short: shoppers sign in with Convex Auth (anonymous), `api.cart.*` handles the cart and evidence, `api.purchases.*` handles quotes and approval, and `api.demo.*` are the demo controls.
+
+Deploy with `npx convex deploy` (needs `CONVEX_DEPLOY_KEY` in the environment).
+
+### Demo and invariant scripts
+
+```sh
+node scripts/demo-backend.mjs     # add -> enrichment sections -> price drop -> request -> approve -> order -> shipment
+node scripts/invariants.mjs       # purchase invariants: defer=0 orders, double approve=1 order, stale quote rejected, ownership
+```
+
+Both default to the deployed URL; pass a URL argument or set `EXPO_PUBLIC_CONVEX_URL` to target another deployment. For local work, run `npx convex dev` in another terminal. Never commit credentials or real env files.
 
 Convex agent guidance lives in `convex/_generated/ai/guidelines.md`. Refresh it and the bundled skills with `npx convex ai-files install`.
 
