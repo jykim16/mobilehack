@@ -83,6 +83,30 @@ export default defineSchema({
     .index("by_canonicalKey", ["canonicalKey"])
     .index("by_productId", ["productId"]),
 
+  /**
+   * One row per upstream answer, keyed by what the call depends on: a canonical
+   * listing URL for an extraction, a product model for a comparison or a Reddit
+   * lookup, the normalized words for a query resolution. Shared across shoppers,
+   * so two adds of the same URL cost one scrape.
+   */
+  extractionCache: defineTable({
+    kind: v.union(
+      v.literal("offer"),
+      v.literal("comparison"),
+      v.literal("query"),
+      v.literal("reddit"),
+    ),
+    key: v.string(),
+    payload: v.optional(v.string()),
+    fetchedAt: v.number(),
+    source: v.string(),
+    simulated: v.boolean(),
+    attempts: v.number(),
+    lastAttemptAt: v.optional(v.number()),
+    pendingStartedAt: v.optional(v.number()),
+    error: v.optional(v.string()),
+  }).index("by_kind_and_key", ["kind", "key"]),
+
   priceObservations: defineTable({
     offerId: v.id("offers"),
     priceCents: v.number(),

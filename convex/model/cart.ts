@@ -206,3 +206,63 @@ export async function removeItemFor(
   await ctx.db.delete("cartItems", itemId);
   return { removed: true as const, title };
 }
+
+/**
+ * Re-runs enrichment for an item whose listing could not be read. Failed and
+ * half-finished sections go back to pending with a fresh attempt budget, and the
+ * pipeline starts again from wherever it stopped: the page read when there is no
+ * offer yet, the sections when there is one.
+ */
+export async function retryItemFor(
+  ctx: MutationCtx,
+  shopperId: Id<"users">,
+  itemId: Id<"cartItems">,
+  options: { force?: boolean } = {},
+) {
+  const item = await loadOwnedItem(ctx, shopperId, itemId);
+  const requests = await ctx.db
+    .query("purchaseRequests")
+    .withIndex("by_shopperId_and_status", (q) => q.eq("shopperId", shopperId))
+    .take(200);
+  const committed = requests.find(
+    (r) => r.cartItemId === itemId && (r.status === "approved" || r.status === "ordered"),
+  );
+  if (committed || item.status === "purchased") {
+    throw new ConvexError({
+      code: "INVALID_STATE",
+      message: "This item is already being purchased; it can't be re-read.",
+    });
+  }
+
+  const evidence = await ctx.db
+    .query("evidence")
+    .withIndex("by_cartItemId_and_section", (q) => q.eq("cartItemId", itemId))
+    .take(20);
+  for (const e of evidence) {
+    if (e.status === "ready") continue;
+    await ctx.db.patch("evidence", e._id, {
+      status: "pending",
+      attempts: 0,
+      error: undefined,
+      pendingRun: undefined,
+    });
+  }
+
+  if (options.force) {
+    // A forced refresh must go upstream even when the cache is still warm; the
+    // payload stays behind as the stale fallback if the page refuses us.
+    const canonicalKey = canonicalKeyForUrl(item.url);
+    if (canonicalKey) {
+      await ctx.runMutation(internal.cache.invalidate, { kind: "offer", key: canonicalKey });
+    }
+  }
+
+  const enrichmentStatus = item.offerId ? "enriching" : "resolving";
+  await ctx.db.patch("cartItems", itemId, { enrichmentStatus });
+  await ctx.scheduler.runAfter(
+    0,
+    item.offerId ? internal.enrichment.start : internal.enrichment.resolveOffer,
+    { cartItemId: itemId },
+  );
+  return { retried: true as const, enrichmentStatus };
+}
