@@ -8,7 +8,7 @@ import { useColors } from '@/constants/theme';
 import { useShop } from '@/data/shop-store';
 
 /** Room for a 24pt icon and a label line, grown with the system font size so labels never clip, plus the nav-bar inset. */
-const BAR_HEIGHT = 56;
+const BAR_HEIGHT = 62;
 const LABEL_LINE = 14;
 
 type IconName = ComponentProps<typeof Ionicons>['name'];
@@ -36,7 +36,7 @@ export default function TabsLayout() {
           backgroundColor: Colors.background,
           borderTopColor: Colors.hairline,
         },
-        tabBarItemStyle: { paddingVertical: 4 },
+        tabBarItemStyle: { paddingVertical: 6 },
         tabBarLabelStyle: { fontSize: 11, lineHeight: LABEL_LINE },
         sceneStyle: { backgroundColor: Colors.background },
       }}>
