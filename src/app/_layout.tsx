@@ -1,18 +1,30 @@
-import { DarkTheme, DefaultTheme, ThemeProvider } from 'expo-router';
-import * as SplashScreen from 'expo-splash-screen';
-import { useColorScheme } from 'react-native';
+import { Stack } from "expo-router";
+import { StatusBar } from "expo-status-bar";
+import { AppProviders } from "@/lib/session";
+import { colors } from "@/lib/theme";
 
-import { AnimatedSplashOverlay } from '@/components/animated-icon';
-import AppTabs from '@/components/app-tabs';
-
-SplashScreen.preventAutoHideAsync();
-
-export default function TabLayout() {
-  const colorScheme = useColorScheme();
+export default function RootLayout() {
   return (
-    <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-      <AnimatedSplashOverlay />
-      <AppTabs />
-    </ThemeProvider>
+    <AppProviders>
+      <StatusBar style="dark" />
+      <Stack
+        screenOptions={{
+          headerShadowVisible: false,
+          headerStyle: { backgroundColor: colors.bg },
+          headerTitleStyle: { fontWeight: "800" },
+          headerTintColor: colors.text,
+          contentStyle: { backgroundColor: colors.bg },
+          headerBackButtonDisplayMode: "minimal",
+        }}
+      >
+        <Stack.Screen name="index" options={{ headerShown: false }} />
+        <Stack.Screen name="item/[id]" options={{ title: "" }} />
+        <Stack.Screen name="add" options={{ title: "Add to cart", presentation: "modal" }} />
+        <Stack.Screen name="share" options={{ title: "Ask friends", presentation: "modal" }} />
+        <Stack.Screen name="agents" options={{ title: "Your agents" }} />
+        <Stack.Screen name="paywall" options={{ title: "MobileCart Pro", presentation: "modal" }} />
+        <Stack.Screen name="s/[code]" options={{ title: "Vote" }} />
+      </Stack>
+    </AppProviders>
   );
 }
