@@ -102,6 +102,73 @@ function offersFromResponse(body: any) {
   });
 }
 
+const EXA_SEARCH = "https://api.exa.ai/search";
+
+/**
+ * Reddit fallback: Reddit blocks requests from our cloud IPs, so when the direct
+ * JSON fetch fails we ask Exa for reddit.com results. Dates and authors are
+ * reported only when Exa returns them; nothing is invented.
+ */
+export const searchReddit = internalAction({
+  args: { query: v.string() },
+  returns: v.object({
+    ok: v.boolean(),
+    error: v.union(v.string(), v.null()),
+    threads: v.array(
+      v.object({
+        title: v.string(),
+        url: v.string(),
+        author: v.union(v.string(), v.null()),
+        createdAt: v.union(v.number(), v.null()),
+        quote: v.union(v.string(), v.null()),
+      }),
+    ),
+  }),
+  handler: async (_ctx, { query }) => {
+    const key = env.EXA_API_KEY;
+    if (!key) return { ok: false, error: "EXA_API_KEY is not set", threads: [] };
+    let res: Response;
+    try {
+      res = await fetch(EXA_SEARCH, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-api-key": key },
+        body: JSON.stringify({
+          query,
+          numResults: 6,
+          includeDomains: ["reddit.com"],
+          type: "auto",
+        }),
+      });
+    } catch (e) {
+      return { ok: false, error: `Exa search failed: ${e instanceof Error ? e.message : String(e)}`, threads: [] };
+    }
+    const text = await res.text();
+    if (!res.ok) return { ok: false, error: `Exa search HTTP ${res.status}: ${text.slice(0, 160)}`, threads: [] };
+    let body: any;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      return { ok: false, error: "Exa search returned non-JSON", threads: [] };
+    }
+    const results = Array.isArray(body?.results) ? body.results : [];
+    const threads = results
+      .filter((r: any) => typeof r?.url === "string" && r.url.includes("reddit.com"))
+      .slice(0, 5)
+      .map((r: any) => ({
+        title: typeof r?.title === "string" && r.title.trim() ? r.title.trim() : "Reddit thread",
+        url: r.url as string,
+        author: asString(r?.author),
+        createdAt: asString(r?.publishedDate) ? Date.parse(r.publishedDate) : null,
+        quote: asString(r?.summary) ?? asString(r?.text)?.slice(0, 240) ?? null,
+      }));
+    return {
+      ok: threads.length > 0,
+      error: threads.length > 0 ? null : "Exa returned no reddit.com results",
+      threads,
+    };
+  },
+});
+
 /**
  * Starts an Exa Agent run that hunts other retailers for the same product. The
  * run id is persisted so polling happens in its own step.
@@ -461,6 +528,166 @@ export const finish = internalMutation({
       note: note ?? undefined,
       checkedAt: Date.now(),
     });
+    return null;
+  },
+});
+
+const REDDIT_SCHEMA = {
+  type: "object",
+  properties: {
+    threads: {
+      type: "array",
+      description: "Reddit discussion threads about this product, only reddit.com URLs",
+      items: {
+        type: "object",
+        properties: {
+          title: { type: "string" },
+          url: { type: "string", description: "reddit.com thread URL" },
+          author: { type: ["string", "null"], description: "Reddit username if the page shows one" },
+          createdAt: { type: ["string", "null"], description: "ISO date the thread was posted, if shown" },
+          subreddit: { type: ["string", "null"] },
+          quote: { type: ["string", "null"], description: "Short verbatim excerpt from the thread" },
+        },
+        required: ["title", "url"],
+      },
+    },
+  },
+  required: ["threads"],
+} as const;
+
+/**
+ * Reddit blocks our cloud IPs, so the social section falls back to an Exa agent
+ * run restricted to reddit.com. The run id is stored on the evidence row and the
+ * result is published by a separate polling step.
+ */
+export const startRedditLookup = internalAction({
+  args: { cartItemId: v.id("cartItems"), productTitle: v.string() },
+  handler: async (ctx, { cartItemId, productTitle }) => {
+    const existing = await ctx.runQuery(internal.exa.pendingRedditRun, { cartItemId });
+    if (existing) return null;
+    const key = env.EXA_API_KEY;
+    if (!key) return null;
+    const query =
+      `Find discussion threads on reddit.com about "${productTitle}", especially real owner experience: ` +
+      `long-term use, comfort, reliability and anything that would change a buying decision. ` +
+      `Return only reddit.com URLs with the thread title, author and posting date when the page shows them.`;
+    let runId: string | null = null;
+    try {
+      const res = await fetch(EXA_RUNS, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-api-key": key },
+        body: JSON.stringify({ query, effort: "auto", outputSchema: REDDIT_SCHEMA }),
+      });
+      if (res.ok) {
+        const body = await res.json();
+        runId = asString(body?.id);
+      }
+    } catch (e) {
+      console.warn("Exa reddit lookup failed", String(e));
+    }
+    if (!runId) return null;
+    await ctx.runMutation(internal.exa.setPendingRun, { cartItemId, runId });
+    await ctx.scheduler.runAfter(POLL_MS, internal.exa.pollRedditLookup, {
+      cartItemId,
+      runId,
+      attempt: 0,
+    });
+    return null;
+  },
+});
+
+export const pollRedditLookup = internalAction({
+  args: { cartItemId: v.id("cartItems"), runId: v.string(), attempt: v.number() },
+  handler: async (ctx, { cartItemId, runId, attempt }) => {
+    const key = env.EXA_API_KEY;
+    if (!key) return null;
+    let body: any = null;
+    try {
+      const res = await fetch(`${EXA_RUNS}/${runId}`, { headers: { "x-api-key": key } });
+      if (res.ok) body = await res.json();
+    } catch (e) {
+      console.warn("Exa reddit poll failed", runId, String(e));
+    }
+    const status = asString(body?.status);
+    if (body && (status === "completed" || status === "succeeded")) {
+      const threads = Array.isArray(body?.output?.structured?.threads)
+        ? body.output.structured.threads.filter((t: any) => typeof t?.url === "string" && t.url.includes("reddit.com"))
+        : [];
+      if (threads.length === 0) {
+        await ctx.runMutation(internal.enrichment.failRedditRun, {
+          cartItemId,
+          reason: "Exa returned no reddit.com threads",
+        });
+        return null;
+      }
+      await ctx.runMutation(internal.enrichment.publishSection, {
+        cartItemId,
+        section: "reddit",
+        summary: `${threads.length} Reddit threads found through Exa.`,
+        highlights: threads.slice(0, 5).map((t: any) => ({
+          label: asString(t.subreddit) ?? "reddit.com",
+          detail: asString(t.quote) ?? String(t.title ?? "Reddit thread"),
+          tone: "neutral" as const,
+        })),
+        sources: threads.slice(0, 5).map((t: any) => ({
+          title: String(t.title ?? "Reddit thread"),
+          url: String(t.url),
+          publisher: "Reddit",
+        })),
+        simulated: false,
+        items: threads.slice(0, 5).map((t: any) => ({
+          author: asString(t.author),
+          text: asString(t.quote) ?? String(t.title ?? "Reddit thread"),
+          url: String(t.url),
+          createdAt: asString(t.createdAt) ? Date.parse(t.createdAt) : null,
+          score: null,
+          community: asString(t.subreddit),
+        })),
+      });
+      return null;
+    }
+    if (body && (status === "failed" || status === "canceled" || status === "error")) {
+      await ctx.runMutation(internal.enrichment.failRedditRun, {
+        cartItemId,
+        reason: `Exa reddit run ${status}`,
+      });
+      return null;
+    }
+    if (attempt >= 20) {
+      await ctx.runMutation(internal.enrichment.failRedditRun, {
+        cartItemId,
+        reason: "Exa reddit run did not finish in time",
+      });
+      return null;
+    }
+    await ctx.scheduler.runAfter(POLL_MS, internal.exa.pollRedditLookup, {
+      cartItemId,
+      runId,
+      attempt: attempt + 1,
+    });
+    return null;
+  },
+});
+
+export const pendingRedditRun = internalQuery({
+  args: { cartItemId: v.id("cartItems") },
+  handler: async (ctx, { cartItemId }) => {
+    const ev = await ctx.db
+      .query("evidence")
+      .withIndex("by_cartItemId_and_section", (q) => q.eq("cartItemId", cartItemId).eq("section", "reddit"))
+      .unique();
+    return ev?.pendingRun ?? null;
+  },
+});
+
+export const setPendingRun = internalMutation({
+  args: { cartItemId: v.id("cartItems"), runId: v.string() },
+  handler: async (ctx, { cartItemId, runId }) => {
+    const ev = await ctx.db
+      .query("evidence")
+      .withIndex("by_cartItemId_and_section", (q) => q.eq("cartItemId", cartItemId).eq("section", "reddit"))
+      .unique();
+    if (ev) await ctx.db.patch("evidence", ev._id, { pendingRun: runId });
     return null;
   },
 });

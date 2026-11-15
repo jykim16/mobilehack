@@ -14,6 +14,7 @@ import { fetchOpenGraph, titleFromUrl } from "./lib/opengraph";
 import { canonicalKeyForUrl, retailerFromHost } from "./lib/urls";
 import { keepaProductUrl } from "./lib/keepa";
 import { classifyCondition, isWithheldCondition } from "./lib/conditions";
+import { resolveImageUrl } from "./lib/firecrawlExtract";
 
 const MAX_ATTEMPTS = 3;
 /** Staggered so the demo shows sections filling in one by one. */
@@ -103,6 +104,7 @@ const extractedOffer = v.object({
   starRating: v.union(v.number(), v.null()),
   ratingCount: v.union(v.number(), v.null()),
   asinOrSku: v.union(v.string(), v.null()),
+  imageUrl: v.union(v.string(), v.null()),
   evidence: v.union(v.string(), v.null()),
 });
 
@@ -159,6 +161,11 @@ export const applyExtractedOffer = internalMutation({
         },
       });
       return null;
+    }
+    const product = await ctx.db.get("products", offer.productId);
+    const extractedImage = resolveImageUrl(extraction.imageUrl, sourceUrl);
+    if (product && !product.imageUrl && extractedImage) {
+      await ctx.db.patch("products", product._id, { imageUrl: extractedImage });
     }
     const hasPrice = extraction.priceCents !== null && extraction.priceCents > 0;
     await ctx.db.patch("offers", offerId, {
@@ -519,6 +526,7 @@ export const attachExtractedOffer = internalMutation({
     const productId = await ctx.db.insert("products", {
       title: (extraction.model ?? titleFromUrl(item.url)).slice(0, 200),
       category: "general",
+      imageUrl: resolveImageUrl(extraction.imageUrl, sourceUrl) ?? undefined,
     });
     const variantId = await ctx.db.insert("variants", { productId, label: extraction.variant ?? "Default" });
     const outOfStock = extraction.availability ? /out of stock|unavailable/i.test(extraction.availability) : false;
@@ -756,6 +764,7 @@ async function produce(
   ctx: ActionCtx,
   section: SectionName,
   ctxData: { product: Doc<"products">; offer: Doc<"offers">; observations: Doc<"priceObservations">[] },
+  cartItemId: Id<"cartItems">,
 ): Promise<SectionResult> {
   const { product, offer, observations } = ctxData;
   const seeded = !product.demoKey
@@ -785,17 +794,29 @@ async function produce(
           sources: [{ title: `${offer.retailerName} listing`, url: offer.url, publisher: offer.retailerName }],
         }
       );
-    case "reddit":
+    case "reddit": {
       try {
         return await redditResult(product);
-      } catch (e) {
+      } catch (directError) {
         if (seeded) return seeded;
-        throw e;
+        // Reddit blocks our cloud IPs: hand the section to an Exa agent run, whose
+        // result is published by its own polling step.
+        await ctx.runAction(internal.exa.startRedditLookup, {
+          cartItemId,
+          productTitle: product.title,
+        });
+        throw directError;
       }
+    }
     case "categoryGuidance": {
       if (seeded) return seeded;
       const guidance = await ctx.runAction(internal.firecrawl.extractGuidance, { url: offer.url });
       if (!guidance.ok || guidance.criteria.length === 0) {
+        if (offer.simulated) {
+          // The offer itself is a placeholder (no price was ever extracted), so its
+          // fields are defaults, not listing facts.
+          throw new Error(guidance.error ?? "No category guidance could be read from the page");
+        }
         // The guidance scrape is best-effort. What we already hold about the offer
         // is still real page data, so describe that instead of failing the section.
         const facts: { label: string; detail: string; tone: "positive" | "negative" | "neutral" | "new_criterion" }[] = [];
@@ -887,7 +908,7 @@ export const runSection = internalAction({
     const data = await ctx.runQuery(internal.enrichment.getSectionContext, { cartItemId });
     if (!data) return null;
     try {
-      const { scope: _scope, ...result } = await produce(ctx, section, data);
+      const { scope: _scope, ...result } = await produce(ctx, section, data, cartItemId);
       if (section === "returnTerms") {
         await ctx.runMutation(internal.enrichment.markReturnTermsUnconfirmed, {
           cartItemId,
@@ -994,13 +1015,30 @@ export const publishSection = internalMutation({
   },
 });
 
+export const failRedditRun = internalMutation({
+  args: { cartItemId: v.id("cartItems"), reason: v.string() },
+  handler: async (ctx, { cartItemId, reason }) => {
+    const ev = await findSection(ctx, cartItemId, "reddit");
+    if (!ev) return null;
+    await ctx.db.patch("evidence", ev._id, {
+      status: "failed",
+      error: reason,
+      pendingRun: undefined,
+      checkedAt: Date.now(),
+    });
+    await recomputeStatus(ctx, cartItemId);
+    return null;
+  },
+});
+
 export const markFailedAttempt = internalMutation({
   args: { cartItemId: v.id("cartItems"), section: sectionName, error: v.string(), final: v.boolean() },
   handler: async (ctx, { cartItemId, section, error, final }) => {
     const ev = await findSection(ctx, cartItemId, section);
     if (!ev) return null;
     await ctx.db.patch("evidence", ev._id, {
-      status: final ? "failed" : "pending",
+      // A queued Exa run keeps the section pending rather than failed.
+      status: final && !ev.pendingRun ? "failed" : "pending",
       error,
       checkedAt: Date.now(),
     });

@@ -23,6 +23,10 @@ export const OFFER_SCHEMA = {
     starRating: { type: ["number", "null"], description: "Average star rating out of 5" },
     ratingCount: { type: ["number", "null"], description: "Number of ratings behind the star rating" },
     asinOrSku: { type: ["string", "null"], description: "ASIN for Amazon, SKU or item id for other retailers" },
+    imageUrl: {
+      type: ["string", "null"],
+      description: "URL of the listing's main product image, absolute or relative to the page",
+    },
     evidence: { type: ["string", "null"], description: "Short verbatim snippet from the page that supports the price and seller" },
   },
   required: ["model", "seller", "displayedPrice", "evidence"],
@@ -79,6 +83,16 @@ function asBoolean(value: unknown): boolean | null {
   return null;
 }
 
+/** Relative image paths are resolved against the listing they came from. */
+export function resolveImageUrl(imageUrl: string | null, listingUrl: string): string | null {
+  if (!imageUrl) return null;
+  try {
+    return new URL(imageUrl, listingUrl).toString();
+  } catch {
+    return null;
+  }
+}
+
 export type ExtractedOffer = {
   model: string | null;
   variant: string | null;
@@ -91,6 +105,7 @@ export type ExtractedOffer = {
   starRating: number | null;
   ratingCount: number | null;
   asinOrSku: string | null;
+  imageUrl: string | null;
   evidence: string | null;
 };
 
@@ -110,6 +125,7 @@ export function parseOffer(raw: RawExtraction): ExtractedOffer {
     starRating: stars !== null && stars >= 0 && stars <= 5 ? Math.round(stars * 10) / 10 : null,
     ratingCount: count !== null && count >= 0 ? Math.round(count) : null,
     asinOrSku: asString(raw.asinOrSku),
+    imageUrl: asString(raw.imageUrl),
     evidence: asString(raw.evidence),
   };
 }
