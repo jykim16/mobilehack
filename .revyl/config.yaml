@@ -39,6 +39,27 @@ build:
                 output_path: android/app/build/outputs/apk/release/app-release.apk
 pr_review:
     enabled: true
+    triggers:
+        paths:
+            - src/**
+            - assets/**
+            - plugins/**
+            - patches/**
+            - app.json
+            - app.config.*
+            - eas.json
+            - metro.config.*
+            - babel.config.*
+            - tsconfig.json
+            - package.json
+            - package-lock.json
+            - bun.lock
+            - .env*
+            - "!.env.example"
+            - .revyl/**
+            - "!src/**/*.md"
+            - "!assets/**/*.md"
+            - "!.revyl/**/*.md"
     build:
         kind: revyl
         profile: preview
