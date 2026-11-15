@@ -124,6 +124,8 @@ async function advance(ctx: MutationCtx) {
   });
   await ctx.db.patch("offers", offer._id, {
     priceCents,
+    // A staged demo price is never a live observation.
+    simulated: true,
     updatedAt: now,
     provenance: offer.provenance
       ? {
@@ -160,6 +162,46 @@ export const advancePrice = mutation({
 
 export const advancePriceInternal = internalMutation({ args: {}, handler: async (ctx) => advance(ctx) });
 
+/** Puts the seeded offers back the way demoData.ts describes them. */
+async function restoreSeededOffers(ctx: MutationCtx) {
+  const now = Date.now();
+  for (const product of SEED_PRODUCTS) {
+    for (const { history, variantLabel, ...seed } of product.offers) {
+      const offer = await ctx.db
+        .query("offers")
+        .withIndex("by_canonicalKey", (q) => q.eq("canonicalKey", seed.canonicalKey))
+        .first();
+      if (!offer) continue;
+      await ctx.db.patch("offers", offer._id, {
+        priceCents: seed.priceCents,
+        listPriceCents: seed.listPriceCents,
+        seller: seed.seller,
+        condition: undefined,
+        conditionClass: undefined,
+        alternates: undefined,
+        provenance: undefined,
+        simulated: true,
+        updatedAt: now,
+      });
+      const observations = await ctx.db
+        .query("priceObservations")
+        .withIndex("by_offerId_and_observedAt", (q) => q.eq("offerId", offer._id))
+        .take(500);
+      for (const o of observations) await ctx.db.delete("priceObservations", o._id);
+      for (const h of history) {
+        await ctx.db.insert("priceObservations", {
+          offerId: offer._id,
+          priceCents: h.priceCents,
+          shippingCents: seed.shippingCents,
+          observedAt: historyTimestamp(h.daysAgo, now),
+          source: "Seeded demo history",
+          simulated: true,
+        });
+      }
+    }
+  }
+}
+
 async function resetPrice(ctx: MutationCtx) {
   const offer = await heroOffer(ctx);
   const obs = await ctx.db
@@ -177,7 +219,7 @@ export const resetDemo = mutation({
   args: {},
   handler: async (ctx) => {
     const shopperId = await requireShopper(ctx);
-    await resetPrice(ctx);
+    await restoreSeededOffers(ctx);
     for (const status of ["active", "purchased", "removed"] as const) {
       const items = await ctx.db
         .query("cartItems")

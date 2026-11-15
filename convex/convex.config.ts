@@ -9,6 +9,7 @@ import { v } from "convex/values";
 const app = defineApp({
   env: {
     FIRECRAWL_API_KEY: v.optional(v.string()),
+    EXA_API_KEY: v.optional(v.string()),
   },
 });
 

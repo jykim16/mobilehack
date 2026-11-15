@@ -4,6 +4,7 @@ import type { ActionCtx, MutationCtx, QueryCtx } from "../_generated/server";
 import { internal } from "../_generated/api";
 import { notFound } from "../lib/auth";
 import type { Quote } from "../lib/validators";
+import { isWithheldCondition } from "../lib/conditions";
 
 export const QUOTE_TTL_MS = 30 * 60_000;
 
@@ -42,6 +43,12 @@ export async function createRequestFor(
     throw new ConvexError({
       code: "OFFER_UNAVAILABLE",
       message: "This offer has no purchasable price right now.",
+    });
+  }
+  if (isWithheldCondition(offer)) {
+    throw new ConvexError({
+      code: "OFFER_UNAVAILABLE",
+      message: `This offer is ${offer.condition ?? "used"}, and only a new-condition offer can be purchased.`,
     });
   }
   if (!Number.isInteger(args.quantity) || args.quantity < 1 || args.quantity > 10) {
@@ -273,7 +280,13 @@ export async function listPurchasesFor(ctx: QueryCtx, shopperId: Id<"users">) {
     .take(50);
   return await Promise.all(
     orders
-      .filter((o) => o.status === "placed" || o.status === "submitting" || o.status === "unknown")
+      .filter(
+        (o) =>
+          o.status === "placed" ||
+          o.status === "submitting" ||
+          o.status === "unknown" ||
+          o.status === "awaiting_client",
+      )
       .map(async (o) => {
         const shipment = await ctx.db
           .query("shipments")

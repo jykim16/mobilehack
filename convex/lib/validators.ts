@@ -18,6 +18,7 @@ export const SECTION_NAMES: SectionName[] = [
 
 export const sectionStatus = v.union(
   v.literal("pending"),
+  v.literal("loading"),
   v.literal("running"),
   v.literal("ready"),
   v.literal("failed"),
@@ -42,6 +43,13 @@ export const highlight = v.object({
     v.literal("new_criterion"),
   ),
 });
+
+export const conditionClass = v.union(
+  v.literal("new"),
+  v.literal("used"),
+  v.literal("refurbished"),
+  v.literal("unknown"),
+);
 
 export const enrichmentStatus = v.union(
   v.literal("resolving"),
