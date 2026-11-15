@@ -11,6 +11,7 @@ import { PriceText } from '@/components/product-bits';
 import { QuantityStepper } from '@/components/quantity-stepper';
 import { RetailerHeader } from '@/components/retailer-header';
 import { Shimmer, SkeletonBlock } from '@/components/skeleton';
+import { Wordmark } from '@/components/wordmark';
 import { Radius, Spacing, Type, tabularNumbers, useColors, useThemedStyles, type Palette } from '@/constants/theme';
 import { useAddFromInput } from '@/data/add-item';
 import { useCheckout } from '@/data/checkout';
@@ -195,9 +196,7 @@ export default function CartScreen() {
 
   return (
     <View style={[styles.screen, { paddingTop: insets.top + Spacing.sm }]}>
-      <Text style={styles.title} accessibilityRole="header">
-        Cart
-      </Text>
+      <Wordmark style={styles.title} />
       {ready && !error && <AddBar onSubmit={submitAdd} error={addError} />}
       {error ? (
         <View style={styles.empty}>
@@ -437,7 +436,7 @@ const createStyles = (Colors: Palette) => StyleSheet.create({
   alternativePressed: { opacity: 0.6 },
   alternativeTitle: { ...Type.body, color: Colors.text },
   alternativeMeta: { ...Type.secondary, color: Colors.textSecondary },
-  title: { ...Type.title, color: Colors.text, paddingHorizontal: Spacing.lg, paddingBottom: Spacing.md },
+  title: { paddingHorizontal: Spacing.lg, paddingBottom: Spacing.md },
   list: { paddingHorizontal: Spacing.lg, paddingTop: Spacing.sm, gap: Spacing.md },
   card: { backgroundColor: Colors.surface, borderRadius: Radius.card, padding: Spacing.lg, gap: Spacing.xl },
   placing: { opacity: 0.6 },

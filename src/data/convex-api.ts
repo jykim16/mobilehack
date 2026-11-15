@@ -55,6 +55,9 @@ export const api = {
   },
   agentConnections: {
     create: makeFunctionReference<'mutation', { label: string }, { token: string }>('mcp/connection:create'),
+    createPairingCode: makeFunctionReference<'mutation', Empty, { code: string; expiresAt: number }>(
+      'mcp/connection:createPairingCode'
+    ),
     list: makeFunctionReference<'query', Empty, AgentConnection[]>('mcp/connection:listConnections'),
     revoke: makeFunctionReference<'mutation', { tokenId: string }, null>('mcp/connection:revokeConnection'),
   },

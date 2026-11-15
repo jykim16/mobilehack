@@ -2,8 +2,8 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { useMutation, useQuery } from 'convex/react';
 import * as Clipboard from 'expo-clipboard';
 import { router } from 'expo-router';
-import { useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useCallback, useEffect, useState } from 'react';
+import { Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { PillButton } from '@/components/pill-button';
@@ -74,6 +74,8 @@ function ConnectAgent({ mcpUrl, bottomInset }: { mcpUrl: string; bottomInset: nu
         order here.
       </Text>
 
+      <PairingCode signedIn={signedIn} />
+
       <View style={styles.card}>
         <Text style={styles.label}>MCP server URL</Text>
         <Text style={styles.mono} selectable testID="mcp-url">
@@ -83,6 +85,7 @@ function ConnectAgent({ mcpUrl, bottomInset }: { mcpUrl: string; bottomInset: nu
       </View>
 
       <View style={styles.card}>
+        <Text style={styles.label}>Bearer token, for agents that only accept a key</Text>
         <Text style={styles.label}>Agent name</Text>
         <TextInput
           value={label}
@@ -138,6 +141,82 @@ function ConnectAgent({ mcpUrl, bottomInset }: { mcpUrl: string; bottomInset: nu
   );
 }
 
+const PAIRING_CODE_LIFETIME_MS = 10 * 60 * 1000 - 5000;
+const monospace = Platform.select({ ios: 'Menlo', android: 'monospace', default: 'ui-monospace, Menlo, monospace' });
+
+function PairingCode({ signedIn }: { signedIn: boolean }) {
+  const Colors = useColors();
+  const styles = useThemedStyles(createStyles);
+  const createPairingCode = useMutation(api.agentConnections.createPairingCode);
+  const [pairing, setPairing] = useState<{ code: string; expiresAt: number } | null>(null);
+  const [requesting, setRequesting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [now, setNow] = useState(Date.now);
+
+  const request = useCallback(async () => {
+    setRequesting(true);
+    setError(null);
+    try {
+      const { code } = await createPairingCode({});
+      const receivedAt = Date.now();
+      setNow(receivedAt);
+      setPairing({ code, expiresAt: receivedAt + PAIRING_CODE_LIFETIME_MS });
+    } catch (e) {
+      setPairing(null);
+      setError(errorMessage(e));
+    } finally {
+      setRequesting(false);
+    }
+  }, [createPairingCode]);
+
+  useEffect(() => {
+    if (!pairing) return;
+    const tick = setInterval(() => setNow(Date.now()), 1000);
+    const regenerate = setTimeout(request, Math.max(0, pairing.expiresAt - Date.now()));
+    return () => {
+      clearInterval(tick);
+      clearTimeout(regenerate);
+    };
+  }, [pairing, request]);
+
+  const remaining = pairing ? Math.max(0, Math.ceil((pairing.expiresAt - now) / 1000)) : 0;
+
+  return (
+    <View style={styles.card}>
+      <Text style={styles.label}>Pairing code</Text>
+      {pairing ? (
+        <>
+          <Text style={styles.code} selectable testID="pairing-code" accessibilityLabel={pairing.code.split('').join(' ')}>
+            {pairing.code}
+          </Text>
+          <Text style={styles.note}>Enter this code when Muse asks to connect to Cart</Text>
+          <View style={styles.codeFooter}>
+            <CopyButton value={pairing.code} />
+            <View style={styles.codeStatus}>
+              <Text style={styles.muted}>
+                {requesting
+                  ? 'Getting a new code…'
+                  : `Expires in ${Math.floor(remaining / 60)}:${String(remaining % 60).padStart(2, '0')}`}
+              </Text>
+              <Pressable accessibilityRole="button" hitSlop={8} disabled={requesting} onPress={request}>
+                {({ pressed }) => <Text style={[styles.newCode, pressed && { color: Colors.text }]}>New code</Text>}
+              </Pressable>
+            </View>
+          </View>
+        </>
+      ) : (
+        <PillButton
+          variant="accent"
+          label={requesting ? 'Getting code…' : 'Get pairing code'}
+          disabled={requesting || !signedIn}
+          onPress={request}
+        />
+      )}
+      {error && <Text style={styles.note}>{error}</Text>}
+    </View>
+  );
+}
+
 function CopyButton({ value }: { value: string }) {
   const styles = useThemedStyles(createStyles);
   const [copied, setCopied] = useState(false);
@@ -175,6 +254,10 @@ const createStyles = (Colors: Palette) => StyleSheet.create({
   label: { ...Type.secondary, color: Colors.textSecondary },
   mono: { fontFamily: 'Menlo', fontSize: 14, lineHeight: 20, color: Colors.text },
   copy: { alignSelf: 'flex-start' },
+  code: { fontFamily: monospace, fontSize: 34, lineHeight: 42, fontWeight: '600', letterSpacing: 6, color: Colors.text },
+  codeFooter: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  codeStatus: { alignItems: 'flex-end', gap: 2 },
+  newCode: { ...Type.secondary, fontWeight: '600', color: Colors.accent },
   input: {
     ...Type.body,
     fontSize: 16,
