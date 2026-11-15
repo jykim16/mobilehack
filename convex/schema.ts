@@ -187,7 +187,8 @@ export default defineSchema({
     error: v.optional(v.string()),
   })
     .index("by_shopperId_and_status", ["shopperId", "status"])
-    .index("by_shopperId_and_idempotencyKey", ["shopperId", "idempotencyKey"]),
+    .index("by_shopperId_and_idempotencyKey", ["shopperId", "idempotencyKey"])
+    .index("by_cartItemId_and_status", ["cartItemId", "status"]),
 
   orders: defineTable({
     shopperId: v.id("users"),

@@ -18,9 +18,9 @@ export const removeItem = internalMutation({
     for (const status of MID_CHECKOUT) {
       const blocking = await ctx.db
         .query("purchaseRequests")
-        .withIndex("by_shopperId_and_status", (q) => q.eq("shopperId", shopperId).eq("status", status))
-        .take(50);
-      if (blocking.some((request) => request.cartItemId === itemId)) {
+        .withIndex("by_cartItemId_and_status", (q) => q.eq("cartItemId", itemId).eq("status", status))
+        .first();
+      if (blocking) {
         throw new ConvexError({
           code: "INVALID_STATE",
           message: "This item is mid-checkout: the shopper has to approve or cancel the purchase in the Cart app first.",

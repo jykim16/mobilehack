@@ -103,7 +103,7 @@ const listed = await rpc("tools/list", {});
 const names = (listed.body.result?.tools ?? []).map((t) => t.name);
 check(["add_cart_item", "list_cart_items", "get_cart_item", "request_purchase", "get_purchase_status"].every((n) => names.includes(n)), "tools/list", names.join(", "));
 
-const added = await call("add_cart_item", { url: productUrl, reason: "Smoke test: long-flight headphones" });
+const added = await call("add_cart_item", { url: productUrl, reason: "Smoke test: long-flight headphones", idempotencyKey: `smoke-${Date.now()}` });
 const itemId = added.structuredContent?.itemId;
 check(!added.isError && !!itemId, "add_cart_item");
 const list = await call("list_cart_items", {});

@@ -92,6 +92,30 @@ describe("remove_cart_item", () => {
     expect(request?.status).toBe("expired");
   });
 
+  test("sees a blocking request past fifty older ones", async () => {
+    const { t, shopperId, itemId, offerId } = await seedCart();
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 60; i++) {
+        await ctx.db.insert("purchaseRequests", {
+          shopperId,
+          cartItemId: itemId,
+          offerId,
+          quantity: 1,
+          reason: `Noise ${i}`,
+          requestedBy: "app",
+          idempotencyKey: `noise-${i}`,
+          status: "expired",
+          quoteVersion: 1,
+          expiresAt: Date.now() - 1000,
+        });
+      }
+    });
+    await pendingRequest(t, shopperId, itemId, offerId, "ordered");
+    await expect(t.mutation(internal.mcp.removal.removeItem, { shopperId, itemId })).rejects.toMatchObject({
+      data: { code: "INVALID_STATE" },
+    });
+  });
+
   test.each(["approved", "ordered"] as const)("refuses while the request is %s", async (status) => {
     const { t, shopperId, itemId, offerId } = await seedCart();
     await pendingRequest(t, shopperId, itemId, offerId, status);
