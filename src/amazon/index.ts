@@ -101,6 +101,7 @@ export {
   type ConfirmationResolution,
   evaluatePreSubmitSafetyGate,
   isValidPositiveCents,
+  type ItemCheckoutBinding,
   type LedgerEntry,
   normalizeApprovedItems,
   OrderSubmissionLedger,

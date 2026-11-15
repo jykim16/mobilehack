@@ -228,6 +228,23 @@ function AmazonSyncDaemonActive({
           ) ?? null
         );
       },
+      findExistingOrderForItem: async (itemId) => {
+        const matchOrder = (list: Purchase[]) =>
+          list.find(
+            (p) =>
+              p.itemId === itemId &&
+              (p.status === 'placed' ||
+                p.status === 'awaiting_client' ||
+                p.status === 'submitting' ||
+                p.status === 'unknown'),
+          ) ?? null;
+        const cached = reactivePurchasesRef.current
+          ? matchOrder(reactivePurchasesRef.current)
+          : null;
+        if (cached) return cached;
+        const purchases = await convex.query(amazonConvexApi.purchases.listPurchases, {});
+        return matchOrder(purchases);
+      },
       requestPurchase: (args) =>
         convex.action(amazonConvexApi.purchases.requestPurchase, args),
       getPurchaseStatus: (args) =>

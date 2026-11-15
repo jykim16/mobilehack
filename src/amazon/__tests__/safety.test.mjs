@@ -2845,3 +2845,447 @@ test('(j.11) checkoutAmazonItem falls back to status="unknown" on unverified con
   assert.equal(res.safetyGate.orderSubmitted, true);
 });
 
+// ============================================================================
+// (k) Review regression tests for PR #29 findings
+// ============================================================================
+
+test('(k.1) [HIGH] retrying checkoutAmazonItem({ item }) without orderRef reuses itemId->orderRef binding, reconciles via syncOrders(), and never double-orders', async () => {
+  const ledger = new OrderSubmissionLedger();
+  const syncQueue = new ConvexSyncRetryQueue();
+  let requestPurchaseCount = 0;
+  let placeOrderClicked = 0;
+  let orderVisibleInYourOrders = false;
+  const placementCalls = [];
+
+  const cartItem = {
+    id: 'convex_item_retry_guard',
+    url: 'https://www.amazon.com/dp/B09XS7JWHH',
+    status: 'active',
+    quantity: 1,
+    reason: 'Retry test',
+    addedBy: 'agent',
+    addedAt: 1_700_000_000_000,
+    enrichmentStatus: 'ready',
+    product: {
+      id: 'prod_sony',
+      title: 'Sony WH-1000XM5',
+      brand: 'Sony',
+      category: 'Audio',
+      imageUrl: null,
+      description: null,
+    },
+    variant: null,
+    offer: {
+      id: 'off_sony_1',
+      retailer: 'amazon',
+      retailerName: 'Amazon',
+      seller: 'Amazon.com',
+      priceCents: 22999,
+      listPriceCents: null,
+      shippingCents: 0,
+      inStock: true,
+      dealText: null,
+      deliveryEstimate: 'Tomorrow',
+      returnSummary: '30-day returns',
+      url: 'https://www.amazon.com/dp/B09XS7JWHH',
+    },
+    offers: [],
+    rating: null,
+    price: null,
+    priceHistory: null,
+  };
+
+  const makeAttemptDeps = () => ({
+    input: { item: cartItem, userConfirmed: true }, // NOTE: NO orderRef or requestId passed!
+    isSignedIn: () => true,
+    ensureSignedIn: async () => true,
+    closeBrowserSheet: () => {},
+    runExclusive: async (fn) => fn(),
+    isolationDeps: {
+      navigateToCart: async () => {},
+      scrapeCart: async () => ({
+        signedIn: true,
+        challenge: 'none',
+        currentUrl: 'https://www.amazon.com/gp/cart/view.html',
+        cartCount: 1,
+        subtotalCents: 22999,
+        items: [
+          {
+            asin: 'B09XS7JWHH',
+            title: 'Sony WH-1000XM5',
+            quantity: 1,
+            unitPriceCents: 22999,
+            imageUrl: null,
+            inStock: true,
+            seller: 'Amazon.com',
+          },
+        ],
+      }),
+      moveSavedToCart: async () => ({ mutated: false }),
+      addTargetToCart: async () => ({ ok: true }),
+      stepRowQuantity: async () => ({ mutated: true }),
+      saveRowForLater: async () => ({ mutated: true }),
+      waitMs: async () => {},
+    },
+    syncCartRowsToState: () => [],
+    proceedToCheckoutAndInspect: async () => ({
+      stage: 'checkout_review',
+      signedIn: true,
+      challenge: 'none',
+      canPlaceOrder: true,
+      subtotalCents: 22999,
+      shippingCents: 0,
+      taxCents: 1901,
+      totalCents: 24900,
+      summaryItemCount: 1,
+      lineItems: [{ asin: 'B09XS7JWHH', title: 'Sony WH-1000XM5', quantity: 1 }],
+      deliveryEstimate: 'Arriving Tomorrow',
+      currentUrl: 'https://www.amazon.com/gp/buy/spc/handlers/display.html',
+    }),
+    submitCheckoutOrder: async () => {
+      placeOrderClicked += 1;
+      return { submitted: true, haltedBySafetyGate: false };
+    },
+    readConfirmation: async () => ({
+      retailerOrderId: null,
+      isConfirmationSurface: false,
+      hasAuthOrErrorBarrier: false,
+      currentUrl: 'https://www.amazon.com/gp/buy/spc/handlers/display.html',
+    }),
+    reconcileViaSyncOrders: async () => {
+      const now = Date.now();
+      if (!orderVisibleInYourOrders) {
+        ledger.reconcileFromSyncedOrders([]);
+        return { ok: true, requiresSignIn: false, purchases: [], syncedAt: now };
+      }
+      ledger.reconcileFromSyncedOrders([
+        {
+          retailerOrderId: '114-5556666-7778888',
+          asin: 'B09XS7JWHH',
+          items: [{ asin: 'B09XS7JWHH', quantity: 1 }],
+          totalCents: 24900,
+          placedAtMs: now,
+          syncedAt: now,
+        },
+      ]);
+      return { ok: true, requiresSignIn: false, purchases: [], syncedAt: now };
+    },
+    getPreExistingOrderIds: () => [],
+    onOrderPlacedLocalState: async () => {},
+    submissionLedger: ledger,
+    syncQueue,
+    convexSync: {
+      recordClientPlacement: async (args) => {
+        placementCalls.push(`${args.orderRef}:${args.retailerOrderId}`);
+      },
+      syncClientShipment: async () => {},
+    },
+    convexCoordinator: {
+      findPendingApprovalForItem: async () => null,
+      findExistingOrderForItem: async () => null,
+      requestPurchase: async () => {
+        requestPurchaseCount += 1;
+        return {
+          requestId: `req_retry_${requestPurchaseCount}`,
+          status: 'pending_approval',
+          quoteVersion: 1,
+          expiresAt: Date.now() + 600_000,
+          quote: null,
+        };
+      },
+      attachClientQuote: async (args) => ({ quoteVersion: 2, quote: args.quote }),
+      decidePurchase: async (args) => ({
+        outcome: 'approved',
+        request: {
+          requestId: args.requestId,
+          itemId: cartItem.id,
+          offerId: cartItem.offer.id,
+          status: 'approved',
+          requestedBy: 'app',
+          reason: 'Retry test',
+          quantity: 1,
+          quoteVersion: 2,
+          quote: null,
+          expiresAt: Date.now() + 600_000,
+          decidedAt: Date.now(),
+          requestedAt: Date.now(),
+          error: null,
+          order: {
+            orderId: 'ord_retry_1',
+            orderRef: `CART-RETRY-${requestPurchaseCount}`,
+            status: 'awaiting_client',
+            retailerOrderId: null,
+            placedAt: Date.now(),
+            simulated: false,
+          },
+          shipment: null,
+        },
+      }),
+    },
+  });
+
+  // Attempt 1: Confirmation & immediate Your Orders check both miss -> status="unknown"
+  const first = await executeDeterministicItemCheckout(makeAttemptDeps());
+  assert.equal(first.status, 'unknown');
+  assert.equal(first.orderRef, 'CART-RETRY-1');
+  assert.equal(requestPurchaseCount, 1);
+  assert.equal(placeOrderClicked, 1);
+
+  // Attempt 2 (caller retries WITHOUT orderRef while order still hasn't rendered in Your Orders):
+  // MUST reuse CART-RETRY-1, MUST NOT call requestPurchase again, MUST NOT click #placeYourOrder!
+  const second = await executeDeterministicItemCheckout(makeAttemptDeps());
+  assert.equal(second.status, 'unknown');
+  assert.equal(second.orderRef, 'CART-RETRY-1');
+  assert.equal(second.safetyGate.orderSubmitted, false);
+  assert.equal(requestPurchaseCount, 1);
+  assert.equal(placeOrderClicked, 1);
+
+  // Attempt 3 (order now visible in Your Orders, caller still omits orderRef):
+  // Reconciles CART-RETRY-1 -> placed without clicking #placeYourOrder or minting a 2nd request!
+  orderVisibleInYourOrders = true;
+  const third = await executeDeterministicItemCheckout(makeAttemptDeps());
+  assert.equal(third.status, 'placed');
+  assert.equal(third.orderRef, 'CART-RETRY-1');
+  assert.equal(third.retailerOrderId, '114-5556666-7778888');
+  assert.equal(third.safetyGate.orderSubmitted, false);
+  assert.equal(requestPurchaseCount, 1);
+  assert.equal(placeOrderClicked, 1);
+  assert.deepEqual(placementCalls, ['CART-RETRY-1:114-5556666-7778888']);
+
+  // Session reset wipes per-item checkout bindings cleanly
+  ledger.clear();
+  assert.equal(ledger.getItemBinding(cartItem.id), undefined);
+});
+
+test('(k.2) [MEDIUM] executeCartSyncPlan inspects live Amazon cart on missing-ledger add_item and never double-adds present ASINs', async () => {
+  const ledger = new SyncedCartLedger(undefined, 'shopper_dedup');
+  await ledger.hydrate('shopper_dedup');
+
+  const convexItems = [
+    {
+      id: 'item_already_exact',
+      url: 'https://www.amazon.com/dp/B09XS7JWHH',
+      status: 'active',
+      quantity: 1,
+      addedBy: 'agent',
+      addedAt: 1_700_000_001_000,
+    },
+    {
+      id: 'item_excess_in_amz',
+      url: 'https://www.amazon.com/dp/B08N5WRWNW',
+      status: 'active',
+      quantity: 1,
+      addedBy: 'agent',
+      addedAt: 1_700_000_002_000,
+    },
+    {
+      id: 'item_truly_missing',
+      url: 'https://www.amazon.com/dp/B07FZ8S74R',
+      status: 'active',
+      quantity: 2,
+      addedBy: 'agent',
+      addedAt: 1_700_000_003_000,
+    },
+  ];
+
+  const actions = planConvexCartSyncActions({
+    activeItems: convexItems,
+    ledger,
+    isSignedIn: true,
+    now: 1_700_000_010_000,
+  });
+  assert.equal(actions.every((a) => a.kind === 'add_item'), true);
+
+  const ops = [];
+  await executeCartSyncPlan({
+    actions,
+    ledger,
+    isSignedIn: true,
+    now: () => 1_700_000_010_000,
+    refreshCart: async () => {
+      ops.push('refreshCart');
+      return [
+        {
+          id: 'amz-item-B09XS7JWHH',
+          url: 'https://www.amazon.com/dp/B09XS7JWHH',
+          status: 'active',
+          quantity: 1,
+          reason: null,
+          addedBy: 'app',
+          addedAt: 1_700_000_000_000,
+          enrichmentStatus: 'ready',
+          product: null,
+          variant: null,
+          offer: null,
+          offers: [],
+          rating: null,
+          price: null,
+          priceHistory: null,
+        },
+        {
+          id: 'amz-item-B08N5WRWNW',
+          url: 'https://www.amazon.com/dp/B08N5WRWNW',
+          status: 'active',
+          quantity: 2,
+          reason: null,
+          addedBy: 'app',
+          addedAt: 1_700_000_000_000,
+          enrichmentStatus: 'ready',
+          product: null,
+          variant: null,
+          offer: null,
+          offers: [],
+          rating: null,
+          price: null,
+          priceHistory: null,
+        },
+      ];
+    },
+    addToCart: async (input) => {
+      ops.push(`addToCart:${input.asin}:${input.quantity}`);
+      return { ok: true, syncedAt: 1_700_000_010_000 };
+    },
+    setQuantity: async (args) => {
+      ops.push(`setQuantity:${args.itemId}:${args.quantity}`);
+      return null;
+    },
+  });
+
+  // 1. refreshCart ran once for the batch;
+  // 2. B07FZ8S74R (newest agent item, live qty 0) -> addToCart qty 2!
+  // 3. B08N5WRWNW (live qty 2 !== target 1) -> setQuantity down to 1 (NOT addToCart)!
+  // 4. B09XS7JWHH (live qty 1 === target 1) -> ZERO mutations!
+  assert.deepEqual(ops, [
+    'refreshCart',
+    'addToCart:B07FZ8S74R:2',
+    'setQuantity:B08N5WRWNW:1',
+  ]);
+  assert.equal(ledger.get('item_already_exact')?.quantity, 1);
+  assert.equal(ledger.get('item_excess_in_amz')?.quantity, 1);
+  assert.equal(ledger.get('item_truly_missing')?.quantity, 2);
+});
+
+test('(k.3) [MEDIUM] immediate reconcileViaSyncOrders executes strictly inside runExclusive before queued WebView commands run', async () => {
+  const timeline = [];
+  let fifoChain = Promise.resolve();
+  const enqueueCommand = (task) => {
+    const next = fifoChain.then(task, task);
+    fifoChain = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    return next;
+  };
+
+  const cartItem = {
+    id: 'item_serial_check',
+    url: 'https://www.amazon.com/dp/B09XS7JWHH',
+    status: 'active',
+    quantity: 1,
+    reason: null,
+    addedBy: 'app',
+    addedAt: 1_700_000_000_000,
+    enrichmentStatus: 'ready',
+    product: null,
+    variant: null,
+    offer: null,
+    offers: [],
+    rating: null,
+    price: null,
+    priceHistory: null,
+  };
+
+  const checkoutPromise = executeDeterministicItemCheckout({
+    input: { item: cartItem, userConfirmed: true },
+    isSignedIn: () => true,
+    ensureSignedIn: async () => true,
+    closeBrowserSheet: () => {},
+    runExclusive: (fn) => enqueueCommand(fn),
+    isolationDeps: {
+      navigateToCart: async () => {
+        timeline.push('checkout:nav_cart');
+      },
+      scrapeCart: async () => ({
+        signedIn: true,
+        challenge: 'none',
+        currentUrl: 'https://www.amazon.com/gp/cart/view.html',
+        cartCount: 1,
+        subtotalCents: 22999,
+        items: [
+          {
+            asin: 'B09XS7JWHH',
+            title: 'Sony WH-1000XM5',
+            quantity: 1,
+            unitPriceCents: 22999,
+            imageUrl: null,
+            inStock: true,
+            seller: 'Amazon.com',
+          },
+        ],
+      }),
+      moveSavedToCart: async () => ({ mutated: false }),
+      addTargetToCart: async () => ({ ok: true }),
+      stepRowQuantity: async () => ({ mutated: true }),
+      saveRowForLater: async () => ({ mutated: true }),
+      waitMs: async () => {},
+    },
+    syncCartRowsToState: () => [],
+    proceedToCheckoutAndInspect: async () => ({
+      stage: 'checkout_review',
+      signedIn: true,
+      challenge: 'none',
+      canPlaceOrder: true,
+      subtotalCents: 22999,
+      shippingCents: 0,
+      taxCents: 1901,
+      totalCents: 24900,
+      summaryItemCount: 1,
+      lineItems: [{ asin: 'B09XS7JWHH', title: 'Sony WH-1000XM5', quantity: 1 }],
+      deliveryEstimate: 'Tomorrow',
+      currentUrl: 'https://www.amazon.com/gp/buy/spc/handlers/display.html',
+    }),
+    submitCheckoutOrder: async () => {
+      timeline.push('checkout:submit');
+      return { submitted: true, haltedBySafetyGate: false };
+    },
+    readConfirmation: async () => {
+      timeline.push('checkout:read_confirmation_unknown');
+      return {
+        retailerOrderId: null,
+        isConfirmationSurface: false,
+        hasAuthOrErrorBarrier: false,
+        currentUrl: 'https://www.amazon.com/gp/buy/spc/handlers/display.html',
+      };
+    },
+    reconcileViaSyncOrders: async () => {
+      timeline.push('checkout:reconcile_start');
+      await new Promise((r) => setTimeout(r, 15));
+      timeline.push('checkout:reconcile_end');
+      return { ok: true, requiresSignIn: false, purchases: [], syncedAt: Date.now() };
+    },
+    getPreExistingOrderIds: () => [],
+    onOrderPlacedLocalState: async () => {},
+    submissionLedger: new OrderSubmissionLedger(),
+    syncQueue: new ConvexSyncRetryQueue(),
+    convexSync: null,
+    convexCoordinator: null,
+  });
+
+  // Queue a second browser command immediately while checkout is running
+  const secondQueuedCommand = enqueueCommand(async () => {
+    timeline.push('second_command:start');
+  });
+
+  await Promise.all([checkoutPromise, secondQueuedCommand]);
+
+  assert.deepEqual(timeline, [
+    'checkout:nav_cart',
+    'checkout:submit',
+    'checkout:read_confirmation_unknown',
+    'checkout:reconcile_start',
+    'checkout:reconcile_end',
+    'second_command:start',
+  ]);
+});
+
+

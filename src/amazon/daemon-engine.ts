@@ -2,6 +2,7 @@ import { AMAZON_CART_URL, buildShipmentEvents, extractAsin, parseDeliveryEtaIso 
 import {
   type AttachClientQuoteArgs,
   buildAttachClientQuoteArgs,
+  buildRecordClientPlacementArgs,
   buildSyncClientShipmentArgs,
   type ConvexAmazonSyncClient,
 } from './convex-sync';
@@ -432,9 +433,12 @@ export function planConvexCartSyncActions(params: {
 }
 
 /**
+/**
  * Execute planned cart sync actions deterministically against the background browser.
- * On `resync_on_signin` (`false -> true`), inspects the live authenticated cart first so
- * guest-merged items are never double-added!
+ * For BOTH `'resync_on_signin'` AND missing-ledger `'add_item'` actions (including retries
+ * after a lost response or items pre-existing in `/gp/cart/view.html`), inspects the live
+ * active Amazon cart first so already-present ASINs reconcile to `targetQuantity` rather
+ * than clicking `#add-to-cart-button` again and over-incrementing the basket!
  */
 export async function executeCartSyncPlan(params: {
   actions: PlannedCartSyncAction[];
@@ -451,82 +455,34 @@ export async function executeCartSyncPlan(params: {
   const clock = params.now ?? Date.now;
   let synced = 0;
   let failed = 0;
-  let cachedLiveByAsin: Map<string, number> | null = null;
+  const liveCache: { byAsin: Map<string, number> | null } = { byAsin: null };
+
+  const ensureLiveByAsin = async (): Promise<Map<string, number>> => {
+    if (liveCache.byAsin) return liveCache.byAsin;
+    const liveItems = await params.refreshCart();
+    const nextMap = new Map<string, number>();
+    for (const li of liveItems) {
+      const liAsin = extractAsin(li.url);
+      if (liAsin) {
+        nextMap.set(liAsin, (nextMap.get(liAsin) ?? 0) + li.quantity);
+      }
+    }
+    liveCache.byAsin = nextMap;
+    return nextMap;
+  };
 
   for (const action of params.actions) {
     if (params.shouldAbort?.()) break;
     const ts = clock();
 
     try {
-      if (action.kind === 'resync_on_signin') {
-        if (!cachedLiveByAsin) {
-          const liveItems = await params.refreshCart();
-          cachedLiveByAsin = new Map<string, number>();
-          for (const li of liveItems) {
-            const liAsin = extractAsin(li.url);
-            if (liAsin) {
-              cachedLiveByAsin.set(liAsin, (cachedLiveByAsin.get(liAsin) ?? 0) + li.quantity);
-            }
-          }
-        }
-
-        const liveQty = cachedLiveByAsin.get(action.asin) ?? 0;
-        if (liveQty === action.targetQuantity) {
-          await params.ledger.recordSynced(action.item.id, {
-            asin: action.asin,
-            quantity: action.targetQuantity,
-            signedIn: true,
-            syncedAt: ts,
-          });
-          synced += 1;
-          continue;
-        }
-
-        if (liveQty > 0) {
-          await params.setQuantity({
-            itemId: action.asin,
-            quantity: action.targetQuantity,
-          });
-          cachedLiveByAsin.set(action.asin, action.targetQuantity);
-          await params.ledger.recordSynced(action.item.id, {
-            asin: action.asin,
-            quantity: action.targetQuantity,
-            signedIn: true,
-            syncedAt: clock(),
-          });
-          synced += 1;
-          continue;
-        }
-
-        const addRes = await params.addToCart({
-          asin: action.asin,
-          url: action.item.url,
-          quantity: action.targetQuantity,
-          variantLabel: action.item.variant?.label ?? undefined,
-          reason: action.item.reason ?? undefined,
-        });
-        if (!addRes.ok) {
-          params.ledger.recordFailure(action.item.id, action.targetQuantity, params.isSignedIn, clock());
-          failed += 1;
-          continue;
-        }
-        cachedLiveByAsin.set(action.asin, action.targetQuantity);
-        await params.ledger.recordSynced(action.item.id, {
-          asin: action.asin,
-          quantity: action.targetQuantity,
-          signedIn: true,
-          syncedAt: addRes.syncedAt || clock(),
-        });
-        synced += 1;
-        continue;
-      }
-
       if (action.kind === 'update_quantity') {
         try {
           await params.setQuantity({
             itemId: action.asin,
             quantity: action.targetQuantity,
           });
+          liveCache.byAsin?.set(action.asin, action.targetQuantity);
           await params.ledger.recordSynced(action.item.id, {
             asin: action.asin,
             quantity: action.targetQuantity,
@@ -536,8 +492,40 @@ export async function executeCartSyncPlan(params: {
           synced += 1;
           continue;
         } catch {
-          // Row may have been cleared from Amazon cart externally; fall through to addToCart
+          // Row may have been cleared from Amazon cart externally; fall through to live inspection + add
+          liveCache.byAsin = null;
         }
+      }
+
+      // Inspect live `/gp/cart/view.html` rows before any additive `addToCart` (`resync_on_signin` AND `add_item`)
+      const liveByAsin = await ensureLiveByAsin();
+      const liveQty = liveByAsin.get(action.asin) ?? 0;
+
+      if (liveQty === action.targetQuantity) {
+        await params.ledger.recordSynced(action.item.id, {
+          asin: action.asin,
+          quantity: action.targetQuantity,
+          signedIn: params.isSignedIn,
+          syncedAt: ts,
+        });
+        synced += 1;
+        continue;
+      }
+
+      if (liveQty > 0) {
+        await params.setQuantity({
+          itemId: action.asin,
+          quantity: action.targetQuantity,
+        });
+        liveByAsin.set(action.asin, action.targetQuantity);
+        await params.ledger.recordSynced(action.item.id, {
+          asin: action.asin,
+          quantity: action.targetQuantity,
+          signedIn: params.isSignedIn,
+          syncedAt: clock(),
+        });
+        synced += 1;
+        continue;
       }
 
       const addRes = await params.addToCart({
@@ -552,6 +540,15 @@ export async function executeCartSyncPlan(params: {
         failed += 1;
         continue;
       }
+
+      const observedPostAddQty = addRes.addedItem?.quantity ?? action.targetQuantity;
+      if (observedPostAddQty !== action.targetQuantity) {
+        await params.setQuantity({
+          itemId: action.asin,
+          quantity: action.targetQuantity,
+        });
+      }
+      liveByAsin.set(action.asin, action.targetQuantity);
 
       await params.ledger.recordSynced(action.item.id, {
         asin: action.asin,
@@ -891,6 +888,7 @@ export async function isolateSingleActiveCartItem(
 
 export interface ConvexCheckoutCoordinator {
   findPendingApprovalForItem?: (itemId: string) => Promise<PurchaseRequest | null>;
+  findExistingOrderForItem?: (itemId: string) => Promise<Purchase | null>;
   requestPurchase: (args: {
     itemId: string;
     offerId: string;
@@ -954,6 +952,56 @@ export async function coordinateConvexOneTapApproval(params: {
   let requestId = params.requestId ?? params.item.pendingRequest?.requestId;
   let quoteVersion = params.quoteVersion ?? params.item.pendingRequest?.quoteVersion;
 
+  if (!requestId && params.coordinator.findExistingOrderForItem) {
+    try {
+      const existingOrder = await params.coordinator.findExistingOrderForItem(params.item.id);
+      if (existingOrder) {
+        if (existingOrder.status === 'placed' && existingOrder.retailerOrderId) {
+          return {
+            ok: true,
+            orderRef: existingOrder.orderRef,
+            requestId: existingOrder.requestId,
+            quoteVersion: quoteVersion ?? 1,
+            alreadyPlacedOrderId: existingOrder.retailerOrderId,
+            alreadyPlacedAt: existingOrder.placedAt ?? now,
+          };
+        }
+        if (existingOrder.status === 'submitting' || existingOrder.status === 'unknown') {
+          return {
+            ok: false,
+            status: 'safety_blocked',
+            reason: `Convex order "${existingOrder.orderRef}" for item "${params.item.id}" is "${existingOrder.status}"; reconcile via syncOrders() before retrying.`,
+          };
+        }
+        if (existingOrder.status === 'awaiting_client') {
+          if (!params.coordinator.getPurchaseStatus) {
+            if (
+              existingOrder.quote &&
+              Math.abs(existingOrder.quote.totalCents - params.liveQuote.totalCents) > 1
+            ) {
+              return {
+                ok: false,
+                status: 'requote_required',
+                reason: `Live Amazon total (${params.liveQuote.totalCents} cents) changed from approved Convex quote (${existingOrder.quote.totalCents} cents).`,
+              };
+            }
+            return {
+              ok: true,
+              orderRef: existingOrder.orderRef,
+              requestId: existingOrder.requestId,
+              quoteVersion: quoteVersion ?? 1,
+              alreadyPlacedOrderId: null,
+              alreadyPlacedAt: null,
+            };
+          }
+          requestId = existingOrder.requestId;
+        }
+      }
+    } catch {
+      // Ignore lookup error and continue
+    }
+  }
+
   if (!requestId && params.coordinator.findPendingApprovalForItem) {
     try {
       const existingPending = await params.coordinator.findPendingApprovalForItem(params.item.id);
@@ -1006,6 +1054,16 @@ export async function coordinateConvexOneTapApproval(params: {
           alreadyPlacedAt: null,
         };
       }
+      if (
+        latest.order?.status === 'submitting' ||
+        latest.order?.status === 'unknown'
+      ) {
+        return {
+          ok: false,
+          status: 'safety_blocked',
+          reason: `Convex order "${latest.order.orderRef}" is "${latest.order.status}"; reconcile via syncOrders() before retrying.`,
+        };
+      }
       if (latest.status === 'quoting' || latest.status === 'pending_approval') {
         quoteVersion = latest.quoteVersion;
       } else {
@@ -1034,7 +1092,7 @@ export async function coordinateConvexOneTapApproval(params: {
       offerId,
       quantity: params.item.quantity,
       reason: 'One-tap Amazon checkout in Cart',
-      idempotencyKey: `amz-checkout-${params.item.id}-q${params.item.quantity}-${now}`,
+      idempotencyKey: `amz-checkout-${params.item.id}-q${params.item.quantity}`,
     });
     requestId = created.requestId;
     quoteVersion = created.quoteVersion;
@@ -1203,11 +1261,14 @@ export async function executeDeterministicItemCheckout(
   const clock = deps.now ?? Date.now;
   const effectiveDryRun = deps.input.dryRun === true;
   const userConfirmed = !effectiveDryRun;
+  const initialBinding = deps.submissionLedger.getItemBinding(deps.input.item.id);
+  const initialOrderRef = deps.input.orderRef ?? initialBinding?.orderRef;
+  const initialRequestId = deps.input.requestId ?? initialBinding?.requestId;
   const fallbackOrderRef =
-    deps.input.orderRef ??
-    (deps.input.requestId
-      ? `CART-${deps.input.requestId.slice(-10).toUpperCase()}`
-      : `CART-${clock().toString(36).toUpperCase()}`);
+    initialOrderRef ??
+    (initialRequestId
+      ? `CART-${initialRequestId.slice(-10).toUpperCase()}`
+      : `CART-ITEM-${deps.input.item.id.slice(-10).toUpperCase()}`);
 
   const asin = extractAmazonItemAsin(deps.input.item);
   const specCheck = normalizeApprovedItems({
@@ -1229,35 +1290,21 @@ export async function executeDeterministicItemCheckout(
 
   const targetItemSpec = specCheck.items[0]!;
 
-  // Pre-check ledger when explicit orderRef is supplied
-  if (deps.input.orderRef) {
-    const preEntry = deps.submissionLedger.get(deps.input.orderRef);
+  // Fast-path idempotent replay when a placed order already exists for this orderRef or bound itemId
+  if (initialOrderRef && !effectiveDryRun) {
+    const preEntry = deps.submissionLedger.get(initialOrderRef);
     if (preEntry?.state === 'placed') {
       const replaySync = await deps.syncQueue.flush(deps.convexSync);
       return {
         status: 'placed',
-        safetyGate: { dryRun: effectiveDryRun, userConfirmed, orderSubmitted: false },
-        orderRef: deps.input.orderRef,
+        safetyGate: { dryRun: false, userConfirmed: true, orderSubmitted: false },
+        orderRef: initialOrderRef,
         retailerOrderId: preEntry.retailerOrderId,
         placedAt: preEntry.placedAt,
         quote: null,
         shipment: null,
         reason: 'Idempotent replay: returning existing placed order.',
         syncError: replaySync.lastSyncError,
-      };
-    }
-    if (preEntry?.state === 'unknown') {
-      return {
-        status: 'unknown',
-        safetyGate: { dryRun: effectiveDryRun, userConfirmed, orderSubmitted: false },
-        orderRef: deps.input.orderRef,
-        retailerOrderId: null,
-        placedAt: null,
-        quote: null,
-        shipment: null,
-        reason:
-          'Previous submission for this orderRef had an unconfirmed outcome; reconcile via syncOrders() before retrying.',
-        syncError: deps.syncQueue.lastSyncError,
       };
     }
   }
@@ -1280,451 +1327,529 @@ export async function executeDeterministicItemCheckout(
     deps.closeBrowserSheet?.();
   }
 
-  const primaryOutcome = await deps.runExclusive(
-    async (): Promise<{
-      result: AmazonPlaceOrderResult;
-      needsImmediateOrdersReconcile: boolean;
-      canonicalRequestId: string;
-      liveQuote: Quote | null;
-    }> => {
-      // Step 2: Single-item active-basket isolation on /gp/cart/view.html
-      const isolation = await isolateSingleActiveCartItem({
-        ...deps.isolationDeps,
-        asin: targetItemSpec.asin,
-        url: deps.input.item.url,
-        quantity: targetItemSpec.quantity,
-        variantLabel: deps.input.item.variant?.label ?? null,
-      });
+  return deps.runExclusive(async (): Promise<AmazonPlaceOrderResult> => {
+    const activeBinding = deps.submissionLedger.getItemBinding(deps.input.item.id);
+    const knownOrderRef = deps.input.orderRef ?? activeBinding?.orderRef;
+    const knownRequestId = deps.input.requestId ?? activeBinding?.requestId;
+    const knownQuoteVersion = deps.input.quoteVersion ?? activeBinding?.quoteVersion;
 
-      if (isolation.cartSnap) {
-        deps.syncCartRowsToState(isolation.cartSnap.items, clock());
-      }
-
-      if (!isolation.ok) {
-        return {
-          result: {
-            status: isolation.status,
-            safetyGate: { dryRun: effectiveDryRun, userConfirmed, orderSubmitted: false },
-            orderRef: fallbackOrderRef,
-            retailerOrderId: null,
-            placedAt: null,
-            quote: null,
-            shipment: null,
-            reason: isolation.reason,
-          },
-          needsImmediateOrdersReconcile: false,
-          canonicalRequestId: deps.input.requestId ?? `req_${clock().toString(36)}`,
-          liveQuote: null,
-        };
-      }
-
-      // Step 3: Proceed to SPC checkout review & scrape live single-item quote
-      const review = await deps.proceedToCheckoutAndInspect();
-      if (review.stage === 'signin_gate' || review.stage === 'captcha_gate') {
-        return {
-          result: {
-            status: 'requires_signin',
-            safetyGate: { dryRun: effectiveDryRun, userConfirmed, orderSubmitted: false },
-            orderRef: fallbackOrderRef,
-            retailerOrderId: null,
-            placedAt: null,
-            quote: null,
-            shipment: null,
-            reason:
-              review.stage === 'captcha_gate'
-                ? 'Amazon requested CAPTCHA verification before checkout review.'
-                : 'Amazon requested re-authentication before checkout review.',
-          },
-          needsImmediateOrdersReconcile: false,
-          canonicalRequestId: deps.input.requestId ?? `req_${clock().toString(36)}`,
-          liveQuote: null,
-        };
-      }
-
-      const reviewBinding = verifyCheckoutReviewBinding({
-        approvedItems: [targetItemSpec],
-        summaryItemCount: review.summaryItemCount,
-        lineItems: review.lineItems,
-      });
-      if (!reviewBinding.ok) {
-        return {
-          result: {
-            status: 'basket_mismatch',
-            safetyGate: { dryRun: effectiveDryRun, userConfirmed, orderSubmitted: false },
-            orderRef: fallbackOrderRef,
-            retailerOrderId: null,
-            placedAt: null,
-            quote: null,
-            shipment: null,
-            reason: reviewBinding.reason,
-          },
-          needsImmediateOrdersReconcile: false,
-          canonicalRequestId: deps.input.requestId ?? `req_${clock().toString(36)}`,
-          liveQuote: null,
-        };
-      }
-
-      if (!isValidPositiveCents(review.totalCents)) {
-        return {
-          result: {
-            status: 'safety_blocked',
-            safetyGate: { dryRun: effectiveDryRun, userConfirmed, orderSubmitted: false },
-            orderRef: fallbackOrderRef,
-            retailerOrderId: null,
-            placedAt: null,
-            quote: null,
-            shipment: null,
-            reason:
-              'Fail-closed: live checkout grand total could not be parsed on the Amazon checkout review screen.',
-          },
-          needsImmediateOrdersReconcile: false,
-          canonicalRequestId: deps.input.requestId ?? `req_${clock().toString(36)}`,
-          liveQuote: null,
-        };
-      }
-
-      const matchedRow = isolation.matchedRows[0];
-      const activeSubtotalCents = isolation.matchedRows.reduce(
-        (sum, r) => sum + r.unitPriceCents * r.quantity,
-        0,
-      );
-      const totalCents = review.totalCents;
-      const subtotalCents = isValidPositiveCents(review.subtotalCents)
-        ? review.subtotalCents
-        : activeSubtotalCents;
-      const shippingCents = review.shippingCents ?? 0;
-      const taxCents =
-        typeof review.taxCents === 'number' && review.taxCents >= 0
-          ? review.taxCents
-          : Math.max(
-              0,
-              totalCents - subtotalCents - shippingCents ||
-                Math.round(subtotalCents * ESTIMATED_TAX_RATE),
-            );
-      const unitPriceCents =
-        matchedRow?.unitPriceCents ||
-        Math.round(subtotalCents / Math.max(1, targetItemSpec.quantity));
-      const quotedAt = clock();
-
-      const liveQuote: Quote = {
-        retailer: 'amazon',
-        retailerName: 'Amazon',
-        seller: deps.input.item.offer?.seller ?? matchedRow?.seller ?? 'Amazon.com',
-        productTitle:
-          deps.input.item.product?.title ?? matchedRow?.title ?? `Amazon Item ${targetItemSpec.asin}`,
-        variantLabel: deps.input.item.variant?.label ?? null,
-        imageUrl: deps.input.item.product?.imageUrl ?? matchedRow?.imageUrl ?? null,
-        quantity: targetItemSpec.quantity,
-        unitPriceCents,
-        subtotalCents,
-        taxCents,
-        shippingCents,
-        totalCents,
-        currency: 'USD',
-        deliveryEstimate:
-          review.deliveryEstimate ??
-          deps.input.item.offer?.deliveryEstimate ??
-          'Amazon checkout delivery',
-        returnSummary:
-          deps.input.item.offer?.returnSummary ?? '30-day Amazon return policy',
-        quotedAt,
-        simulated: false,
-      };
-
-      // Dry-run halt BEFORE Convex purchase approval or #placeYourOrder click
-      if (effectiveDryRun) {
-        return {
-          result: {
-            status: 'dry_run_halted',
-            safetyGate: { dryRun: true, userConfirmed: false, orderSubmitted: false },
-            orderRef: fallbackOrderRef,
-            retailerOrderId: null,
-            placedAt: null,
-            quote: liveQuote,
-            shipment: null,
-            reason:
-              'Halted by dryRun safety gate on SPC checkout review after single-item active-basket isolation.',
-          },
-          needsImmediateOrdersReconcile: false,
-          canonicalRequestId: deps.input.requestId ?? `req_${quotedAt.toString(36)}`,
-          liveQuote,
-        };
-      }
-
-      // Step 4: Convex Coordination (requestPurchase -> attachClientQuote -> decidePurchase)
-      let canonicalOrderRef = fallbackOrderRef;
-      let canonicalRequestId = deps.input.requestId ?? `req_${quotedAt.toString(36)}`;
-
-      if (!deps.input.orderRef && deps.convexCoordinator) {
-        const coord = await coordinateConvexOneTapApproval({
-          coordinator: deps.convexCoordinator,
-          item: deps.input.item,
-          liveQuote,
-          requestId: deps.input.requestId,
-          quoteVersion: deps.input.quoteVersion,
-          now: quotedAt,
-        });
-
-        if (!coord.ok) {
-          return {
-            result: {
-              status: coord.status,
-              safetyGate: { dryRun: false, userConfirmed: true, orderSubmitted: false },
-              orderRef: fallbackOrderRef,
-              retailerOrderId: null,
-              placedAt: null,
-              quote: liveQuote,
-              shipment: null,
-              reason: coord.reason,
-            },
-            needsImmediateOrdersReconcile: false,
-            canonicalRequestId,
-            liveQuote,
-          };
-        }
-
-        canonicalOrderRef = coord.orderRef;
-        canonicalRequestId = coord.requestId;
-
-        if (coord.alreadyPlacedOrderId) {
-          deps.submissionLedger.recordPlaced(
-            canonicalOrderRef,
-            coord.alreadyPlacedOrderId,
-            coord.alreadyPlacedAt ?? quotedAt,
-          );
-          return {
-            result: {
-              status: 'placed',
-              safetyGate: { dryRun: false, userConfirmed: true, orderSubmitted: false },
-              orderRef: canonicalOrderRef,
-              retailerOrderId: coord.alreadyPlacedOrderId,
-              placedAt: coord.alreadyPlacedAt ?? quotedAt,
-              quote: liveQuote,
-              shipment: null,
-              reason: 'Idempotent replay: Convex order was already recorded as placed.',
-            },
-            needsImmediateOrdersReconcile: false,
-            canonicalRequestId,
-            liveQuote,
-          };
-        }
-      }
-
-      // Re-check ledger on canonicalOrderRef before clicking #placeYourOrder
-      const canonicalLedgerEntry = deps.submissionLedger.get(canonicalOrderRef);
-      if (canonicalLedgerEntry?.state === 'placed') {
-        const replayFlush = await deps.syncQueue.flush(deps.convexSync);
-        return {
-          result: {
-            status: 'placed',
-            safetyGate: { dryRun: false, userConfirmed: true, orderSubmitted: false },
-            orderRef: canonicalOrderRef,
-            retailerOrderId: canonicalLedgerEntry.retailerOrderId,
-            placedAt: canonicalLedgerEntry.placedAt,
-            quote: liveQuote,
-            shipment: null,
-            reason: 'Idempotent replay: returning existing placed order.',
-            syncError: replayFlush.lastSyncError,
-          },
-          needsImmediateOrdersReconcile: false,
-          canonicalRequestId,
-          liveQuote,
-        };
-      }
-      if (canonicalLedgerEntry?.state === 'unknown') {
-        return {
-          result: {
-            status: 'unknown',
-            safetyGate: { dryRun: false, userConfirmed: true, orderSubmitted: false },
-            orderRef: canonicalOrderRef,
-            retailerOrderId: null,
-            placedAt: null,
-            quote: liveQuote,
-            shipment: null,
-            reason:
-              'Previous submission for this orderRef had an unconfirmed outcome; reconcile via syncOrders() before retrying.',
-            syncError: deps.syncQueue.lastSyncError,
-          },
-          needsImmediateOrdersReconcile: false,
-          canonicalRequestId,
-          liveQuote,
-        };
-      }
-
-      // Step 5: Host + In-DOM Safety Gate -> Deterministic #placeYourOrder Click
-      const gateDecision = evaluatePreSubmitSafetyGate({
-        dryRun: false,
-        userConfirmed: true,
-        approvedItems: [targetItemSpec],
-        expectedTotalCents: liveQuote.totalCents,
-        requiresSignIn: false,
-        basketBound: true,
-        checkoutReviewBound: true,
-        liveTotalVerified: true,
-        liveTotalCents: liveQuote.totalCents,
-      });
-
-      if (!gateDecision.allowSubmit) {
-        return {
-          result: {
-            status: gateDecision.status,
-            safetyGate: { dryRun: false, userConfirmed: true, orderSubmitted: false },
-            orderRef: canonicalOrderRef,
-            retailerOrderId: null,
-            placedAt: null,
-            quote: liveQuote,
-            shipment: null,
-            reason: gateDecision.reason,
-          },
-          needsImmediateOrdersReconcile: false,
-          canonicalRequestId,
-          liveQuote,
-        };
-      }
-
-      const submitRes = await deps.submitCheckoutOrder({
-        dryRun: false,
-        userConfirmed: true,
-        expectedTotalCents: gateDecision.expectedTotalCents,
-        approvedItems: gateDecision.approvedItems,
-      });
-
-      if (!submitRes.submitted) {
-        const blockedStatus: PlaceOrderExecutionStatus =
-          submitRes.code === 'requote_required'
-            ? 'requote_required'
-            : submitRes.code === 'basket_mismatch'
-              ? 'basket_mismatch'
-              : submitRes.haltedBySafetyGate
-                ? 'safety_blocked'
-                : 'failed';
-        return {
-          result: {
-            status: blockedStatus,
-            safetyGate: { dryRun: false, userConfirmed: true, orderSubmitted: false },
-            orderRef: canonicalOrderRef,
-            retailerOrderId: null,
-            placedAt: null,
-            quote: liveQuote,
-            shipment: null,
-            reason: submitRes.reason,
-          },
-          needsImmediateOrdersReconcile: false,
-          canonicalRequestId,
-          liveQuote,
-        };
-      }
-
-      // Step 6: Order Confirmation Scrape + Convex Placement & Shipment Sync
-      const settled = await settleSubmittedOrderConfirmation({
-        orderRef: canonicalOrderRef,
-        submittedAt: clock(),
-        approvedItems: gateDecision.approvedItems,
-        expectedTotalCents: gateDecision.expectedTotalCents,
-        preExistingOrderIds: deps.getPreExistingOrderIds(),
-        verifiedQuote: liveQuote,
-        ledger: deps.submissionLedger,
-        syncQueue: deps.syncQueue,
-        convexSync: deps.convexSync,
-        isSessionCurrent: deps.isSessionCurrent,
-        readConfirmation: deps.readConfirmation,
-      });
-
-      if (settled.status === 'placed' && settled.retailerOrderId && settled.shipment) {
-        const shipSync = await deps.syncQueue.enqueueShipment(
-          buildSyncClientShipmentArgs({
-            orderRef: canonicalOrderRef,
-            retailerOrderId: settled.retailerOrderId,
-            shipment: settled.shipment,
-          }),
-          deps.convexSync,
-        );
-        await deps.onOrderPlacedLocalState?.({
-          item: deps.input.item,
-          orderRef: canonicalOrderRef,
-          requestId: canonicalRequestId,
-          retailerOrderId: settled.retailerOrderId,
-          placedAt: settled.placedAt ?? clock(),
-          quote: settled.quote ?? liveQuote,
-          shipment: settled.shipment,
-        });
-        return {
-          result: {
-            ...settled,
-            syncError: shipSync.lastSyncError ?? settled.syncError,
-          },
-          needsImmediateOrdersReconcile: false,
-          canonicalRequestId,
-          liveQuote: settled.quote ?? liveQuote,
-        };
-      }
-
-      return {
-        result: settled,
-        needsImmediateOrdersReconcile: settled.status === 'unknown',
-        canonicalRequestId,
-        liveQuote,
-      };
-    },
-  );
-
-  // Immediate fallback reconciliation via `syncOrders()` when confirmation DOM lacked `114-...` ID
-  if (
-    primaryOutcome.needsImmediateOrdersReconcile &&
-    deps.reconcileViaSyncOrders &&
-    primaryOutcome.liveQuote
-  ) {
-    try {
-      const synced = await deps.reconcileViaSyncOrders();
-      const postLedger = deps.submissionLedger.get(primaryOutcome.result.orderRef);
-      if (postLedger?.state === 'placed') {
-        const matchedPurchase = synced.purchases.find(
-          (p) => p.retailerOrderId === postLedger.retailerOrderId,
-        );
-        const fallbackShipment: Shipment =
-          matchedPurchase?.shipment ?? {
-            status: 'ordered',
-            carrier: null,
-            trackingNumber: null,
-            trackingUrl: null,
-            eta: parseDeliveryEtaIso(primaryOutcome.liveQuote.deliveryEstimate, postLedger.placedAt),
-            events: buildShipmentEvents({
-              status: 'ordered',
-              headline: 'Order reconciled from Amazon Your Orders',
-              placedAt: postLedger.placedAt,
-              updatedAt: postLedger.placedAt,
-            }),
-            updatedAt: postLedger.placedAt,
-            simulated: false,
-          };
-
-        await deps.onOrderPlacedLocalState?.({
-          item: deps.input.item,
-          orderRef: primaryOutcome.result.orderRef,
-          requestId: primaryOutcome.canonicalRequestId,
-          retailerOrderId: postLedger.retailerOrderId,
-          placedAt: postLedger.placedAt,
-          quote: primaryOutcome.liveQuote,
-          shipment: fallbackShipment,
-        });
-
+    // Pre-flight check inside exclusive WebView lock: if a prior attempt for this itemId/orderRef
+    // is `placed` or `unknown`, reconcile via `syncOrders()` BEFORE isolating cart or minting a new request!
+    if (knownOrderRef && !effectiveDryRun) {
+      const currentLedger = deps.submissionLedger.get(knownOrderRef);
+      if (currentLedger?.state === 'placed') {
+        const replaySync = await deps.syncQueue.flush(deps.convexSync);
         return {
           status: 'placed',
-          safetyGate: { dryRun: false, userConfirmed: true, orderSubmitted: true },
-          orderRef: primaryOutcome.result.orderRef,
-          retailerOrderId: postLedger.retailerOrderId,
-          placedAt: postLedger.placedAt,
-          quote: primaryOutcome.liveQuote,
-          shipment: fallbackShipment,
+          safetyGate: { dryRun: false, userConfirmed: true, orderSubmitted: false },
+          orderRef: knownOrderRef,
+          retailerOrderId: currentLedger.retailerOrderId,
+          placedAt: currentLedger.placedAt,
+          quote: null,
+          shipment: null,
+          reason: 'Idempotent replay: returning existing placed order.',
+          syncError: replaySync.lastSyncError,
+        };
+      }
+
+      if (currentLedger?.state === 'unknown') {
+        if (deps.reconcileViaSyncOrders) {
+          try {
+            const synced = await deps.reconcileViaSyncOrders();
+            const postReconcile = deps.submissionLedger.get(knownOrderRef);
+            if (postReconcile?.state === 'placed') {
+              const matchedPurchase = synced.purchases.find(
+                (p) => p.retailerOrderId === postReconcile.retailerOrderId,
+              );
+              const reconciledShipment: Shipment =
+                matchedPurchase?.shipment ?? {
+                  status: 'ordered',
+                  carrier: null,
+                  trackingNumber: null,
+                  trackingUrl: null,
+                  eta: null,
+                  events: buildShipmentEvents({
+                    status: 'ordered',
+                    headline: 'Order reconciled from Amazon Your Orders',
+                    placedAt: postReconcile.placedAt,
+                    updatedAt: postReconcile.placedAt,
+                  }),
+                  updatedAt: postReconcile.placedAt,
+                  simulated: false,
+                };
+              const reconciledQuote: Quote = matchedPurchase?.quote ?? {
+                retailer: 'amazon',
+                retailerName: 'Amazon',
+                seller: deps.input.item.offer?.seller ?? 'Amazon.com',
+                productTitle:
+                  deps.input.item.product?.title ?? `Amazon Item ${targetItemSpec.asin}`,
+                variantLabel: deps.input.item.variant?.label ?? null,
+                imageUrl: deps.input.item.product?.imageUrl ?? null,
+                quantity: targetItemSpec.quantity,
+                unitPriceCents: Math.round(
+                  currentLedger.expectedTotalCents / Math.max(1, targetItemSpec.quantity),
+                ),
+                subtotalCents: currentLedger.expectedTotalCents,
+                taxCents: 0,
+                shippingCents: 0,
+                totalCents: currentLedger.expectedTotalCents,
+                currency: 'USD',
+                deliveryEstimate: 'Reconciled from Amazon Your Orders',
+                returnSummary:
+                  deps.input.item.offer?.returnSummary ?? '30-day Amazon return policy',
+                quotedAt: postReconcile.placedAt,
+                simulated: false,
+              };
+
+              await deps.syncQueue.enqueuePlacement(
+                buildRecordClientPlacementArgs({
+                  orderRef: knownOrderRef,
+                  retailerOrderId: postReconcile.retailerOrderId,
+                  placedAt: postReconcile.placedAt,
+                  shipment: reconciledShipment,
+                }),
+                deps.convexSync,
+              );
+              const shipSync = await deps.syncQueue.enqueueShipment(
+                buildSyncClientShipmentArgs({
+                  orderRef: knownOrderRef,
+                  retailerOrderId: postReconcile.retailerOrderId,
+                  shipment: reconciledShipment,
+                }),
+                deps.convexSync,
+              );
+
+              await deps.onOrderPlacedLocalState?.({
+                item: deps.input.item,
+                orderRef: knownOrderRef,
+                requestId: knownRequestId ?? `req_${postReconcile.placedAt.toString(36)}`,
+                retailerOrderId: postReconcile.retailerOrderId,
+                placedAt: postReconcile.placedAt,
+                quote: reconciledQuote,
+                shipment: reconciledShipment,
+              });
+
+              return {
+                status: 'placed',
+                safetyGate: { dryRun: false, userConfirmed: true, orderSubmitted: false },
+                orderRef: knownOrderRef,
+                retailerOrderId: postReconcile.retailerOrderId,
+                placedAt: postReconcile.placedAt,
+                quote: reconciledQuote,
+                shipment: reconciledShipment,
+                reason: 'Reconciled previously submitted order from Amazon Your Orders.',
+                syncError: shipSync.lastSyncError ?? deps.syncQueue.lastSyncError,
+              };
+            }
+          } catch {
+            // Keep entry in 'unknown' and fail closed below
+          }
+        }
+
+        return {
+          status: 'unknown',
+          safetyGate: { dryRun: false, userConfirmed: true, orderSubmitted: false },
+          orderRef: knownOrderRef,
+          retailerOrderId: null,
+          placedAt: null,
+          quote: null,
+          shipment: null,
+          reason:
+            'Previous submission for this item had an unconfirmed outcome and has not yet appeared in Amazon Your Orders; refusing to submit a duplicate order.',
           syncError: deps.syncQueue.lastSyncError,
         };
       }
-    } catch {
-      // Retain 'unknown' in OrderSubmissionLedger so the 30s background poller reconciles later
     }
-  }
 
-  return primaryOutcome.result;
+    // Step 2: Single-item active-basket isolation on /gp/cart/view.html
+    const isolation = await isolateSingleActiveCartItem({
+      ...deps.isolationDeps,
+      asin: targetItemSpec.asin,
+      url: deps.input.item.url,
+      quantity: targetItemSpec.quantity,
+      variantLabel: deps.input.item.variant?.label ?? null,
+    });
+
+    if (isolation.cartSnap) {
+      deps.syncCartRowsToState(isolation.cartSnap.items, clock());
+    }
+
+    if (!isolation.ok) {
+      return {
+        status: isolation.status,
+        safetyGate: { dryRun: effectiveDryRun, userConfirmed, orderSubmitted: false },
+        orderRef: knownOrderRef ?? fallbackOrderRef,
+        retailerOrderId: null,
+        placedAt: null,
+        quote: null,
+        shipment: null,
+        reason: isolation.reason,
+      };
+    }
+
+    // Step 3: Proceed to SPC checkout review & scrape live single-item quote
+    const review = await deps.proceedToCheckoutAndInspect();
+    if (review.stage === 'signin_gate' || review.stage === 'captcha_gate') {
+      return {
+        status: 'requires_signin',
+        safetyGate: { dryRun: effectiveDryRun, userConfirmed, orderSubmitted: false },
+        orderRef: knownOrderRef ?? fallbackOrderRef,
+        retailerOrderId: null,
+        placedAt: null,
+        quote: null,
+        shipment: null,
+        reason:
+          review.stage === 'captcha_gate'
+            ? 'Amazon requested CAPTCHA verification before checkout review.'
+            : 'Amazon requested re-authentication before checkout review.',
+      };
+    }
+
+    const reviewBinding = verifyCheckoutReviewBinding({
+      approvedItems: [targetItemSpec],
+      summaryItemCount: review.summaryItemCount,
+      lineItems: review.lineItems,
+    });
+    if (!reviewBinding.ok) {
+      return {
+        status: 'basket_mismatch',
+        safetyGate: { dryRun: effectiveDryRun, userConfirmed, orderSubmitted: false },
+        orderRef: knownOrderRef ?? fallbackOrderRef,
+        retailerOrderId: null,
+        placedAt: null,
+        quote: null,
+        shipment: null,
+        reason: reviewBinding.reason,
+      };
+    }
+
+    if (!isValidPositiveCents(review.totalCents)) {
+      return {
+        status: 'safety_blocked',
+        safetyGate: { dryRun: effectiveDryRun, userConfirmed, orderSubmitted: false },
+        orderRef: knownOrderRef ?? fallbackOrderRef,
+        retailerOrderId: null,
+        placedAt: null,
+        quote: null,
+        shipment: null,
+        reason:
+          'Fail-closed: live checkout grand total could not be parsed on the Amazon checkout review screen.',
+      };
+    }
+
+    const matchedRow = isolation.matchedRows[0];
+    const activeSubtotalCents = isolation.matchedRows.reduce(
+      (sum, r) => sum + r.unitPriceCents * r.quantity,
+      0,
+    );
+    const totalCents = review.totalCents;
+    const subtotalCents = isValidPositiveCents(review.subtotalCents)
+      ? review.subtotalCents
+      : activeSubtotalCents;
+    const shippingCents = review.shippingCents ?? 0;
+    const taxCents =
+      typeof review.taxCents === 'number' && review.taxCents >= 0
+        ? review.taxCents
+        : Math.max(
+            0,
+            totalCents - subtotalCents - shippingCents ||
+              Math.round(subtotalCents * ESTIMATED_TAX_RATE),
+          );
+    const unitPriceCents =
+      matchedRow?.unitPriceCents ||
+      Math.round(subtotalCents / Math.max(1, targetItemSpec.quantity));
+    const quotedAt = clock();
+
+    const liveQuote: Quote = {
+      retailer: 'amazon',
+      retailerName: 'Amazon',
+      seller: deps.input.item.offer?.seller ?? matchedRow?.seller ?? 'Amazon.com',
+      productTitle:
+        deps.input.item.product?.title ?? matchedRow?.title ?? `Amazon Item ${targetItemSpec.asin}`,
+      variantLabel: deps.input.item.variant?.label ?? null,
+      imageUrl: deps.input.item.product?.imageUrl ?? matchedRow?.imageUrl ?? null,
+      quantity: targetItemSpec.quantity,
+      unitPriceCents,
+      subtotalCents,
+      taxCents,
+      shippingCents,
+      totalCents,
+      currency: 'USD',
+      deliveryEstimate:
+        review.deliveryEstimate ??
+        deps.input.item.offer?.deliveryEstimate ??
+        'Amazon checkout delivery',
+      returnSummary:
+        deps.input.item.offer?.returnSummary ?? '30-day Amazon return policy',
+      quotedAt,
+      simulated: false,
+    };
+
+    // Dry-run halt BEFORE Convex purchase approval or #placeYourOrder click
+    if (effectiveDryRun) {
+      return {
+        status: 'dry_run_halted',
+        safetyGate: { dryRun: true, userConfirmed: false, orderSubmitted: false },
+        orderRef: knownOrderRef ?? fallbackOrderRef,
+        retailerOrderId: null,
+        placedAt: null,
+        quote: liveQuote,
+        shipment: null,
+        reason:
+          'Halted by dryRun safety gate on SPC checkout review after single-item active-basket isolation.',
+      };
+    }
+
+    // Step 4: Convex Coordination (requestPurchase -> attachClientQuote -> decidePurchase)
+    let canonicalOrderRef = knownOrderRef ?? fallbackOrderRef;
+    let canonicalRequestId = knownRequestId ?? `req_${deps.input.item.id}`;
+    let canonicalQuoteVersion = knownQuoteVersion ?? 1;
+
+    if (!deps.input.orderRef && deps.convexCoordinator) {
+      const coord = await coordinateConvexOneTapApproval({
+        coordinator: deps.convexCoordinator,
+        item: deps.input.item,
+        liveQuote,
+        requestId: knownRequestId,
+        quoteVersion: knownQuoteVersion,
+        now: quotedAt,
+      });
+
+      if (!coord.ok) {
+        return {
+          status: coord.status,
+          safetyGate: { dryRun: false, userConfirmed: true, orderSubmitted: false },
+          orderRef: canonicalOrderRef,
+          retailerOrderId: null,
+          placedAt: null,
+          quote: liveQuote,
+          shipment: null,
+          reason: coord.reason,
+        };
+      }
+
+      canonicalOrderRef = coord.orderRef;
+      canonicalRequestId = coord.requestId;
+      canonicalQuoteVersion = coord.quoteVersion;
+
+      // Persist per-item checkout identity BEFORE any submission attempt
+      deps.submissionLedger.bindItemCheckout({
+        itemId: deps.input.item.id,
+        requestId: canonicalRequestId,
+        quoteVersion: canonicalQuoteVersion,
+        orderRef: canonicalOrderRef,
+        asin: targetItemSpec.asin,
+        quantity: targetItemSpec.quantity,
+      });
+
+      if (coord.alreadyPlacedOrderId) {
+        deps.submissionLedger.recordPlaced(
+          canonicalOrderRef,
+          coord.alreadyPlacedOrderId,
+          coord.alreadyPlacedAt ?? quotedAt,
+        );
+        return {
+          status: 'placed',
+          safetyGate: { dryRun: false, userConfirmed: true, orderSubmitted: false },
+          orderRef: canonicalOrderRef,
+          retailerOrderId: coord.alreadyPlacedOrderId,
+          placedAt: coord.alreadyPlacedAt ?? quotedAt,
+          quote: liveQuote,
+          shipment: null,
+          reason: 'Idempotent replay: Convex order was already recorded as placed.',
+        };
+      }
+    } else {
+      // Standalone mode (no Convex coordinator): still bind itemId -> canonicalOrderRef before submit
+      deps.submissionLedger.bindItemCheckout({
+        itemId: deps.input.item.id,
+        requestId: canonicalRequestId,
+        quoteVersion: canonicalQuoteVersion,
+        orderRef: canonicalOrderRef,
+        asin: targetItemSpec.asin,
+        quantity: targetItemSpec.quantity,
+      });
+    }
+
+    // Re-check ledger on canonicalOrderRef before clicking #placeYourOrder
+    const canonicalLedgerEntry = deps.submissionLedger.get(canonicalOrderRef);
+    if (canonicalLedgerEntry?.state === 'placed') {
+      const replayFlush = await deps.syncQueue.flush(deps.convexSync);
+      return {
+        status: 'placed',
+        safetyGate: { dryRun: false, userConfirmed: true, orderSubmitted: false },
+        orderRef: canonicalOrderRef,
+        retailerOrderId: canonicalLedgerEntry.retailerOrderId,
+        placedAt: canonicalLedgerEntry.placedAt,
+        quote: liveQuote,
+        shipment: null,
+        reason: 'Idempotent replay: returning existing placed order.',
+        syncError: replayFlush.lastSyncError,
+      };
+    }
+    if (canonicalLedgerEntry?.state === 'unknown') {
+      return {
+        status: 'unknown',
+        safetyGate: { dryRun: false, userConfirmed: true, orderSubmitted: false },
+        orderRef: canonicalOrderRef,
+        retailerOrderId: null,
+        placedAt: null,
+        quote: liveQuote,
+        shipment: null,
+        reason:
+          'Previous submission for this orderRef had an unconfirmed outcome; reconcile via syncOrders() before retrying.',
+        syncError: deps.syncQueue.lastSyncError,
+      };
+    }
+
+    // Step 5: Host + In-DOM Safety Gate -> Deterministic #placeYourOrder Click
+    const gateDecision = evaluatePreSubmitSafetyGate({
+      dryRun: false,
+      userConfirmed: true,
+      approvedItems: [targetItemSpec],
+      expectedTotalCents: liveQuote.totalCents,
+      requiresSignIn: false,
+      basketBound: true,
+      checkoutReviewBound: true,
+      liveTotalVerified: true,
+      liveTotalCents: liveQuote.totalCents,
+    });
+
+    if (!gateDecision.allowSubmit) {
+      return {
+        status: gateDecision.status,
+        safetyGate: { dryRun: false, userConfirmed: true, orderSubmitted: false },
+        orderRef: canonicalOrderRef,
+        retailerOrderId: null,
+        placedAt: null,
+        quote: liveQuote,
+        shipment: null,
+        reason: gateDecision.reason,
+      };
+    }
+
+    const submitRes = await deps.submitCheckoutOrder({
+      dryRun: false,
+      userConfirmed: true,
+      expectedTotalCents: gateDecision.expectedTotalCents,
+      approvedItems: gateDecision.approvedItems,
+    });
+
+    if (!submitRes.submitted) {
+      const blockedStatus: PlaceOrderExecutionStatus =
+        submitRes.code === 'requote_required'
+          ? 'requote_required'
+          : submitRes.code === 'basket_mismatch'
+            ? 'basket_mismatch'
+            : submitRes.haltedBySafetyGate
+              ? 'safety_blocked'
+              : 'failed';
+      return {
+        status: blockedStatus,
+        safetyGate: { dryRun: false, userConfirmed: true, orderSubmitted: false },
+        orderRef: canonicalOrderRef,
+        retailerOrderId: null,
+        placedAt: null,
+        quote: liveQuote,
+        shipment: null,
+        reason: submitRes.reason,
+      };
+    }
+
+    // Step 6: Order Confirmation Scrape + Convex Placement & Shipment Sync
+    const settled = await settleSubmittedOrderConfirmation({
+      orderRef: canonicalOrderRef,
+      submittedAt: clock(),
+      approvedItems: gateDecision.approvedItems,
+      expectedTotalCents: gateDecision.expectedTotalCents,
+      preExistingOrderIds: deps.getPreExistingOrderIds(),
+      verifiedQuote: liveQuote,
+      ledger: deps.submissionLedger,
+      syncQueue: deps.syncQueue,
+      convexSync: deps.convexSync,
+      isSessionCurrent: deps.isSessionCurrent,
+      readConfirmation: deps.readConfirmation,
+    });
+
+    if (settled.status === 'placed' && settled.retailerOrderId && settled.shipment) {
+      const shipSync = await deps.syncQueue.enqueueShipment(
+        buildSyncClientShipmentArgs({
+          orderRef: canonicalOrderRef,
+          retailerOrderId: settled.retailerOrderId,
+          shipment: settled.shipment,
+        }),
+        deps.convexSync,
+      );
+      await deps.onOrderPlacedLocalState?.({
+        item: deps.input.item,
+        orderRef: canonicalOrderRef,
+        requestId: canonicalRequestId,
+        retailerOrderId: settled.retailerOrderId,
+        placedAt: settled.placedAt ?? clock(),
+        quote: settled.quote ?? liveQuote,
+        shipment: settled.shipment,
+      });
+      return {
+        ...settled,
+        syncError: shipSync.lastSyncError ?? settled.syncError,
+      };
+    }
+
+    // Immediate fallback reconciliation via `syncOrders()` INSIDE the exclusive WebView lock
+    // so queued browser commands can never interleave with Your Orders / tracking navigation!
+    if (settled.status === 'unknown' && deps.reconcileViaSyncOrders) {
+      try {
+        const synced = await deps.reconcileViaSyncOrders();
+        const postLedger = deps.submissionLedger.get(canonicalOrderRef);
+        if (postLedger?.state === 'placed') {
+          const matchedPurchase = synced.purchases.find(
+            (p) => p.retailerOrderId === postLedger.retailerOrderId,
+          );
+          const fallbackShipment: Shipment =
+            matchedPurchase?.shipment ?? {
+              status: 'ordered',
+              carrier: null,
+              trackingNumber: null,
+              trackingUrl: null,
+              eta: parseDeliveryEtaIso(liveQuote.deliveryEstimate, postLedger.placedAt),
+              events: buildShipmentEvents({
+                status: 'ordered',
+                headline: 'Order reconciled from Amazon Your Orders',
+                placedAt: postLedger.placedAt,
+                updatedAt: postLedger.placedAt,
+              }),
+              updatedAt: postLedger.placedAt,
+              simulated: false,
+            };
+
+          await deps.onOrderPlacedLocalState?.({
+            item: deps.input.item,
+            orderRef: canonicalOrderRef,
+            requestId: canonicalRequestId,
+            retailerOrderId: postLedger.retailerOrderId,
+            placedAt: postLedger.placedAt,
+            quote: liveQuote,
+            shipment: fallbackShipment,
+          });
+
+          return {
+            status: 'placed',
+            safetyGate: { dryRun: false, userConfirmed: true, orderSubmitted: true },
+            orderRef: canonicalOrderRef,
+            retailerOrderId: postLedger.retailerOrderId,
+            placedAt: postLedger.placedAt,
+            quote: liveQuote,
+            shipment: fallbackShipment,
+            syncError: deps.syncQueue.lastSyncError,
+          };
+        }
+      } catch {
+        // Retain 'unknown' in OrderSubmissionLedger so the 30s background poller or next retry reconciles
+      }
+    }
+
+    return settled;
+  });
 }
 
 /**
