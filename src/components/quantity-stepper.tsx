@@ -1,4 +1,5 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
+import { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { Colors, Radius, Type, tabularNumbers } from '@/constants/theme';
@@ -11,17 +12,27 @@ export function QuantityStepper({
   onRemove,
 }: {
   quantity: number;
-  onChange: (quantity: number) => void;
-  onRemove: () => void;
+  onChange: (quantity: number) => Promise<void>;
+  onRemove: () => Promise<void>;
 }) {
+  const [pending, setPending] = useState(false);
   const atMax = quantity >= MAX_QUANTITY;
+  const run = async (update: () => Promise<void>) => {
+    setPending(true);
+    try {
+      await update();
+    } finally {
+      setPending(false);
+    }
+  };
   return (
     <View style={styles.container}>
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={quantity === 1 ? 'Remove item' : 'Decrease quantity'}
+        disabled={pending}
         hitSlop={6}
-        onPress={() => (quantity === 1 ? onRemove() : onChange(quantity - 1))}
+        onPress={() => run(() => (quantity === 1 ? onRemove() : onChange(quantity - 1)))}
         style={styles.button}>
         <Ionicons name={quantity === 1 ? 'trash-outline' : 'remove'} size={16} color={Colors.text} />
       </Pressable>
@@ -29,10 +40,10 @@ export function QuantityStepper({
       <Pressable
         accessibilityRole="button"
         accessibilityLabel="Increase quantity"
-        accessibilityState={{ disabled: atMax }}
-        disabled={atMax}
+        accessibilityState={{ disabled: atMax || pending }}
+        disabled={atMax || pending}
         hitSlop={6}
-        onPress={() => onChange(quantity + 1)}
+        onPress={() => run(() => onChange(quantity + 1))}
         style={styles.button}>
         <Ionicons name="add" size={18} color={atMax ? Colors.textTertiary : Colors.text} />
       </Pressable>

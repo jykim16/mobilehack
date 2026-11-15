@@ -48,10 +48,23 @@ export default function CheckoutSheet() {
   const decide = async (decision: 'approve' | 'defer') => {
     if (!requests) return;
     setApproving(decision === 'approve');
-    await Promise.all(requests.map((r) => decidePurchase({ requestId: r.requestId, quoteVersion: r.quoteVersion, decision })));
+    const results = await Promise.all(
+      requests.map((r) => decidePurchase({ requestId: r.requestId, quoteVersion: r.quoteVersion, decision }))
+    );
     await refresh();
-    if (decision === 'approve') setCartTab('purchases');
-    router.back();
+    if (decision === 'defer') return router.back();
+    const placed = results.filter((r) => r.outcome === 'approved' || r.outcome === 'already_approved');
+    if (placed.length === results.length) {
+      setCartTab('purchases');
+      return router.back();
+    }
+    setApproving(false);
+    setRequests(requests.filter((_, i) => !placed.includes(results[i])));
+    setError(
+      results.some((r) => r.outcome === 'expired')
+        ? 'This quote expired, so nothing was ordered. Close and tap Buy again for a fresh quote.'
+        : 'The price changed, so nothing was ordered. Close and tap Buy again for a fresh quote.'
+    );
   };
 
   if (!requests) {
@@ -116,12 +129,13 @@ export default function CheckoutSheet() {
         <PillButton
           variant="accent"
           label={approving ? 'Placing order…' : `Approve · ${formatPrice(total)}`}
-          disabled={approving}
+          disabled={approving || error !== null}
           onPress={() => decide('approve')}
         />
         <Pressable accessibilityRole="button" hitSlop={8} onPress={() => decide('defer')} disabled={approving}>
           {({ pressed }) => <Text style={[styles.notNow, pressed && { color: Colors.text }]}>Not now</Text>}
         </Pressable>
+        {error && <Text style={styles.error}>{error}</Text>}
         {requests.some((r) => r.quote.simulated) && (
           <Text style={styles.footnote}>Simulated checkout. No payment is taken.</Text>
         )}
@@ -169,4 +183,5 @@ const styles = StyleSheet.create({
   footer: { paddingHorizontal: Spacing.xxl, paddingTop: Spacing.md, gap: Spacing.md, alignItems: 'stretch' },
   notNow: { ...Type.body, color: Colors.textSecondary, textAlign: 'center' },
   footnote: { ...Type.secondary, color: Colors.textTertiary, textAlign: 'center' },
+  error: { ...Type.secondary, color: Colors.text, textAlign: 'center' },
 });
