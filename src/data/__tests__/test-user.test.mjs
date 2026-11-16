@@ -86,3 +86,13 @@ test('seed failures propagate without marking success', async () => {
   await assert.rejects(ensureTestUserItem(async () => { throw new Error('offline'); }, async () => assert.fail('must not add')));
   await assert.rejects(ensureTestUserItem(async () => [], async () => { throw new Error('offline'); }));
 });
+
+test('a session switch during the list request cancels the seed mutation', async () => {
+  let active = true;
+  let resolveItems;
+  const items = new Promise((resolve) => { resolveItems = resolve; });
+  const pending = ensureTestUserItem(() => items, async () => assert.fail('must not seed the next account'), () => active);
+  active = false;
+  resolveItems([]);
+  await pending;
+});

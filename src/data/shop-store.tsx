@@ -1,3 +1,5 @@
+import { useAuthToken } from '@convex-dev/auth/react';
+import { ConvexHttpClient } from 'convex/browser';
 import { useAction, useConvex, useMutation, useQueries, useQuery, type ConvexReactClient } from 'convex/react';
 import { ConvexError } from 'convex/values';
 import { createContext, use, useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
@@ -145,6 +147,7 @@ const countOf = (items: CartItem[]) => items.reduce((sum, item) => sum + item.qu
 function LiveShopProvider({ children }: { children: ReactNode }) {
   const session = useSession();
   const signedIn = session === 'signed_in';
+  const authToken = useAuthToken();
   const convex = useConvex();
 
   const items = useQuery(api.cart.listItems, signedIn ? {} : 'skip');
@@ -165,26 +168,41 @@ function LiveShopProvider({ children }: { children: ReactNode }) {
   const setupMyCart = useMutation(api.demo.setupMyCart);
   const requestPurchase = useAction(api.purchases.requestPurchase);
   const decidePurchase = useMutation(api.purchases.decidePurchase);
-  const [testCartPending, setTestCartPending] = useState(false);
-  const [testCartError, setTestCartError] = useState<string | null>(null);
-  const testCartInFlight = useRef(false);
+  const [testCartPending, setTestCartPending] = useState<object | null>(null);
+  const [testCartError, setTestCartError] = useState<{ token: string; message: string } | null>(null);
+  const testCartSession = useRef<{ request: object; token: string } | null>(null);
 
   useEffect(() => {
-    if (!testCartPending || !signedIn || testCartInFlight.current) return;
-    testCartInFlight.current = true;
-    ensureTestUserItem(() => convex.query(api.cart.listItems, {}), addItem)
-      .then(() => setTestCartError(null))
-      .catch(() => setTestCartError("Couldn't add the demo item. Sign out and try again."))
+    if (!testCartPending) return;
+    if (testCartSession.current?.request === testCartPending && testCartSession.current.token !== authToken) {
+      setTestCartPending(null);
+      return;
+    }
+    if (!authToken) return;
+    testCartSession.current = { request: testCartPending, token: authToken };
+    if (!signedIn) return;
+    const testClient = new ConvexHttpClient(convex.url);
+    testClient.setAuth(authToken);
+    let active = true;
+    ensureTestUserItem(
+      () => testClient.query(api.cart.listItems, {}),
+      (args) => testClient.mutation(api.cart.addItem, args),
+      () => active
+    )
+      .then(() => { if (active) setTestCartError(null); })
+      .catch(() => {
+        if (active) setTestCartError({ token: authToken, message: "Couldn't add the demo item. Sign out and try again." });
+      })
       .finally(() => {
-        testCartInFlight.current = false;
-        setTestCartPending(false);
+        if (active) setTestCartPending((request) => request === testCartPending ? null : request);
       });
-  }, [testCartPending, signedIn, convex, addItem]);
+    return () => { active = false; };
+  }, [testCartPending, signedIn, authToken, convex]);
 
   const value: ShopState = {
     live: true,
     ready: items !== undefined && purchases !== undefined && !testCartPending,
-    error: testCartError,
+    error: testCartError?.token === authToken ? testCartError.message : null,
     items: items ?? [],
     purchases: purchases ?? [],
     purchasedItems,
@@ -207,7 +225,7 @@ function LiveShopProvider({ children }: { children: ReactNode }) {
     loadDemoCart: async () => {
       await setupMyCart({});
     },
-    prepareTestCart: () => setTestCartPending(true),
+    prepareTestCart: () => setTestCartPending({}),
     checkoutItem: async (item) => {
       const request = await placeOrder(
         item,

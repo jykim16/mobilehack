@@ -50,9 +50,10 @@ export function isTestUserItem(url: string) {
 
 export async function ensureTestUserItem(
   listItems: () => Promise<{ url: string }[]>,
-  addItem: (args: { url: string; idempotencyKey: string }) => Promise<unknown>
+  addItem: (args: { url: string; idempotencyKey: string }) => Promise<unknown>,
+  isCurrentSession: () => boolean = () => true
 ) {
   const items = await listItems();
-  if (items.some((item) => isTestUserItem(item.url))) return;
+  if (!isCurrentSession() || items.some((item) => isTestUserItem(item.url))) return;
   await addItem({ url: TEST_USER_ITEM_URL, idempotencyKey: TEST_USER_SEED_KEY });
 }
