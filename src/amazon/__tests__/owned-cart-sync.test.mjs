@@ -257,6 +257,42 @@ test('ownership survives an app restart for the same shopper; an interrupted run
   assert.equal(first.amazon.qty(ASIN), 0);
 });
 
+test('an app kill mid-dispatch is never replayed on restart: the ASIN is forfeited with a notice', async () => {
+  for (const preExisting of [0, 1]) {
+    const storage = new InMemoryKeyValueStorage();
+    const first = await setup({ storage, initial: preExisting ? { [ASIN]: preExisting } : {} });
+    let persistedAtDispatch = null;
+    first.amazon.hook = (input, cart) => {
+      persistedAtDispatch = storage.getItem(ownedCartStorageKey('shopper-a'));
+      cart.setRows(ASIN, [preExisting + input.delta]);
+      return new Promise(() => {});
+    };
+    first.sync.setIntent(intent());
+    await settle(first.sync);
+    assert.ok(persistedAtDispatch?.includes('"syncing"'), 'syncing marker is durable before dispatch');
+
+    const restoredStorage = new InMemoryKeyValueStorage();
+    restoredStorage.setItem(ownedCartStorageKey('shopper-a'), persistedAtDispatch);
+    const amazon = fakeAmazon({ [ASIN]: preExisting + 1 });
+    const restarted = new OwnedCartSync({ storage: restoredStorage });
+    restarted.setEngine(amazon);
+    await restarted.hydrate('shopper-a');
+    restarted.resume();
+    await settle(restarted);
+    assert.equal(amazon.calls.length, 0, 'no replayed dispatch');
+    assert.equal(amazon.qty(ASIN), preExisting + 1);
+    const state = restarted.getItems()['item-1'];
+    assert.equal(state.status, 'conflict');
+    assert.equal(state.ownedQty, 0);
+    assert.equal(state.message, OWNED_CART_MESSAGES.interrupted);
+
+    restarted.setIntent(intent({ quantity: 0, create: false }));
+    await settle(restarted);
+    assert.equal(amazon.calls.length, 0, 'removal after an interrupted add never guesses ownership');
+    assert.equal(amazon.qty(ASIN), preExisting + 1);
+  }
+});
+
 test('quantity changes move only the Cart-owned delta; untracked items are never adopted', async () => {
   const { amazon, sync } = await setup({ initial: { [ASIN]: 2 } });
   sync.setIntent(intent());

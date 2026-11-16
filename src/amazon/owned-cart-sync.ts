@@ -82,6 +82,7 @@ export const OWNED_CART_MESSAGES = {
   mismatch: "Amazon's cart didn't match what Cart expected, so Cart stopped syncing this item. Check your Amazon cart.",
   forfeited: 'Your Amazon cart changed outside Cart, so this item is no longer synced.',
   unreachable: "Couldn't reach Amazon. Tap Retry.",
+  interrupted: "Cart closed before Amazon confirmed the last update, so Cart stopped syncing this item. Check your Amazon cart.",
 } as const;
 
 export function ownedCartStorageKey(shopperId: string | null | undefined): string {
@@ -103,9 +104,23 @@ function parseSnapshot(raw: string | null): Snapshot {
     const items: Record<string, OwnedCartItemState> = {};
     for (const [id, item] of Object.entries(parsed.items ?? {})) {
       if (!item || typeof item.asin !== 'string' || !Number.isInteger(item.ownedQty) || !Number.isInteger(item.desiredQty)) continue;
-      items[id] = { ...item, status: item.status === 'syncing' ? 'pending' : item.status };
+      items[id] = item;
     }
-    return { items, asins: parsed.asins ?? {} };
+    const asins = { ...(parsed.asins ?? {}) };
+    const interrupted = new Set(Object.values(items).filter((item) => item.status === 'syncing').map((item) => item.asin));
+    for (const asin of interrupted) {
+      delete asins[asin];
+      for (const item of Object.values(items)) {
+        if (item.asin !== asin) continue;
+        items[item.itemId] = {
+          ...item,
+          ownedQty: 0,
+          status: 'conflict',
+          message: item.desiredQty === 0 ? OWNED_CART_MESSAGES.driftRemove : OWNED_CART_MESSAGES.interrupted,
+        };
+      }
+    }
+    return { items, asins };
   } catch {
     return empty;
   }
@@ -264,6 +279,8 @@ export class OwnedCartSync {
     const start = this.snapshot.items[itemId];
     if (!start) return;
     this.update(itemId, { status: 'syncing', message: null });
+    await this.writes;
+    if (generation !== this.generation) return;
 
     let result: OwnedCartDeltaResult;
     let delta = 0;
