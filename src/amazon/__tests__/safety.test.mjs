@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
 import test from 'node:test';
 import vm from 'node:vm';
+import { readFileSync } from 'node:fs';
+import ts from 'typescript';
 import { AMAZON_LIVE_SUBMISSION_ENABLED, DurableSubmissionClaims, PersistedBrowserOwner } from '../durable-safety.ts';
 
 import {
@@ -2747,6 +2749,90 @@ test('(l.3) unknown reconciliation rejects earlier same-day, date-only, stale/mi
   assert.equal(manual.get('canonical')?.state, 'placed');
 });
 
+test('(l.4) superseded owner binding writes finish before the next reset/bind transaction and cannot corrupt cold restore', async () => {
+  let persisted = 'previous';
+  let finishAWrite;
+  let aWriteStarted;
+  const writingA = new Promise((resolve) => { aWriteStarted = resolve; });
+  const storage = {
+    getItem: async () => persisted,
+    setItem: async (_key, value) => {
+      if (value === 'A') {
+        aWriteStarted();
+        await new Promise((resolve) => { finishAWrite = resolve; });
+      }
+      persisted = value;
+    },
+  };
+  const a = new PersistedBrowserOwner(storage);
+  const b = new PersistedBrowserOwner(storage);
+  const initA = a.initialize('A', async () => {});
+  await writingA;
+  a.invalidate();
+  let bResets = 0;
+  const initB = b.initialize('B', async () => { bResets += 1; });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(b.isReady('B'), false);
+  assert.equal(bResets, 0);
+  finishAWrite();
+  assert.equal(await initA, false);
+  assert.equal(await initB, true);
+  assert.equal(persisted, 'B');
+  assert.equal(bResets, 1);
+  a.deactivate();
+  assert.equal(await a.initialize('A', async () => { throw new Error('revoked callback must not reset'); }), false);
+  const coldA = new PersistedBrowserOwner({ getItem: async () => persisted, setItem: async (_key, value) => { persisted = value; } });
+  let coldResets = 0;
+  assert.equal(await coldA.initialize('A', async () => { coldResets += 1; }), true);
+  assert.equal(coldResets, 1);
+});
+
+function providerCallback(name, context) {
+  const source = ts.createSourceFile('AmazonBrowserProvider.tsx', readFileSync(new URL('../AmazonBrowserProvider.tsx', import.meta.url), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  let callback;
+  function visit(node) {
+    if (ts.isVariableDeclaration(node) && node.name.getText(source) === name && node.initializer && ts.isCallExpression(node.initializer)) {
+      callback = node.initializer.arguments[0].getText(source);
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(source);
+  assert.ok(callback, `Missing provider callback ${name}`);
+  const js = ts.transpileModule(`const callback = ${callback};`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  return vm.runInNewContext(`(() => { ${js}\nreturn callback; })()`, context);
+}
+
+test('(l.5) actual retained provider callbacks cannot read cached requests or defer the next shopper request', async () => {
+  const records = new Map();
+  const storage = { getItem: async (key) => records.get(key) ?? null, setItem: async (key, value) => { records.set(key, value); } };
+  const a = new PersistedBrowserOwner(storage);
+  await a.initialize('A', async () => {});
+  const request = { requestId: 'B-request', quoteVersion: 1, expiresAt: Date.now() + 60_000, status: 'pending_approval', quote: { productTitle: 'mock B-only quote' }, order: null };
+  let state = [request];
+  const context = {
+    ownerIsReady: () => a.isReady('A'),
+    sessionBarrier: { isLogoutPending: false, epoch: 42, isCurrent: () => true },
+    idempotencyMapRef: { current: new Map([['shared-key', request.requestId]]) },
+    pendingRequestsRef: { current: state },
+    setPendingRequests: (update) => { state = update(state); },
+    enqueueCommand: async () => { throw new Error('Browser commands must not run'); },
+  };
+  const oldRequest = providerCallback('requestPurchase', context);
+  const oldDecision = providerCallback('decidePurchase', context);
+  a.invalidate();
+  const b = new PersistedBrowserOwner(storage);
+  await b.initialize('B', async () => {});
+  await assert.rejects(oldRequest({ idempotencyKey: 'shared-key' }), /ownership/);
+  await assert.rejects(oldDecision({ requestId: request.requestId, quoteVersion: 1, decision: 'defer' }), /ownership/);
+  assert.equal(state[0].status, 'pending_approval');
+  const bContext = { ...context, ownerIsReady: () => b.isReady('B') };
+  const currentRequest = providerCallback('requestPurchase', bContext);
+  const currentDecision = providerCallback('decidePurchase', bContext);
+  assert.equal((await currentRequest({ idempotencyKey: 'shared-key' })).requestId, request.requestId);
+  assert.equal((await currentDecision({ requestId: request.requestId, quoteVersion: 1, decision: 'defer' })).outcome, 'deferred');
+  assert.equal(state[0].status, 'deferred');
+});
+
 test('(j.10) coordinateConvexOneTapApproval reuses existing pending approval and fails closed on stale_quote', async () => {
   const quote = {
     retailer: 'amazon',
@@ -3426,4 +3512,3 @@ test('(k.3) [MEDIUM] immediate reconcileViaSyncOrders executes strictly inside r
     'second_command:start',
   ]);
 });
-

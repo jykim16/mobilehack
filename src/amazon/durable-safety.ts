@@ -7,6 +7,7 @@ export interface DurableSafetyStorage {
 
 const OWNER_KEY = 'amazon_browser_owner_v1';
 let claimTail: Promise<unknown> = Promise.resolve();
+let ownerTail: Promise<unknown> = Promise.resolve();
 let activeBrowserOwner: PersistedBrowserOwner | null = null;
 
 function intentKey(shopperId: string, orderRef: string): string {
@@ -16,7 +17,9 @@ function intentKey(shopperId: string, orderRef: string): string {
 
 export class DurableSubmissionClaims {
   private storage: DurableSafetyStorage;
-  constructor(storage: DurableSafetyStorage) { this.storage = storage; }
+  constructor(storage: DurableSafetyStorage) {
+    this.storage = storage;
+  }
 
   claim(shopperId: string | null, orderRef: string, submittedAt: number): Promise<boolean> {
     const work = claimTail.then(async () => {
@@ -39,13 +42,25 @@ export class DurableSubmissionClaims {
 export class PersistedBrowserOwner {
   private owner: string | null = null;
   private generation = 0;
+  private mounted = true;
   private listeners = new Set<() => void>();
 
   private storage: DurableSafetyStorage;
-  constructor(storage: DurableSafetyStorage) { this.storage = storage; }
+  constructor(storage: DurableSafetyStorage) {
+    this.storage = storage;
+  }
 
   isReady(shopperId: string | null): boolean {
-    return Boolean(activeBrowserOwner === this && shopperId && this.owner === shopperId);
+    return Boolean(this.mounted && activeBrowserOwner === this && shopperId && this.owner === shopperId);
+  }
+
+  activate(): void {
+    this.mounted = true;
+  }
+
+  deactivate(): void {
+    this.mounted = false;
+    this.invalidate();
   }
 
   subscribe = (listener: () => void): (() => void) => {
@@ -59,28 +74,34 @@ export class PersistedBrowserOwner {
     for (const listener of this.listeners) listener();
   }
 
-  async initialize(shopperId: string | null, reset: () => Promise<void>, forceReset = false): Promise<boolean> {
+  initialize(shopperId: string | null, reset: () => Promise<void>, forceReset = false): Promise<boolean> {
+    if (!this.mounted) return Promise.resolve(false);
     activeBrowserOwner?.invalidate();
     activeBrowserOwner = this;
     this.invalidate();
     const generation = this.generation;
-    try {
-      const persisted = await this.storage.getItem(OWNER_KEY);
-      if (generation !== this.generation) return false;
-      if (forceReset || !shopperId || persisted !== shopperId) {
-        await this.storage.setItem(OWNER_KEY, '');
-        await reset();
+    const work = ownerTail.then(async () => {
+      try {
+        if (!this.mounted || generation !== this.generation) return false;
+        const persisted = await this.storage.getItem(OWNER_KEY);
         if (generation !== this.generation) return false;
-        if (!shopperId) return false;
-        await this.storage.setItem(OWNER_KEY, shopperId);
+        if (forceReset || !shopperId || persisted !== shopperId) {
+          await this.storage.setItem(OWNER_KEY, '');
+          await reset();
+          if (generation !== this.generation) return false;
+          if (!shopperId) return false;
+          await this.storage.setItem(OWNER_KEY, shopperId);
+        }
+        if (generation !== this.generation || await this.storage.getItem(OWNER_KEY) !== shopperId) return false;
+        if (generation !== this.generation) return false;
+        this.owner = shopperId;
+        for (const listener of this.listeners) listener();
+        return Boolean(shopperId);
+      } catch {
+        return false;
       }
-      if (generation !== this.generation || await this.storage.getItem(OWNER_KEY) !== shopperId) return false;
-      if (generation !== this.generation) return false;
-      this.owner = shopperId;
-      for (const listener of this.listeners) listener();
-      return Boolean(shopperId);
-    } catch {
-      return false;
-    }
+    });
+    ownerTail = work.catch(() => undefined);
+    return work;
   }
 }

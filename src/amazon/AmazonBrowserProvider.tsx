@@ -357,6 +357,7 @@ export function AmazonBrowserProvider({
   const convexSyncRef = useRef<ConvexAmazonSyncClient | undefined>(convexSync);
   const [sessionBarrier] = useState(() => new SessionResetBarrier());
   useLayoutEffect(() => {
+    browserOwner.activate();
     let wasReady = browserOwner.isReady(shopperId);
     const unsubscribe = browserOwner.subscribe(() => {
       const ready = browserOwner.isReady(shopperId);
@@ -367,7 +368,7 @@ export function AmazonBrowserProvider({
     });
     return () => {
       unsubscribe();
-      browserOwner.invalidate();
+      browserOwner.deactivate();
       sessionBarrier.beginReset({ requiresBrowserSignOut: Platform.OS !== 'web' });
     };
   }, [browserOwner, sessionBarrier, shopperId]);
@@ -426,6 +427,7 @@ export function AmazonBrowserProvider({
       syncClient: ConvexAmazonSyncClient | undefined;
       checkoutCoordinator: ConvexCheckoutCoordinator | undefined;
     }) => {
+      if (!ownerIsReady()) return;
       autoConvexSyncRef.current = bridge.syncClient;
       autoCheckoutCoordinatorRef.current = bridge.checkoutCoordinator;
       const effective = convexSync ?? bridge.syncClient;
@@ -858,11 +860,12 @@ export function AmazonBrowserProvider({
   );
 
   const closeBrowserSheet = useCallback(() => {
+    if (!ownerIsReady()) return;
     setIsSheetOpen(false);
     if (!isSignedInRef.current) {
       settleSignInWaiters(false);
     }
-  }, [settleSignInWaiters]);
+  }, [ownerIsReady, settleSignInWaiters]);
 
   const checkSession = useCallback((): Promise<AmazonSessionCheckResult> => {
     const callerEpoch = sessionBarrier.epoch;
@@ -1404,6 +1407,7 @@ export function AmazonBrowserProvider({
 
   const placeOrder = useCallback(
     async (input: AmazonPlaceOrderInput): Promise<AmazonPlaceOrderResult> => {
+      if (!ownerIsReady()) throw new Error('Amazon browser ownership is not verified.');
       const dryRun = input.dryRun ?? true;
       const userConfirmed = input.userConfirmed ?? false;
       const orderRef = input.orderRef ?? `CART-${Date.now().toString(36).toUpperCase()}`;
@@ -1678,7 +1682,7 @@ export function AmazonBrowserProvider({
         return settled;
       });
     },
-    [enqueueCommand, evalStep, getCheckoutQuote, runVerifiedBrowserLogout, sessionBarrier, shopperId, submissionClaims, syncQueue, waitForNextPageReady],
+    [enqueueCommand, evalStep, getCheckoutQuote, runVerifiedBrowserLogout, ownerIsReady, sessionBarrier, shopperId, submissionClaims, syncQueue, waitForNextPageReady],
   );
 
   const runSyncOrdersUnlocked = useCallback(
@@ -2107,6 +2111,7 @@ export function AmazonBrowserProvider({
 
   const checkoutAmazonItem = useCallback(
     async (input: AmazonCheckoutItemInput): Promise<AmazonPlaceOrderResult> => {
+      if (!ownerIsReady()) throw new Error('Amazon browser ownership is not verified.');
       if (sessionBarrier.isLogoutPending) {
         await enqueueCommand(() => runVerifiedBrowserLogout(sessionBarrier.epoch));
       }
@@ -2373,9 +2378,11 @@ export function AmazonBrowserProvider({
       quantity?: number;
       idempotencyKey: string;
     }) => {
+      if (!ownerIsReady()) throw new Error('Amazon browser ownership is not verified.');
       if (sessionBarrier.isLogoutPending) {
         await enqueueCommand(() => runVerifiedBrowserLogout(sessionBarrier.epoch));
       }
+      if (!ownerIsReady()) throw new Error('Amazon browser ownership is not verified.');
       const startEpoch = sessionBarrier.epoch;
       return executeIdempotentAddItem({
         idempotencyMap: idempotencyMapRef.current,
@@ -2390,7 +2397,7 @@ export function AmazonBrowserProvider({
           }),
       });
     },
-    [addToCart, enqueueCommand, runVerifiedBrowserLogout, sessionBarrier],
+    [addToCart, enqueueCommand, runVerifiedBrowserLogout, ownerIsReady, sessionBarrier],
   );
 
   const setQuantity = useCallback(
@@ -2514,9 +2521,11 @@ export function AmazonBrowserProvider({
       reason: string;
       idempotencyKey: string;
     }) => {
+      if (!ownerIsReady()) throw new Error('Amazon browser ownership is not verified.');
       if (sessionBarrier.isLogoutPending) {
         await enqueueCommand(() => runVerifiedBrowserLogout(sessionBarrier.epoch));
       }
+      if (!ownerIsReady()) throw new Error('Amazon browser ownership is not verified.');
       const startEpoch = sessionBarrier.epoch;
       const knownReqId = idempotencyMapRef.current.get(args.idempotencyKey);
       const existingReq = knownReqId
@@ -2589,7 +2598,7 @@ export function AmazonBrowserProvider({
         quote: quoteRes.quote,
       };
     },
-    [enqueueCommand, getCheckoutQuote, runVerifiedBrowserLogout, sessionBarrier, syncQueue],
+    [enqueueCommand, getCheckoutQuote, runVerifiedBrowserLogout, ownerIsReady, sessionBarrier, syncQueue],
   );
 
   const decidePurchase = useCallback(
@@ -2604,9 +2613,11 @@ export function AmazonBrowserProvider({
       request: PurchaseRequest;
       orderResult?: AmazonPlaceOrderResult;
     }> => {
+      if (!ownerIsReady()) throw new Error('Amazon browser ownership is not verified.');
       if (sessionBarrier.isLogoutPending) {
         await enqueueCommand(() => runVerifiedBrowserLogout(sessionBarrier.epoch));
       }
+      if (!ownerIsReady()) throw new Error('Amazon browser ownership is not verified.');
       const startEpoch = sessionBarrier.epoch;
       const existing = pendingRequestsRef.current.find((r) => r.requestId === args.requestId);
       if (!existing) {
@@ -2812,7 +2823,7 @@ export function AmazonBrowserProvider({
 
       return { outcome: 'invalid_state', request: existing, orderResult };
     },
-    [enqueueCommand, placeOrder, runVerifiedBrowserLogout, sessionBarrier, syncQueue],
+    [enqueueCommand, placeOrder, runVerifiedBrowserLogout, ownerIsReady, sessionBarrier, syncQueue],
   );
 
   const status: AmazonSessionStatus =
@@ -2823,16 +2834,17 @@ export function AmazonBrowserProvider({
     typeof shopperId === 'string' && shopperId.trim().length > 0 ? shopperId.trim() : null;
 
   const noteKnownConvexPurchases = useCallback((convexPurchases: Purchase[]) => {
+    if (!ownerIsReady()) return;
     for (const p of convexPurchases) {
       if (p.retailerOrderId && p.orderRef) {
         knownConvexOrderRefByRetailerIdRef.current.set(p.retailerOrderId, p.orderRef);
       }
     }
-  }, []);
+  }, [ownerIsReady]);
 
   const enqueueQuoteSync = useCallback(
     (args: AttachClientQuoteArgs) => {
-      if (sessionBarrier.isLogoutPending) {
+      if (!ownerIsReady() || sessionBarrier.isLogoutPending) {
         return Promise.resolve({
           synced: 0,
           remaining: syncQueue.pendingCount,
@@ -2841,12 +2853,12 @@ export function AmazonBrowserProvider({
       }
       return syncQueue.enqueueQuote(args, convexSyncRef.current);
     },
-    [sessionBarrier, syncQueue],
+    [ownerIsReady, sessionBarrier, syncQueue],
   );
 
   const enqueueShipmentSync = useCallback(
     (args: SyncClientShipmentArgs) => {
-      if (sessionBarrier.isLogoutPending) {
+      if (!ownerIsReady() || sessionBarrier.isLogoutPending) {
         return Promise.resolve({
           synced: 0,
           remaining: syncQueue.pendingCount,
@@ -2855,15 +2867,18 @@ export function AmazonBrowserProvider({
       }
       return syncQueue.enqueueShipment(args, convexSyncRef.current);
     },
-    [sessionBarrier, syncQueue],
+    [ownerIsReady, sessionBarrier, syncQueue],
   );
 
   const daemonBridgeValue = useMemo<AmazonDaemonBridgeValue>(
     () => ({
       hasCustomConvexSync: Boolean(convexSync),
       registerAutoConvexBridge,
-      getSyncedCartLedger: () => syncedCartLedger,
-      getShopperId: () => normalizedShopperId,
+      getSyncedCartLedger: () => {
+        if (!ownerIsReady()) throw new Error('Amazon browser ownership is not verified.');
+        return syncedCartLedger;
+      },
+      getShopperId: () => ownerIsReady() ? normalizedShopperId : null,
       isSignedIn: () => ownerIsReady() && isSignedInRef.current,
       isSheetOpen: () => isSheetOpenRef.current,
       isResetting: () => !ownerIsReady() || sessionBarrier.isLogoutPending,
