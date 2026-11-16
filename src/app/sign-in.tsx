@@ -1,11 +1,14 @@
 import { useAuthActions } from '@convex-dev/auth/react';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { KeyboardAvoidingView, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { PillButton } from '@/components/pill-button';
 import { Wordmark } from '@/components/wordmark';
 import { Radius, Spacing, Type, useColors, useThemedStyles, type Palette } from '@/constants/theme';
+import { useShop } from '@/data/shop-store';
+import { signInTestUser } from '@/data/test-user';
+import { testUser } from '@/data/test-user-config';
 import { rememberAccountEmail } from '@/lib/session';
 
 type Flow = 'signUp' | 'signIn';
@@ -24,15 +27,19 @@ export default function SignInScreen() {
   const styles = useThemedStyles(createStyles);
   const insets = useSafeAreaInsets();
   const { signIn } = useAuthActions();
+  const { prepareTestCart } = useShop();
   const [flow, setFlow] = useState<Flow>('signUp');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const canSubmit = email.trim().length > 0 && password.length > 0 && !busy;
+  const [testBusy, setTestBusy] = useState(false);
+  const authInFlight = useRef(false);
+  const canSubmit = email.trim().length > 0 && password.length > 0 && !busy && !testBusy;
 
   const submit = async () => {
-    if (!canSubmit) return;
+    if (!canSubmit || authInFlight.current) return;
+    authInFlight.current = true;
     setBusy(true);
     setError(null);
     try {
@@ -42,6 +49,23 @@ export default function SignInScreen() {
     } catch (e) {
       setError(authError(e, flow));
       setBusy(false);
+      authInFlight.current = false;
+    }
+  };
+
+  const signInAsTestUser = async () => {
+    if (!testUser || authInFlight.current) return;
+    authInFlight.current = true;
+    setTestBusy(true);
+    setError(null);
+    try {
+      await signInTestUser(signIn, testUser);
+      prepareTestCart();
+      await rememberAccountEmail(testUser.email);
+    } catch (e) {
+      setError(authError(e, 'signIn'));
+      setTestBusy(false);
+      authInFlight.current = false;
     }
   };
 
@@ -91,6 +115,7 @@ export default function SignInScreen() {
         />
         <Pressable
           accessibilityRole="button"
+          disabled={busy || testBusy}
           hitSlop={8}
           onPress={() => {
             setFlow(flow === 'signUp' ? 'signIn' : 'signUp');
@@ -102,6 +127,16 @@ export default function SignInScreen() {
             </Text>
           )}
         </Pressable>
+        {testUser && (
+          <PillButton
+            label="Sign in as test user"
+            size="small"
+            loading={testBusy}
+            disabled={busy}
+            onPress={signInAsTestUser}
+            style={styles.testUser}
+          />
+        )}
       </View>
     </KeyboardAvoidingView>
   );
@@ -124,4 +159,5 @@ const createStyles = (Colors: Palette) => StyleSheet.create({
     backgroundColor: Colors.surface,
   },
   toggle: { ...Type.body, color: Colors.textSecondary, textAlign: 'center' },
+  testUser: { alignSelf: 'center', marginTop: Spacing.sm },
 });

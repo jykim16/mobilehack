@@ -1,6 +1,8 @@
+import { useAuthToken } from '@convex-dev/auth/react';
+import { ConvexHttpClient } from 'convex/browser';
 import { useAction, useConvex, useMutation, useQueries, useQuery, type ConvexReactClient } from 'convex/react';
 import { ConvexError } from 'convex/values';
-import { createContext, use, useCallback, useEffect, useState, type ReactNode } from 'react';
+import { createContext, use, useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 
 import { convexConfigured, useSession } from '@/lib/session';
 
@@ -8,6 +10,7 @@ import * as cartApi from './cart-api';
 import { api } from './convex-api';
 import { mockComparison } from './mock-comparison';
 import { mockReviews } from './mock-reviews';
+import { ensureTestUserItem, testUserSession } from './test-user';
 import type {
   CartItem,
   DecideOutcome,
@@ -50,6 +53,7 @@ interface ShopState {
   setQuantity: (itemId: string, quantity: number) => Promise<void>;
   removeItem: (itemId: string) => Promise<void>;
   loadDemoCart: () => Promise<void>;
+  prepareTestCart: () => void;
   /** Quotes the item and approves that quote in one step; throws a short message when no order was placed. */
   checkoutItem: (item: CartItem) => Promise<void>;
 }
@@ -144,6 +148,10 @@ const countOf = (items: CartItem[]) => items.reduce((sum, item) => sum + item.qu
 function LiveShopProvider({ children }: { children: ReactNode }) {
   const session = useSession();
   const signedIn = session === 'signed_in';
+  const authToken = useAuthToken();
+  const authSession = testUserSession(authToken);
+  const latestAuthToken = useRef(authToken);
+  useEffect(() => { latestAuthToken.current = authToken; }, [authToken]);
   const convex = useConvex();
 
   const items = useQuery(api.cart.listItems, signedIn ? {} : 'skip');
@@ -164,11 +172,42 @@ function LiveShopProvider({ children }: { children: ReactNode }) {
   const setupMyCart = useMutation(api.demo.setupMyCart);
   const requestPurchase = useAction(api.purchases.requestPurchase);
   const decidePurchase = useMutation(api.purchases.decidePurchase);
+  const [testCartPending, setTestCartPending] = useState<object | null>(null);
+  const [testCartError, setTestCartError] = useState<{ session: string; message: string } | null>(null);
+  const testCartSession = useRef<{ request: object; session: string } | null>(null);
+
+  useEffect(() => {
+    if (!testCartPending) return;
+    if (testCartSession.current?.request === testCartPending && testCartSession.current.session !== authSession) {
+      setTestCartPending(null);
+      return;
+    }
+    const token = latestAuthToken.current;
+    if (!authSession || !token) return;
+    testCartSession.current = { request: testCartPending, session: authSession };
+    if (!signedIn) return;
+    const testClient = new ConvexHttpClient(convex.url);
+    testClient.setAuth(token);
+    let active = true;
+    ensureTestUserItem(
+      () => testClient.query(api.cart.listItems, {}),
+      (args) => testClient.mutation(api.cart.addItem, args),
+      () => active
+    )
+      .then(() => { if (active) setTestCartError(null); })
+      .catch(() => {
+        if (active) setTestCartError({ session: authSession, message: "Couldn't add the demo item. Sign out and try again." });
+      })
+      .finally(() => {
+        if (active) setTestCartPending((request) => request === testCartPending ? null : request);
+      });
+    return () => { active = false; };
+  }, [testCartPending, signedIn, authSession, convex]);
 
   const value: ShopState = {
     live: true,
-    ready: items !== undefined && purchases !== undefined,
-    error: null,
+    ready: items !== undefined && purchases !== undefined && !testCartPending,
+    error: testCartError?.session === authSession ? testCartError.message : null,
     items: items ?? [],
     purchases: purchases ?? [],
     purchasedItems,
@@ -191,6 +230,7 @@ function LiveShopProvider({ children }: { children: ReactNode }) {
     loadDemoCart: async () => {
       await setupMyCart({});
     },
+    prepareTestCart: () => setTestCartPending({}),
     checkoutItem: async (item) => {
       const request = await placeOrder(
         item,
@@ -261,6 +301,7 @@ function MockShopProvider({ children }: { children: ReactNode }) {
       await refresh();
     },
     loadDemoCart: refresh,
+    prepareTestCart: () => {},
     checkoutItem: async (item) => {
       try {
         await placeOrder(
