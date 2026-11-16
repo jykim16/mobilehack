@@ -38,6 +38,17 @@ export async function signInTestUser(signIn: PasswordSignIn, credentials: TestUs
 export const TEST_USER_ITEM_URL = 'https://www.amazon.com/dp/B0F3PQHWTZ';
 export const TEST_USER_SEED_KEY = 'test-user-xm6-v1';
 
+export function testUserSession(token: string | null): string | null {
+  if (!token) return null;
+  try {
+    const payload = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+    const claims = JSON.parse(atob(payload));
+    return typeof claims.sub === 'string' && claims.sub.length > 0 ? claims.sub : null;
+  } catch {
+    return null;
+  }
+}
+
 export function isTestUserItem(url: string) {
   try {
     const parsed = new URL(url);

@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
+import { Buffer } from 'node:buffer';
 import { test } from 'node:test';
 
-import { ensureTestUserItem, getTestUser, isTestUserItem, signInTestUser, TEST_USER_ITEM_URL, TEST_USER_SEED_KEY } from '../test-user.ts';
+import { ensureTestUserItem, getTestUser, isTestUserItem, signInTestUser, testUserSession, TEST_USER_ITEM_URL, TEST_USER_SEED_KEY } from '../test-user.ts';
 
 const credentials = { email: 'fixture@example.invalid', password: '*'.repeat(12) };
 const config = { ...credentials, enabled: 'true', environment: 'preview', channel: 'preview', development: false };
@@ -95,4 +96,27 @@ test('a session switch during the list request cancels the seed mutation', async
   active = false;
   resolveItems([]);
   await pending;
+});
+
+const tokenFor = (sub, issuedAt) => `fixture.${Buffer.from(JSON.stringify({ sub, iat: issuedAt })).toString('base64url')}.unsigned`;
+
+test('same-session token refresh during the list request still seeds once', async () => {
+  let token = tokenFor('demo-user|demo-session', 1);
+  const session = testUserSession(token);
+  let resolveItems;
+  let additions = 0;
+  const items = new Promise((resolve) => { resolveItems = resolve; });
+  const pending = ensureTestUserItem(() => items, async () => { additions++; }, () => testUserSession(token) === session);
+  token = tokenFor('demo-user|demo-session', 2);
+  assert.equal(testUserSession(token), session);
+  resolveItems([]);
+  await pending;
+  assert.equal(additions, 1);
+});
+
+test('new sessions, sign-out, and malformed tokens do not share a seed scope', () => {
+  const session = testUserSession(tokenFor('demo-user|first-session', 1));
+  assert.notEqual(testUserSession(tokenFor('demo-user|next-session', 2)), session);
+  assert.notEqual(testUserSession(tokenFor('normal-user|other-session', 2)), session);
+  for (const token of [null, '', 'invalid', 'fixture.e30.unsigned']) assert.equal(testUserSession(token), null);
 });
