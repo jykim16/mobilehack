@@ -36,13 +36,19 @@ function AmazonRow() {
 
   if (Platform.OS === 'web') return <Row icon="logo-amazon" title="Connect Amazon" detail="Available in the Cart app" />;
   if (settled === 'connected') {
-    return <Row icon="logo-amazon" title="Amazon · Connected" detail={formatRelativeSyncTime(lastSyncedAt)} />;
+    return (
+      <Row
+        icon="logo-amazon"
+        title="Amazon · Connected"
+        detail={`Dry-run checkout · ${formatRelativeSyncTime(lastSyncedAt)}`}
+      />
+    );
   }
   return (
     <Row
       icon="logo-amazon"
       title="Connect Amazon"
-      detail="Sign in so Cart can check out and track your orders"
+      detail="Checkout preview only. No order will be placed."
       onPress={settled === 'signed_out' ? () => openBrowserSheet() : undefined}
     />
   );

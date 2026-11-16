@@ -1,9 +1,8 @@
 import { router } from 'expo-router';
-import { useEffect } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { formatRelativeSyncTime, useAmazonCartAdapter, useAmazonSession } from '@/amazon';
+import { formatRelativeSyncTime, useAmazonCartAdapter } from '@/amazon';
 import { ItemCard } from '@/components/item-card';
 import { PillButton } from '@/components/pill-button';
 import { RetailerHeader } from '@/components/retailer-header';
@@ -17,13 +16,6 @@ export default function PurchasesScreen() {
   const insets = useSafeAreaInsets();
   const { ready, purchases: shopPurchases, purchasedItems, addItem } = useShop();
   const amazon = useAmazonCartAdapter();
-  const { status, syncOrders } = useAmazonSession();
-  const connected = status === 'connected';
-
-  useEffect(() => {
-    if (connected) void syncOrders().catch(() => undefined);
-  }, [connected, syncOrders]);
-
   const amazonOrders = new Map(amazon.purchases.map((p) => [p.retailerOrderId, p]));
   const purchases = shopPurchases.map((p) => {
     const tracked = p.retailerOrderId ? amazonOrders.get(p.retailerOrderId) : undefined;

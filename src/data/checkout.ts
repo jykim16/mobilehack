@@ -6,14 +6,6 @@ import { extractAsin, useAmazonSession, type AmazonPlaceOrderResult } from '@/am
 import { useShop } from './shop-store';
 import type { CartItem } from './types';
 
-/**
- * One-tap checkout for a cart item. In the live app on iOS and Android, Amazon items go through
- * useAmazonSession().checkoutAmazonItem, which signs in when needed, places the real Amazon order in the
- * background browser, and records it in Convex; the tap is the shopper's confirmation. When Amazon stops
- * mid-checkout for a sign-in step, the sheet reopens on that challenge, unless the shopper just closed it. Every other item, and every item on web or in the offline
- * demo, uses the Convex quote-and-approve path. Amazon orders are real money: one attempt per tap, never
- * retried, and a second tap on the same item while one is in flight is refused.
- */
 export function useCheckout(): (item: CartItem) => Promise<void> {
   const { live, checkoutItem } = useShop();
   const { checkoutAmazonItem, openBrowserSheet } = useAmazonSession();
@@ -26,7 +18,7 @@ export function useCheckout(): (item: CartItem) => Promise<void> {
       if (placing.current.has(item.id)) throw new Error('This order is already being placed.');
       placing.current.add(item.id);
       try {
-        const result = await checkoutAmazonItem({ item });
+        const result = await checkoutAmazonItem({ item, dryRun: true });
         if (result.status === 'requires_signin' && !/dismiss|closed|cancel/i.test(result.reason ?? '')) openBrowserSheet();
         if (result.status !== 'placed') throw new Error(amazonFailureMessage(result));
       } finally {
