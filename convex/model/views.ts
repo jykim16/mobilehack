@@ -30,10 +30,91 @@ export function offerView(offer: Doc<"offers">, variantLabel: string | null) {
   };
 }
 
+/**
+ * Cross-store points for the same product: our own observations at every retailer
+ * that carried it, plus what a cross-store comparison reported and when. They are
+ * labeled by retailer, so a row never implies we watched a store we only sampled.
+ */
+async function storePointsFor(
+  ctx: QueryCtx,
+  offer: Doc<"offers">,
+  cartItemId: Id<"cartItems">,
+) {
+  const siblings = await ctx.db
+    .query("offers")
+    .withIndex("by_productId", (q) => q.eq("productId", offer.productId))
+    .take(20);
+  const points: {
+    observedAt: number;
+    priceCents: number;
+    retailer: string;
+    retailerName: string;
+    source: string;
+    simulated: boolean;
+  }[] = [];
+  for (const sibling of siblings) {
+    const obs = await ctx.db
+      .query("priceObservations")
+      .withIndex("by_offerId_and_observedAt", (q) => q.eq("offerId", sibling._id))
+      .order("asc")
+      .take(200);
+    for (const o of obs) {
+      points.push({
+        observedAt: o.observedAt,
+        priceCents: o.priceCents,
+        retailer: sibling.retailer,
+        retailerName: sibling.retailerName,
+        source: o.source,
+        simulated: o.simulated,
+      });
+    }
+  }
+  const comparisons = await ctx.db
+    .query("priceComparisons")
+    .withIndex("by_cartItemId", (q) => q.eq("cartItemId", cartItemId))
+    .take(10);
+  for (const comparison of comparisons) {
+    for (const row of comparison.offers) {
+      const priceCents = row.priceCents;
+      if (row.rejectedReason !== null || priceCents === null || priceCents === undefined || priceCents <= 0) continue;
+      points.push({
+        observedAt: comparison.checkedAt ?? comparison._creationTime,
+        priceCents: priceCents as number,
+        retailer: row.retailer,
+        retailerName: row.retailer,
+        source: "Cross-store comparison (reported by Exa)",
+        simulated: false,
+      });
+    }
+  }
+  points.sort((a, b) => a.observedAt - b.observedAt);
+  const byRetailer = new Map<string, { retailer: string; retailerName: string; points: typeof points }>();
+  for (const point of points) {
+    const entry = byRetailer.get(point.retailer) ?? {
+      retailer: point.retailer,
+      retailerName: point.retailerName,
+      points: [],
+    };
+    entry.points.push(point);
+    byRetailer.set(point.retailer, entry);
+  }
+  const stores = [...byRetailer.values()]
+    .map((store) => ({
+      retailer: store.retailer,
+      retailerName: store.retailerName,
+      latestCents: store.points[store.points.length - 1].priceCents,
+      lowCents: Math.min(...store.points.map((p) => p.priceCents)),
+      observationCount: store.points.length,
+    }))
+    .sort((a, b) => a.latestCents - b.latestCents);
+  return { points, stores, storeCount: stores.length };
+}
+
 async function priceHistoryFor(
   ctx: QueryCtx,
   offer: Doc<"offers">,
   history: Doc<"evidence"> | null,
+  cartItemId: Id<"cartItems">,
 ) {
   const obs = await ctx.db
     .query("priceObservations")
@@ -53,10 +134,14 @@ async function priceHistoryFor(
   });
 
   const h = history?.history ?? null;
+  const crossStore = await storePointsFor(ctx, offer, cartItemId);
   const base = {
     observationCount: obs.length,
     currentCents: offer.priceCents,
     trackingSinceAdded: obs.length <= 1,
+    storePoints: crossStore.points,
+    stores: crossStore.stores,
+    storeCount: crossStore.storeCount,
   };
 
   if (h && (h.mode === "live" || h.mode === "sampled") && h.points.length > 0) {
@@ -324,6 +409,7 @@ export async function cartItemView(
           ctx,
           offer,
           evidenceDocs.find((e) => e.section === "priceHistory") ?? null,
+          item._id,
         )
       : null,
     decision: item.decision
