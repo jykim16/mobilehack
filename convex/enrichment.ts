@@ -1332,3 +1332,57 @@ export const refreshPriceHistory = internalMutation({
     return items.length;
   },
 });
+
+export const offerForRevalidation = internalQuery({
+  args: { offerId: v.id("offers") },
+  handler: async (ctx, { offerId }) => await ctx.db.get("offers", offerId),
+});
+
+/**
+ * Re-reads the retailer page immediately before money moves and reports whether the
+ * quoted total still stands. A page we cannot read is reported as unavailable, never
+ * as unchanged.
+ */
+export const revalidateOffer = internalAction({
+  args: { offerId: v.id("offers") },
+  handler: async (
+    ctx,
+    { offerId },
+  ): Promise<{
+    status: "unchanged" | "changed" | "unavailable";
+    totalCents: number | null;
+    note: string | null;
+  }> => {
+    const offer = await ctx.runQuery(internal.enrichment.offerForRevalidation, { offerId });
+    if (!offer) return { status: "unavailable", totalCents: null, note: "The offer no longer exists." };
+    const extraction = await extractWithCache(ctx, offer.url, offer.canonicalKey, true);
+    if (!extraction.offer || extraction.offer.priceCents === null) {
+      return {
+        status: "unavailable",
+        totalCents: null,
+        note: extraction.error
+          ? `The retailer page could not be re-read (${extraction.error}), so nothing was charged.`
+          : "The retailer page could not be re-read, so nothing was charged.",
+      };
+    }
+    const liveTotal = extraction.offer.priceCents + offer.shippingCents;
+    if (extraction.offer.availability && /out of stock|unavailable/i.test(extraction.offer.availability)) {
+      return {
+        status: "changed",
+        totalCents: liveTotal,
+        note: "The retailer now shows this item as unavailable, so the order needs a fresh approval.",
+      };
+    }
+    const quotedTotal = offer.priceCents + offer.shippingCents;
+    if (liveTotal !== quotedTotal) {
+      return {
+        status: "changed",
+        totalCents: liveTotal,
+        note: `The retailer price moved from ${(quotedTotal / 100).toFixed(2)} to ${(
+          liveTotal / 100
+        ).toFixed(2)} (read ${describeAge(extraction.observedAt)}), so the order needs a fresh approval.`,
+      };
+    }
+    return { status: "unchanged", totalCents: liveTotal, note: null };
+  },
+});

@@ -102,6 +102,7 @@ export const purchaseStatus = v.union(
 export type PurchaseStatus = Infer<typeof purchaseStatus>;
 
 export const orderStatus = v.union(
+  v.literal("awaiting_payment"),
   v.literal("submitting"),
   v.literal("awaiting_client"),
   v.literal("placed"),
