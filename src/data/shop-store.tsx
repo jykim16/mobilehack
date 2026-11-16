@@ -5,7 +5,7 @@ import { ConvexError } from 'convex/values';
 import { createContext, use, useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Platform } from 'react-native';
 
-import { extractAsin, useAmazonCartSync } from '@/amazon';
+import { useAmazonCartSync } from '@/amazon';
 import { convexConfigured, useSession } from '@/lib/session';
 
 import * as cartApi from './cart-api';
@@ -13,7 +13,7 @@ import { CheckoutNotPlaced, checkoutResult } from './checkout-status';
 import { api } from './convex-api';
 import { mockComparison } from './mock-comparison';
 import { mockReviews } from './mock-reviews';
-import { resolveItemOffer } from './offer-identity';
+import { amazonUrlAsin, resolveItemOffer } from './offer-identity';
 import { ensureTestUserItem, testUserSession } from './test-user';
 import type {
   CartItem,
@@ -175,18 +175,21 @@ function LiveShopProvider({ children }: { children: ReactNode }) {
   const setQuantity = useMutation(api.cart.setQuantity);
   const removeItem = useMutation(api.cart.removeItem);
   const amazonCart = useAmazonCartSync();
-  const syncAmazon = (itemId: string, url: string, quantity: number, create: boolean) => {
+  const syncAmazon = (scope: number, itemId: string, url: string, quantity: number, create: boolean) => {
     if (Platform.OS === 'web') return;
     const item = items?.find((i) => i.id === itemId);
-    amazonCart.setIntent({
-      itemId,
-      asin: create ? extractAsin(url) : null,
-      url,
-      title: item?.product?.title ?? '',
-      variantLabel: item?.variant?.label ?? null,
-      quantity,
-      create,
-    });
+    amazonCart.setIntent(
+      {
+        itemId,
+        asin: create ? amazonUrlAsin(url) : null,
+        url,
+        title: item?.product?.title ?? '',
+        variantLabel: item?.variant?.label ?? null,
+        quantity,
+        create,
+      },
+      scope
+    );
   };
   const setupMyCart = useMutation(api.demo.setupMyCart);
   const requestPurchase = useAction(api.purchases.requestPurchase);
@@ -232,14 +235,16 @@ function LiveShopProvider({ children }: { children: ReactNode }) {
     purchasedItems,
     cartCount: countOf(items ?? []),
     addItem: async (url) => {
+      const scope = amazonCart.scope();
       const { itemId } = await addItem({ url, idempotencyKey: idempotencyKey() });
-      syncAmazon(itemId, url, 1, true);
+      syncAmazon(scope, itemId, url, 1, true);
       return itemId;
     },
     addItemFromQuery: async (query) => {
       try {
+        const scope = amazonCart.scope();
         const result = await convex.action(api.cart.addItemFromQuery, { query, idempotencyKey: idempotencyKey() });
-        syncAmazon(result.itemId, result.resolvedUrl, 1, true);
+        syncAmazon(scope, result.itemId, result.resolvedUrl, 1, true);
         return result;
       } catch (e) {
         if (e instanceof Error && /could not find (public )?function/i.test(e.message)) throw new Error('Paste a product URL for now.');
@@ -247,12 +252,14 @@ function LiveShopProvider({ children }: { children: ReactNode }) {
       }
     },
     setQuantity: async (itemId, quantity) => {
+      const scope = amazonCart.scope();
       await setQuantity({ itemId, quantity });
-      syncAmazon(itemId, '', quantity, false);
+      syncAmazon(scope, itemId, '', quantity, false);
     },
     removeItem: async (itemId) => {
+      const scope = amazonCart.scope();
       await removeItem({ itemId });
-      syncAmazon(itemId, '', 0, false);
+      syncAmazon(scope, itemId, '', 0, false);
     },
     loadDemoCart: async () => {
       await setupMyCart({});

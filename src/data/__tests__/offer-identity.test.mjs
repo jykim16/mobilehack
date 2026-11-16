@@ -12,9 +12,9 @@ const modules = {
   '@/amazon': { extractAsin: (url) => url?.match(/\/dp\/([A-Z0-9]{10})/)?.[1] ?? null },
   '@/lib/format': { formatPrice: (cents) => '$' + (cents / 100).toFixed(2) },
 };
-const { resolveItemOffer, alternativeLine } = (() => {
+const { resolveItemOffer, alternativeLine, amazonUrlAsin } = (() => {
   const exports = {};
-  vm.runInNewContext(compiled, { exports, require: (name) => modules[name] });
+  vm.runInNewContext(compiled, { exports, URL, require: (name) => modules[name] });
   return exports;
 })();
 
@@ -81,5 +81,15 @@ test('backend #39 flags are honored even when the client match would pass', () =
 test('an Amazon offer whose ASIN differs from the pasted link is not targeted', () => {
   const resolved = resolveItemOffer({ url: 'https://www.amazon.com/dp/B000000003', offer: offer({}) });
   assert.equal(resolved.checkoutOffer.id, 'black-used');
+  assert.equal(resolved.amazonAsin, null);
+});
+
+test('only amazon.com links yield an ASIN for Amazon cart sync', () => {
+  assert.equal(amazonUrlAsin('https://www.amazon.com/dp/B09XS7JWHH'), 'B09XS7JWHH');
+  assert.equal(amazonUrlAsin('https://smile.amazon.com/dp/B09XS7JWHH'), 'B09XS7JWHH');
+  assert.equal(amazonUrlAsin('https://another-shop.example/product/B09XS7JWHH'), null);
+  assert.equal(amazonUrlAsin('https://amazon.com.evil.example/dp/B09XS7JWHH'), null);
+  assert.equal(amazonUrlAsin('not a url'), null);
+  const resolved = resolveItemOffer({ url: 'https://another-shop.example/dp/B09XS7JWHH', offer: null });
   assert.equal(resolved.amazonAsin, null);
 });

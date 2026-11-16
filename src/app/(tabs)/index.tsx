@@ -239,7 +239,7 @@ export default function CartScreen() {
         <View style={styles.empty}>
           <Text style={styles.emptyBody}>{error}</Text>
         </View>
-      ) : !ready ? null : items.length === 0 && adds.length === 0 ? (
+      ) : !ready ? null : items.length === 0 && adds.length === 0 && removedSync.length === 0 ? (
         <View style={styles.empty}>
           <Text style={styles.emptyTitle}>Your cart is empty</Text>
           <Text style={styles.emptyBody}>Items you or your connected agents save show up here.</Text>

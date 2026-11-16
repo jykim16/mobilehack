@@ -2566,6 +2566,9 @@ export function AmazonBrowserProvider({
         if (!before.snap.signedIn || before.snap.challenge !== 'none') {
           return { kind: 'requires_signin', reason: 'Amazon sign-in is required.' };
         }
+        if (before.rowCount > 1) {
+          return { kind: 'drift', liveQty: before.qty, rowCount: before.rowCount };
+        }
         syncCartRowsToState(before.snap.items, Date.now(), opEpoch);
         if (input.expectedLiveQty !== null && before.qty !== input.expectedLiveQty) {
           return { kind: 'drift', liveQty: before.qty, rowCount: before.rowCount };
@@ -2581,16 +2584,25 @@ export function AmazonBrowserProvider({
         let error: string | undefined;
         try {
           if (input.delta > 0) {
-            const added = await runAddToCartUnlocked(
-              {
-                asin,
-                url: canonicalAmazonProductUrl(asin),
-                quantity: input.delta,
-                variantLabel: input.variantLabel ?? undefined,
-              },
-              opEpoch,
-            );
-            if (!added.ok) error = added.error;
+            // runAddToCartUnlocked's AOD fallback steps the row to an absolute quantity, which is only the
+            // requested delta when the row starts empty; otherwise add one unit per call so it never steps.
+            const batches = before.qty === 0 ? [input.delta] : Array.from({ length: input.delta }, () => 1);
+            for (const quantity of batches) {
+              if (!sessionBarrier.isCurrent(opEpoch)) throw new Error('Amazon session was reset.');
+              const added = await runAddToCartUnlocked(
+                {
+                  asin,
+                  url: canonicalAmazonProductUrl(asin),
+                  quantity,
+                  variantLabel: input.variantLabel ?? undefined,
+                },
+                opEpoch,
+              );
+              if (!added.ok) {
+                error = added.error;
+                break;
+              }
+            }
           } else if (target === 0) {
             const res = await evalStep<{ mutated: boolean; reason?: string }>((reqId) =>
               buildMutateCartRowScript(reqId, asin, 'delete'),
@@ -2619,6 +2631,9 @@ export function AmazonBrowserProvider({
         }
         try {
           const after = await readCart();
+          if (!after.snap.signedIn || after.snap.challenge !== 'none') {
+            return { kind: 'mutated', beforeQty: before.qty, afterQty: null, error: 'Amazon cart could not be read after the update.' };
+          }
           syncCartRowsToState(after.snap.items, Date.now(), opEpoch);
           return { kind: 'mutated', beforeQty: before.qty, afterQty: after.qty, error };
         } catch (readError) {
@@ -2667,7 +2682,8 @@ export function AmazonBrowserProvider({
   const cartSyncValue = useMemo<AmazonCartSyncValue>(
     () => ({
       items: ownerReady ? ownedCartItems : {},
-      setIntent: (input) => ownedCartSync.setIntent(input),
+      scope: () => ownedCartSync.scope(),
+      setIntent: (input, scope) => ownedCartSync.setIntent(input, scope),
       retry: (itemId) => ownedCartSync.retry(itemId),
       dismiss: (itemId) => ownedCartSync.dismiss(itemId),
       resume: () => ownedCartSync.resume(),

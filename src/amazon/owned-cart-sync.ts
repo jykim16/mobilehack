@@ -41,7 +41,9 @@ export interface OwnedCartSyncDeps {
 
 export interface AmazonCartSyncValue {
   items: Record<string, OwnedCartItemState>;
-  setIntent: (input: OwnedCartIntent) => void;
+  /** Capture before a backend request; an intent carrying a stale scope (sign-out, reset, shopper switch) is dropped. */
+  scope: () => number;
+  setIntent: (input: OwnedCartIntent, scope: number) => void;
   retry: (itemId: string) => void;
   dismiss: (itemId: string) => void;
   /** Runs explicit intents still waiting (e.g. when the Cart screen regains focus); never retries failed or conflicted items. */
@@ -77,7 +79,7 @@ export const OWNED_CART_MESSAGES = {
   signIn: 'Sign in to Amazon to sync this item.',
   notApplied: "Amazon didn't update. Tap Retry.",
   unknown: "Couldn't confirm the Amazon cart. Tap Retry to check it again.",
-  driftAdd: 'Your Amazon cart changed outside Cart, so Cart stopped syncing this item. Check your Amazon cart.',
+  driftAdd: "Your Amazon cart doesn't match what Cart expected, so Cart left it unchanged and stopped syncing this item. Check your Amazon cart.",
   driftRemove: 'Your Amazon cart changed outside Cart, so this item was left in Amazon. Remove it there if you need to.',
   mismatch: "Amazon's cart didn't match what Cart expected, so Cart stopped syncing this item. Check your Amazon cart.",
   forfeited: 'Your Amazon cart changed outside Cart, so this item is no longer synced.',
@@ -159,6 +161,8 @@ export class OwnedCartSync {
 
   getItems = (): Record<string, OwnedCartItemState> => this.snapshot.items;
 
+  scope = (): number => this.generation;
+
   get isHydrated(): boolean {
     return this.key !== null;
   }
@@ -197,8 +201,8 @@ export class OwnedCartSync {
   }
 
   /** Explicit Cart intent: desired Cart-owned Amazon quantity for this Cart item (0 = removed). */
-  setIntent(input: OwnedCartIntent): void {
-    if (!this.key) return;
+  setIntent(input: OwnedCartIntent, scope: number): void {
+    if (!this.key || scope !== this.generation) return;
     const desiredQty = clampQty(input.quantity);
     const existing = this.snapshot.items[input.itemId];
     if (!existing) {

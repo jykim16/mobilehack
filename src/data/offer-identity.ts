@@ -54,8 +54,19 @@ function sameListing(saved: Offer, candidate: Offer): boolean {
   return savedAsin !== null && savedAsin === extractAsin(candidate.url);
 }
 
+/** The ASIN of an amazon.com product link; null for any other host, even when its path looks like an ASIN. */
+export function amazonUrlAsin(url: string | null | undefined): string | null {
+  if (!url) return null;
+  try {
+    const { hostname } = new URL(url.trim());
+    return /(^|\.)amazon\.com$/i.test(hostname) ? extractAsin(url) : null;
+  } catch {
+    return null;
+  }
+}
+
 function amazonAsinFor(itemUrl: string, offer: Offer | null): string | null {
-  const urlAsin = extractAsin(itemUrl);
+  const urlAsin = amazonUrlAsin(itemUrl);
   if (!offer) return urlAsin;
   if (offer.retailer !== 'amazon') return null;
   const offerAsin = extractAsin(offer.url);

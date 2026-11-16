@@ -18,7 +18,7 @@ const extractAsin = (url) => url?.match(/\/dp\/([A-Z0-9]{10})/)?.[1] ?? null;
 function loadOfferIdentity() {
   const exports = {};
   const modules = { '@/amazon': { extractAsin }, '@/lib/format': { formatPrice: (cents) => `${(cents / 100).toFixed(2)}` } };
-  vm.runInNewContext(identityCompiled, { exports, require: (name) => {
+  vm.runInNewContext(identityCompiled, { exports, URL, require: (name) => {
     assert.ok(Object.hasOwn(modules, name), `Unexpected module: ${name}`);
     return modules[name];
   } });
