@@ -208,11 +208,11 @@ export async function refundPayment(
   config: WhopConfig,
   input: { paymentId: string; amountCents?: number; reason?: string },
 ): Promise<WhopResult<{ id: string }>> {
-  return await whopFetch<{ id: string }>(config, "/refunds", {
+  // Whop refunds a payment in place: POST /payments/{id}/refund.
+  return await whopFetch<{ id: string }>(config, `/payments/${input.paymentId}/refund`, {
     method: "POST",
     idempotencyKey: `refund-${input.paymentId}-${input.amountCents ?? "full"}`,
     body: {
-      payment_id: input.paymentId,
       ...(input.amountCents ? { amount: Number((input.amountCents / 100).toFixed(2)) } : {}),
       reason: input.reason ?? "Cart retailer order could not be fulfilled",
     },
