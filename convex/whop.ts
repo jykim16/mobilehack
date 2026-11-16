@@ -334,14 +334,31 @@ export const handlePaymentEvent = internalAction({
       });
       return null;
     }
-    const recorded = await ctx.runMutation(internal.whop.savePaid, {
+    let recorded: {
+      duplicate: boolean;
+      paymentId: Id<"payments">;
+      mismatch: string | null;
+      requestId: Id<"purchaseRequests">;
+    };
+    try {
+      recorded = await ctx.runMutation(internal.whop.savePaid, {
       providerPaymentId: args.providerPaymentId,
       requestId: args.requestId,
       quoteVersion: args.quoteVersion,
       amountCents: args.amountCents,
       currency: args.currency,
-      paidAt: Date.now(),
-    });
+        paidAt: Date.now(),
+      });
+    } catch (e) {
+      // A payment we cannot tie to an approved quote is recorded, never dropped.
+      await ctx.runMutation(internal.whop.finishEvent, {
+        eventId: args.eventId,
+        outcome: `payment ${args.providerPaymentId} could not be recorded: ${
+          e instanceof Error ? e.message : String(e)
+        }`.slice(0, 240),
+      });
+      return null;
+    }
     await ctx.runMutation(internal.whop.finishEvent, {
       eventId: args.eventId,
       outcome: recorded.duplicate
@@ -721,5 +738,28 @@ export const createSandboxRequest = internalMutation({
       simulated: true,
     });
     return { shopperId, requestId, quoteVersion: 1 };
+  },
+});
+
+/**
+ * Sandbox repair, internal and CLI-only: a probe payment must never stand in for a
+ * real one, so this puts a row polluted by a probe back to pending.
+ */
+export const resetProbePayment = internalMutation({
+  args: { paymentId: v.id("payments") },
+  handler: async (ctx, { paymentId }) => {
+    const payment = await ctx.db.get("payments", paymentId);
+    if (!payment) return null;
+    if (!payment.providerPaymentId?.startsWith("pay_probe")) {
+      throw new Error("Refusing to reset a payment that did not come from a probe.");
+    }
+    await ctx.db.patch("payments", paymentId, {
+      status: "pending",
+      providerPaymentId: undefined,
+      paidAt: undefined,
+      failureReason: undefined,
+      updatedAt: Date.now(),
+    });
+    return { paymentId, status: "pending" as const };
   },
 });

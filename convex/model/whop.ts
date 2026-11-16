@@ -189,7 +189,13 @@ export async function recordPaid(ctx: MutationCtx, input: PaidInput) {
 
   let request: Awaited<ReturnType<typeof ctx.db.get<"purchaseRequests">>> = null;
   if (input.requestId) {
-    request = await ctx.db.get("purchaseRequests", input.requestId as Id<"purchaseRequests">);
+    // A metadata id we never issued is not a decode error to surface: it is simply
+    // a payment that matches no Cart quote, and it is recorded as such.
+    try {
+      request = await ctx.db.get("purchaseRequests", input.requestId as Id<"purchaseRequests">);
+    } catch {
+      request = null;
+    }
   }
   if (!request) {
     const pending = await ctx.db.query("payments").take(500);
