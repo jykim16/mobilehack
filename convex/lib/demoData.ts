@@ -3,13 +3,16 @@ import type { SectionName } from "./validators";
 export const HERO_ASIN = "B09XS7JWHH";
 export const HERO_URL = `https://www.amazon.com/dp/${HERO_ASIN}`;
 /**
- * The price the user reported for this exact listing on November 15, 2026:
- * $194.99. It is user-reported, not independently verified: an anonymous read of
- * the page shows no featured offer and Amazon Resale as the seller profile, and
- * the third-party trackers put the third-party used price near $199. The earlier
- * seeded $279.99 was a staged demo number that no source supported.
+ * What the live page said for this exact listing on November 15, 2026: the page
+ * shows no featured offer, Amazon Resale is the seller profile, and the selected
+ * offer is Used: Like New at $188.10. Stored as read, with its own source.
  */
-export const HERO_INITIAL_PRICE_CENTS = 19499;
+export const HERO_OBSERVED_PRICE_CENTS = 18810;
+/** What the user reported for the same listing: $194.99, seller and condition unconfirmed. */
+export const USER_REPORTED_PRICE_CENTS = 19499;
+const HERO_READ_SOURCE = "Live page read: Used - Like New, sold by Amazon Resale";
+const USER_REPORTED_SOURCE =
+  "User-reported price for this listing ($194.99); seller and condition not confirmed";
 export const AIRFLY_URL = "https://www.bestbuy.com/site/twelve-south-airfly-pro/6411178.p";
 
 const DAY = 24 * 3600_000;
@@ -28,8 +31,11 @@ type SeedOffer = {
   shippingCents: number;
   deliveryEstimate: string;
   returnSummary: string;
+  condition?: string;
+  conditionClass?: "new" | "used" | "refurbished" | "unknown";
   rating?: { average: number; count: number };
-  history: { daysAgo: number; priceCents: number }[];
+  /** Newest last. A point without a source is staged demo history, not a claim. */
+  history: { daysAgo: number; priceCents: number; source?: string; simulated?: boolean }[];
 };
 
 export type SeedProduct = {
@@ -66,22 +72,25 @@ export const SEED_PRODUCTS: SeedProduct[] = [
         variantLabel: "Black",
         retailer: "amazon",
         retailerName: "Amazon",
-        seller: "Amazon.com",
+        seller: "Amazon Resale",
         url: HERO_URL,
-        priceCents: HERO_INITIAL_PRICE_CENTS,
+        priceCents: HERO_OBSERVED_PRICE_CENTS,
+        condition: "Used - Like New",
+        conditionClass: "used",
         provenanceNote:
-          "Price reported by the user on November 15, 2026 for this exact listing. Not independently verified: the page shows no featured offer and Amazon Resale as the seller profile.",
+          "Read from the live listing on November 15, 2026: no featured offer, Amazon Resale as the seller profile, and the selected offer is Used: Like New at $188.10. The user reported $194.99 for the same listing with no seller or condition stated; the two are kept as separate observations.",
         listPriceCents: 39999,
         shippingCents: 0,
         deliveryEstimate: "Arrives in 2-3 days with free Prime delivery",
         returnSummary: AMAZON_RETURNS,
-        rating: { average: 4.4, count: 12873 },
+        rating: { average: 4.2, count: 20368 },
         history: [
           { daysAgo: 90, priceCents: 39999 },
           { daysAgo: 70, priceCents: 34999 },
           { daysAgo: 45, priceCents: 32999 },
           { daysAgo: 25, priceCents: 29999 },
-          { daysAgo: 6, priceCents: HERO_INITIAL_PRICE_CENTS },
+          { daysAgo: 0.2, priceCents: USER_REPORTED_PRICE_CENTS, source: USER_REPORTED_SOURCE, simulated: false },
+          { daysAgo: 0.05, priceCents: HERO_OBSERVED_PRICE_CENTS, source: HERO_READ_SOURCE, simulated: false },
         ],
       },
       {

@@ -8,7 +8,6 @@ import { normalizedQuery } from "./lib/cache";
 import {
   AIRFLY_URL,
   HERO_ASIN,
-  HERO_INITIAL_PRICE_CENTS,
   HERO_URL,
   SEED_PRODUCTS,
   historyTimestamp,
@@ -64,8 +63,8 @@ async function ensureCatalog(ctx: MutationCtx) {
           priceCents: h.priceCents,
           shippingCents: o.shippingCents,
           observedAt: historyTimestamp(h.daysAgo, now),
-          source: "Seeded demo history",
-          simulated: true,
+          source: h.source ?? "Seeded demo history",
+          simulated: h.simulated ?? true,
         });
       }
     }
@@ -226,8 +225,8 @@ async function restoreSeededOffers(ctx: MutationCtx) {
         priceCents: seed.priceCents,
         listPriceCents: seed.listPriceCents,
         seller: seed.seller,
-        condition: undefined,
-        conditionClass: undefined,
+        condition: seed.condition,
+        conditionClass: seed.conditionClass,
         alternates: undefined,
         provenance: provenanceNote
           ? {
@@ -253,8 +252,8 @@ async function restoreSeededOffers(ctx: MutationCtx) {
           priceCents: h.priceCents,
           shippingCents: seed.shippingCents,
           observedAt: historyTimestamp(h.daysAgo, now),
-          source: "Seeded demo history",
-          simulated: true,
+          source: h.source ?? "Seeded demo history",
+          simulated: h.simulated ?? true,
         });
       }
     }
@@ -334,6 +333,23 @@ export const createDemoShopper = internalMutation({
 });
 
 export const resetPriceInternal = internalMutation({ args: {}, handler: async (ctx) => { await resetPrice(ctx); return null; } });
+
+/**
+ * Applies the seeded offer and product text to rows that already exist, without
+ * touching any shopper's cart, purchase request or quote — the supported way to
+ * bring deployed demo rows in line with `demoData.ts`:
+ *
+ *   npx convex run demo:reseedOffersInternal
+ *
+ * Offers named in the seed are patched; offers the seed does not name are left alone.
+ */
+export const reseedOffersInternal = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    await restoreSeededOffers(ctx);
+    return { reseeded: SEED_PRODUCTS.reduce((n, p) => n + p.offers.length, 0) };
+  },
+});
 
 /**
  * Cache controls for tests, internal on purpose: these write rows that live
