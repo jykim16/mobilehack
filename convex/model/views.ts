@@ -231,15 +231,52 @@ export async function cartItemView(
         }
       : null;
 
-  // Only a new-condition offer may stand in for the item; anything else is
-  // returned separately and labeled.
-  const newOffers = productOffers.filter(
+  // A stand-in offer must be the same thing the shopper saved: same variant, same
+  // marketplace, same currency. Anything else is an alternative to offer explicitly,
+  // never the saved item's price — the UI would otherwise show one variant's price
+  // while checkout used another variant's identity.
+  const identityKnown = Boolean(
+    offer && item.variantId && offer.currency && offer.retailer,
+  );
+  const sameIdentity = (candidate: Doc<"offers">) =>
+    identityKnown &&
+    candidate.variantId === offer!.variantId &&
+    candidate.retailer === offer!.retailer &&
+    candidate.currency.toUpperCase() === offer!.currency.toUpperCase();
+  const eligible = productOffers.filter(
     (o) => isPurchasableCondition(o) && o.inStock && o.priceCents > 0,
   );
+  const sameIdentityEligible = eligible.filter(sameIdentity);
   const newOffer =
-    newOffers.find((o) => o._id === item.offerId) ??
-    newOffers.slice().sort((a, b) => a.priceCents - b.priceCents)[0] ??
-    null;
+    offer && sameIdentityEligible.some((o) => o._id === offer._id)
+      ? offer
+      : (sameIdentityEligible.slice().sort((a, b) => a.priceCents - b.priceCents)[0] ?? null);
+  const alternatives = eligible
+    .filter((o) => o._id !== item.offerId)
+    .map((o) => ({
+      offerId: o._id,
+      retailer: o.retailer,
+      retailerName: o.retailerName,
+      seller: o.seller,
+      url: o.url,
+      variantId: o.variantId,
+      variantLabel: variantLabels.get(o.variantId) ?? null,
+      priceCents: o.priceCents,
+      currency: o.currency,
+      conditionClass: offerConditionClass(o),
+      sameVariant: Boolean(offer && o.variantId === offer.variantId),
+      sameRetailer: Boolean(offer && o.retailer === offer.retailer),
+      sameCurrency: Boolean(offer && o.currency && o.currency.toUpperCase() === offer.currency.toUpperCase()),
+      reason: !offer
+        ? "No saved offer to compare against"
+        : o.variantId !== offer.variantId
+          ? "A different variant of this product"
+          : o.retailer !== offer.retailer
+            ? "A different store"
+            : o.currency.toUpperCase() !== offer.currency.toUpperCase()
+              ? "A different currency"
+              : "The same listing in new condition",
+    }));
   const alternates = (offer ? [offer] : []).flatMap((o) =>
     (o.alternates ?? []).map((a) => ({
       conditionClass: a.conditionClass,
@@ -252,6 +289,11 @@ export async function cartItemView(
   );
   const offerAvailability = {
     newOfferAvailable: newOffer !== null,
+    /** True only when the saved offer itself is a new, in-stock, priced offer:
+     * checkout may use this item, and nothing about it is inherited from another
+     * variant, store or currency. */
+    identityVerified: identityKnown,
+    checkoutEligible: Boolean(newOffer && sameIdentity(newOffer)),
     note:
       newOffer !== null
         ? alternates.length > 0
@@ -392,6 +434,7 @@ export async function cartItemView(
     offer: offer ? offerView(offer, variant?.label ?? null) : null,
     offers: productOffers.map((o) => offerView(o, variantLabels.get(o.variantId) ?? null)),
     newOffer: newOffer ? offerView(newOffer, variantLabels.get(newOffer.variantId) ?? null) : null,
+    alternatives,
     offerAvailability,
     rating,
     price: offer && totals

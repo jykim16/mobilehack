@@ -42,6 +42,23 @@ export async function createRequestFor(
   if (!offer || offer.productId !== item.productId) {
     throw new ConvexError({ code: "OFFER_MISMATCH", message: "offerId is not an offer for this item." });
   }
+  // The offer being charged must be the thing the shopper saved: same variant, same
+  // marketplace, same currency. An unknown identity fails closed rather than being
+  // guessed at checkout.
+  const saved = item.offerId ? await ctx.db.get("offers", item.offerId) : null;
+  const identityMismatch =
+    !item.variantId || !saved
+      ? "This item has no saved offer identity, so it cannot be checked out."
+      : offer.variantId !== item.variantId
+        ? "That offer is a different variant of this product."
+        : offer.retailer !== saved.retailer
+          ? "That offer is from a different store."
+          : offer.currency.toUpperCase() !== saved.currency.toUpperCase()
+            ? "That offer is in a different currency."
+            : null;
+  if (identityMismatch) {
+    throw new ConvexError({ code: "OFFER_IDENTITY_MISMATCH", message: identityMismatch });
+  }
   if (!offer.inStock || offer.priceCents <= 0) {
     throw new ConvexError({
       code: "OFFER_UNAVAILABLE",
