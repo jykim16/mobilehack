@@ -1,6 +1,6 @@
 import { useAction, useConvex, useMutation, useQueries, useQuery, type ConvexReactClient } from 'convex/react';
 import { ConvexError } from 'convex/values';
-import { createContext, use, useCallback, useEffect, useState, type ReactNode } from 'react';
+import { createContext, use, useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 
 import { convexConfigured, useSession } from '@/lib/session';
 
@@ -8,6 +8,7 @@ import * as cartApi from './cart-api';
 import { api } from './convex-api';
 import { mockComparison } from './mock-comparison';
 import { mockReviews } from './mock-reviews';
+import { ensureTestUserItem } from './test-user';
 import type {
   CartItem,
   DecideOutcome,
@@ -50,6 +51,7 @@ interface ShopState {
   setQuantity: (itemId: string, quantity: number) => Promise<void>;
   removeItem: (itemId: string) => Promise<void>;
   loadDemoCart: () => Promise<void>;
+  prepareTestCart: () => void;
   /** Quotes the item and approves that quote in one step; throws a short message when no order was placed. */
   checkoutItem: (item: CartItem) => Promise<void>;
 }
@@ -163,11 +165,26 @@ function LiveShopProvider({ children }: { children: ReactNode }) {
   const setupMyCart = useMutation(api.demo.setupMyCart);
   const requestPurchase = useAction(api.purchases.requestPurchase);
   const decidePurchase = useMutation(api.purchases.decidePurchase);
+  const [testCartPending, setTestCartPending] = useState(false);
+  const [testCartError, setTestCartError] = useState<string | null>(null);
+  const testCartInFlight = useRef(false);
+
+  useEffect(() => {
+    if (!testCartPending || !signedIn || testCartInFlight.current) return;
+    testCartInFlight.current = true;
+    ensureTestUserItem(() => convex.query(api.cart.listItems, {}), addItem)
+      .then(() => setTestCartError(null))
+      .catch(() => setTestCartError("Couldn't add the demo item. Sign out and try again."))
+      .finally(() => {
+        testCartInFlight.current = false;
+        setTestCartPending(false);
+      });
+  }, [testCartPending, signedIn, convex, addItem]);
 
   const value: ShopState = {
     live: true,
-    ready: items !== undefined && purchases !== undefined,
-    error: null,
+    ready: items !== undefined && purchases !== undefined && !testCartPending,
+    error: testCartError,
     items: items ?? [],
     purchases: purchases ?? [],
     purchasedItems,
@@ -190,6 +207,7 @@ function LiveShopProvider({ children }: { children: ReactNode }) {
     loadDemoCart: async () => {
       await setupMyCart({});
     },
+    prepareTestCart: () => setTestCartPending(true),
     checkoutItem: async (item) => {
       const request = await placeOrder(
         item,
@@ -260,6 +278,7 @@ function MockShopProvider({ children }: { children: ReactNode }) {
       await refresh();
     },
     loadDemoCart: refresh,
+    prepareTestCart: () => {},
     checkoutItem: async (item) => {
       try {
         await placeOrder(
