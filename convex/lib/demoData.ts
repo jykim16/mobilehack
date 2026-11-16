@@ -2,14 +2,25 @@ import type { SectionName } from "./validators";
 
 export const HERO_ASIN = "B09XS7JWHH";
 export const HERO_URL = `https://www.amazon.com/dp/${HERO_ASIN}`;
-export const HERO_INITIAL_PRICE_CENTS = 27999;
-export const HERO_DROPPED_PRICE_CENTS = 22999;
+/**
+ * What the live page said for this exact listing on November 15, 2026: the page
+ * shows no featured offer, Amazon Resale is the seller profile, and the selected
+ * offer is Used: Like New at $188.10. Stored as read, with its own source.
+ */
+export const HERO_OBSERVED_PRICE_CENTS = 18810;
+/** What the user reported for the same listing: $194.99, seller and condition unconfirmed. */
+export const USER_REPORTED_PRICE_CENTS = 19499;
+const HERO_READ_SOURCE = "Live page read: Used - Like New, sold by Amazon Resale";
+const USER_REPORTED_SOURCE =
+  "User-reported price for this listing ($194.99); seller and condition not confirmed";
 export const AIRFLY_URL = "https://www.bestbuy.com/site/twelve-south-airfly-pro/6411178.p";
 
 const DAY = 24 * 3600_000;
 
 type SeedOffer = {
   canonicalKey: string;
+  /** Where the number came from, when it is not an independent read of the page. */
+  provenanceNote?: string;
   variantLabel: string;
   retailer: string;
   retailerName: string;
@@ -20,8 +31,11 @@ type SeedOffer = {
   shippingCents: number;
   deliveryEstimate: string;
   returnSummary: string;
+  condition?: string;
+  conditionClass?: "new" | "used" | "refurbished" | "unknown";
   rating?: { average: number; count: number };
-  history: { daysAgo: number; priceCents: number }[];
+  /** Newest last. A point without a source is staged demo history, not a claim. */
+  history: { daysAgo: number; priceCents: number; source?: string; simulated?: boolean }[];
 };
 
 export type SeedProduct = {
@@ -46,7 +60,8 @@ export const SEED_PRODUCTS: SeedProduct[] = [
     brand: "Sony",
     category: "wireless headphones",
     imageUrl: "https://m.media-amazon.com/images/I/51aXvjzcukL._AC_SL1500_.jpg",
-    description: "Over-ear Bluetooth headphones with adaptive noise canceling and 30-hour battery.",
+    description:
+      "WH-1000XM5 Premium Noise Cancelling Wireless Headphones: Auto NC Optimizer, up to 30 hrs of battery, carrying case, crystal clear calls, touch control, multipoint connection.",
     variants: [
       { label: "Black", sku: HERO_ASIN },
       { label: "Silver", sku: "B09Y2MYL5C" },
@@ -57,20 +72,25 @@ export const SEED_PRODUCTS: SeedProduct[] = [
         variantLabel: "Black",
         retailer: "amazon",
         retailerName: "Amazon",
-        seller: "Amazon.com",
+        seller: "Amazon Resale",
         url: HERO_URL,
-        priceCents: HERO_INITIAL_PRICE_CENTS,
+        priceCents: HERO_OBSERVED_PRICE_CENTS,
+        condition: "Used - Like New",
+        conditionClass: "used",
+        provenanceNote:
+          "Read from the live listing on November 15, 2026: no featured offer, Amazon Resale as the seller profile, and the selected offer is Used: Like New at $188.10. The user reported $194.99 for the same listing with no seller or condition stated; the two are kept as separate observations.",
         listPriceCents: 39999,
         shippingCents: 0,
         deliveryEstimate: "Arrives in 2-3 days with free Prime delivery",
         returnSummary: AMAZON_RETURNS,
-        rating: { average: 4.4, count: 12873 },
+        rating: { average: 4.2, count: 20368 },
         history: [
           { daysAgo: 90, priceCents: 39999 },
           { daysAgo: 70, priceCents: 34999 },
           { daysAgo: 45, priceCents: 32999 },
           { daysAgo: 25, priceCents: 29999 },
-          { daysAgo: 6, priceCents: HERO_INITIAL_PRICE_CENTS },
+          { daysAgo: 0.2, priceCents: USER_REPORTED_PRICE_CENTS, source: USER_REPORTED_SOURCE, simulated: false },
+          { daysAgo: 0.05, priceCents: HERO_OBSERVED_PRICE_CENTS, source: HERO_READ_SOURCE, simulated: false },
         ],
       },
       {

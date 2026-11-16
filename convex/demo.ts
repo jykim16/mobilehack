@@ -8,8 +8,6 @@ import { normalizedQuery } from "./lib/cache";
 import {
   AIRFLY_URL,
   HERO_ASIN,
-  HERO_DROPPED_PRICE_CENTS,
-  HERO_INITIAL_PRICE_CENTS,
   HERO_URL,
   SEED_PRODUCTS,
   historyTimestamp,
@@ -39,7 +37,7 @@ async function ensureCatalog(ctx: MutationCtx) {
     for (const variant of p.variants) {
       variantIds.set(variant.label, await ctx.db.insert("variants", { productId, ...variant }));
     }
-    for (const { history, variantLabel, ...o } of p.offers) {
+    for (const { history, provenanceNote, variantLabel, ...o } of p.offers) {
       const offerId = await ctx.db.insert("offers", {
         ...o,
         productId,
@@ -47,6 +45,16 @@ async function ensureCatalog(ctx: MutationCtx) {
         currency: "USD",
         inStock: true,
         simulated: true,
+        provenance: provenanceNote
+          ? {
+              method: "seed",
+              sourceUrl: o.url,
+              observedAt: now,
+              supportingText: null,
+              verifiedKey: null,
+              note: provenanceNote,
+            }
+          : undefined,
         updatedAt: now,
       });
       for (const h of history) {
@@ -55,8 +63,8 @@ async function ensureCatalog(ctx: MutationCtx) {
           priceCents: h.priceCents,
           shippingCents: o.shippingCents,
           observedAt: historyTimestamp(h.daysAgo, now),
-          source: "Seeded demo history",
-          simulated: true,
+          source: h.source ?? "Seeded demo history",
+          simulated: h.simulated ?? true,
         });
       }
     }
@@ -200,7 +208,14 @@ export const advancePriceInternal = internalMutation({
 async function restoreSeededOffers(ctx: MutationCtx) {
   const now = Date.now();
   for (const product of SEED_PRODUCTS) {
-    for (const { history, variantLabel, ...seed } of product.offers) {
+    const seededProduct = await ctx.db
+      .query("products")
+      .withIndex("by_demoKey", (q) => q.eq("demoKey", product.demoKey))
+      .unique();
+    if (seededProduct && (seededProduct.title !== product.title || seededProduct.description !== product.description)) {
+      await ctx.db.patch(seededProduct._id, { title: product.title, description: product.description });
+    }
+    for (const { history, provenanceNote, variantLabel, ...seed } of product.offers) {
       const offer = await ctx.db
         .query("offers")
         .withIndex("by_canonicalKey", (q) => q.eq("canonicalKey", seed.canonicalKey))
@@ -210,10 +225,19 @@ async function restoreSeededOffers(ctx: MutationCtx) {
         priceCents: seed.priceCents,
         listPriceCents: seed.listPriceCents,
         seller: seed.seller,
-        condition: undefined,
-        conditionClass: undefined,
+        condition: seed.condition,
+        conditionClass: seed.conditionClass,
         alternates: undefined,
-        provenance: undefined,
+        provenance: provenanceNote
+          ? {
+              method: "seed",
+              sourceUrl: seed.url,
+              observedAt: now,
+              supportingText: null,
+              verifiedKey: null,
+              note: provenanceNote,
+            }
+          : undefined,
         simulated: true,
         updatedAt: now,
       });
@@ -228,8 +252,8 @@ async function restoreSeededOffers(ctx: MutationCtx) {
           priceCents: h.priceCents,
           shippingCents: seed.shippingCents,
           observedAt: historyTimestamp(h.daysAgo, now),
-          source: "Seeded demo history",
-          simulated: true,
+          source: h.source ?? "Seeded demo history",
+          simulated: h.simulated ?? true,
         });
       }
     }
@@ -309,6 +333,23 @@ export const createDemoShopper = internalMutation({
 });
 
 export const resetPriceInternal = internalMutation({ args: {}, handler: async (ctx) => { await resetPrice(ctx); return null; } });
+
+/**
+ * Applies the seeded offer and product text to rows that already exist, without
+ * touching any shopper's cart, purchase request or quote — the supported way to
+ * bring deployed demo rows in line with `demoData.ts`:
+ *
+ *   npx convex run demo:reseedOffersInternal
+ *
+ * Offers named in the seed are patched; offers the seed does not name are left alone.
+ */
+export const reseedOffersInternal = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    await restoreSeededOffers(ctx);
+    return { reseeded: SEED_PRODUCTS.reduce((n, p) => n + p.offers.length, 0) };
+  },
+});
 
 /**
  * Cache controls for tests, internal on purpose: these write rows that live
