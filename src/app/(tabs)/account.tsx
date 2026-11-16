@@ -1,10 +1,11 @@
 import { useAuthActions } from '@convex-dev/auth/react';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { router } from 'expo-router';
-import type { ComponentProps } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useState, type ComponentProps } from 'react';
+import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { formatRelativeSyncTime, useAmazonSession } from '@/amazon';
 import { Radius, Spacing, Type, useColors, useThemedStyles, type Palette } from '@/constants/theme';
 import { convexConfigured, rememberAccountEmail, useAccountEmail } from '@/lib/session';
 
@@ -22,9 +23,35 @@ export default function AccountScreen() {
       <View style={styles.group}>
         <Row icon="sparkles-outline" title="Connect an agent" detail="Let an AI agent add to your cart over MCP" onPress={() => router.push('/connect-agent')} />
         <View style={styles.hairline} />
-        <Row icon="logo-amazon" title="Connect Amazon" detail="Coming soon" />
+        <AmazonRow />
       </View>
     </ScrollView>
+  );
+}
+
+function AmazonRow() {
+  const { status, lastSyncedAt, openBrowserSheet } = useAmazonSession();
+  const [settled, setSettled] = useState(status);
+  if (status !== 'busy' && status !== settled) setSettled(status);
+
+  if (Platform.OS === 'web') return <Row icon="logo-amazon" title="Connect Amazon" detail="Available in the Cart app" />;
+  if (settled === 'connected') {
+    return (
+      <Row
+        icon="logo-amazon"
+        title="Amazon · Connected"
+        detail={`Preview—no order placed · ${formatRelativeSyncTime(lastSyncedAt)}`}
+        onPress={() => openBrowserSheet()}
+      />
+    );
+  }
+  return (
+    <Row
+      icon="logo-amazon"
+      title="Connect Amazon"
+      detail="Opens Amazon sign-in. Preview only—no order placed."
+      onPress={settled === 'signed_out' ? () => openBrowserSheet() : undefined}
+    />
   );
 }
 

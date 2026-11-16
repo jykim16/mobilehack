@@ -1,25 +1,61 @@
 import { router } from 'expo-router';
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useRef, useState } from 'react';
+import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { formatRelativeSyncTime, useAmazonCartAdapter, useAmazonSession } from '@/amazon';
 import { ItemCard } from '@/components/item-card';
 import { PillButton } from '@/components/pill-button';
 import { RetailerHeader } from '@/components/retailer-header';
 import { Radius, Spacing, Type, useThemedStyles, type Palette } from '@/constants/theme';
-import { useShop } from '@/data/shop-store';
+import { errorMessage, useShop } from '@/data/shop-store';
 import type { Purchase } from '@/data/types';
 import { etaDate, formatPrice, formatShortDate, isToday } from '@/lib/format';
 
 export default function PurchasesScreen() {
   const styles = useThemedStyles(createStyles);
   const insets = useSafeAreaInsets();
-  const { ready, purchases, purchasedItems, addItem } = useShop();
+  const { ready, purchases: shopPurchases, purchasedItems, addItem } = useShop();
+  const amazon = useAmazonCartAdapter();
+  const { status, syncOrders } = useAmazonSession();
+  const syncing = useRef(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
+  const refresh = async () => {
+    if (syncing.current || status !== 'connected') return;
+    syncing.current = true;
+    setRefreshing(true);
+    setSyncError(null);
+    try {
+      const result = await syncOrders();
+      if (!result.ok) setSyncError(result.error ?? 'Could not refresh Amazon tracking.');
+    } catch (error) {
+      setSyncError(errorMessage(error));
+    } finally {
+      syncing.current = false;
+      setRefreshing(false);
+    }
+  };
+  const amazonOrders = new Map(amazon.purchases.map((p) => [p.retailerOrderId, p]));
+  const purchases = shopPurchases.map((p) => {
+    const tracked = p.retailerOrderId ? amazonOrders.get(p.retailerOrderId) : undefined;
+    return tracked?.shipment ? { ...p, shipment: tracked.shipment } : p;
+  });
 
   return (
     <View style={[styles.screen, { paddingTop: insets.top + Spacing.sm }]}>
       <Text style={styles.title} accessibilityRole="header">
         Purchases
       </Text>
+      {Platform.OS !== 'web' && (status === 'connected' || refreshing) && (
+        <View style={styles.refresh}>
+          <Text style={styles.meta}>Reads Amazon orders and saves delivery updates to Cart.</Text>
+          <Pressable accessibilityRole="button" disabled={refreshing} onPress={refresh}>
+            <Text style={styles.refreshAction}>{refreshing ? 'Refreshing…' : 'Refresh Amazon tracking'}</Text>
+          </Pressable>
+          {syncError && <Text style={styles.meta}>{syncError}</Text>}
+        </View>
+      )}
       {!ready ? null : purchases.length === 0 ? (
         <View style={styles.empty}>
           <Text style={styles.emptyTitle}>No purchases yet</Text>
@@ -53,6 +89,9 @@ export default function PurchasesScreen() {
                     <Text style={[styles.status, purchase.shipment?.status === 'delivered' && styles.delivered]}>
                       {statusLine(purchase)}
                     </Text>
+                    {purchase.retailerOrderId && amazonOrders.has(purchase.retailerOrderId) ? (
+                      <Text style={styles.meta}>{formatRelativeSyncTime(amazon.lastSyncedAt)}</Text>
+                    ) : null}
                     <Text style={styles.meta}>
                       {formatPrice(quote.totalCents, quote.currency)} total{purchase.simulated ? ' · Simulated checkout' : ''}
                     </Text>
@@ -96,6 +135,8 @@ const createStyles = (Colors: Palette) => StyleSheet.create({
   status: { ...Type.body, fontWeight: '600', color: Colors.text },
   delivered: { color: Colors.success },
   meta: { ...Type.secondary, color: Colors.textSecondary },
+  refresh: { paddingHorizontal: Spacing.lg, paddingBottom: Spacing.md, gap: Spacing.sm },
+  refreshAction: { ...Type.secondary, fontWeight: '600', color: Colors.accent },
   empty: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: Spacing.xxxl, gap: Spacing.sm },
   emptyTitle: { ...Type.title, color: Colors.text },
   emptyBody: { ...Type.body, color: Colors.textSecondary, textAlign: 'center' },

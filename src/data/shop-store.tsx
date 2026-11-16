@@ -99,7 +99,8 @@ async function placeOrder(
   const { outcome, request } =
     first.outcome === 'stale_quote' && quote ? await decide({ requestId, quoteVersion, quote }, 'approve') : first;
   if (outcome !== 'approved' && outcome !== 'already_approved') {
-    throw new Error(outcomeMessages[outcome] ?? 'The order was not placed. Try again.');
+    const expired = outcome === 'invalid_state' && request.status === 'expired';
+    throw new Error(outcomeMessages[expired ? 'expired' : outcome] ?? 'The order was not placed. Try again.');
   }
   if (request.status === 'failed' || request.order?.status === 'failed') throw new Error(request.error ?? 'The order failed. Try again.');
   return request;

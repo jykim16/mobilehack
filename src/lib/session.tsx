@@ -1,4 +1,4 @@
-import { ConvexAuthProvider, useConvexAuth, type TokenStorage } from '@convex-dev/auth/react';
+import { ConvexAuthProvider, useAuthToken, useConvexAuth, type TokenStorage } from '@convex-dev/auth/react';
 import { ConvexReactClient } from 'convex/react';
 import * as SecureStore from 'expo-secure-store';
 import { createContext, use, useEffect, useState, type ReactNode } from 'react';
@@ -61,4 +61,17 @@ export function useAccountEmail() {
     SecureStore.getItemAsync(EMAIL_KEY).then(setEmail);
   }, []);
   return email;
+}
+
+/** The signed-in shopper's Convex user id, from the auth token's subject (`userId|sessionId`); null when signed out. */
+export function useShopperId() {
+  const token = useAuthToken();
+  if (!token) return null;
+  try {
+    const base64 = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+    const payload = JSON.parse(atob(base64.padEnd(Math.ceil(base64.length / 4) * 4, '=')));
+    return typeof payload.sub === 'string' ? payload.sub.split('|')[0] : null;
+  } catch {
+    return null;
+  }
 }

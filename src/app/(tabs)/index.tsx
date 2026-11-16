@@ -5,6 +5,7 @@ import { Keyboard, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput,
 import Animated, { FadeIn, FadeInDown, FadeOut, LinearTransition } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { extractAsin } from '@/amazon';
 import { ItemCard } from '@/components/item-card';
 import { PillButton } from '@/components/pill-button';
 import { PriceText } from '@/components/product-bits';
@@ -19,7 +20,7 @@ import { errorMessage, itemOffer, useShop } from '@/data/shop-store';
 import type { CartItem, QueryAlternative } from '@/data/types';
 import { formatPrice } from '@/lib/format';
 
-type CheckoutState = { status: 'placing' } | { status: 'error'; message: string };
+type CheckoutState = { status: 'placing' | 'preview' } | { status: 'error'; message: string };
 
 /** An item the shopper just added from the input, pinned to the top until enrichment finishes. */
 interface Add {
@@ -118,9 +119,14 @@ export default function CartScreen() {
   const checkout = async (item: CartItem) => {
     if (inFlight.current.has(item.id)) return;
     inFlight.current.add(item.id);
+    setToast(false);
     setCheckout(item.id, { status: 'placing' });
     try {
-      await checkoutItem(item);
+      const result = await checkoutItem(item);
+      if (result === 'preview') {
+        setCheckout(item.id, { status: 'preview' });
+        return;
+      }
       unpin(item.id);
       setCheckout(item.id, null);
       setToast(true);
@@ -134,6 +140,8 @@ export default function CartScreen() {
   const renderItem = (key: string, item: CartItem | undefined) => {
     const state = item ? checkouts[item.id] : undefined;
     const placing = state?.status === 'placing';
+    const amazonPreview = live && Platform.OS !== 'web' && item &&
+      (item.offer?.retailer === 'amazon' || extractAsin(item.url) !== null);
     const loading = !item || gathering(item);
     return (
       <Animated.View key={key} entering={FadeIn} exiting={FadeOut} layout={LinearTransition} style={placing && styles.placing}>
@@ -146,6 +154,12 @@ export default function CartScreen() {
           footer={
             <View style={styles.footer}>
               {state?.status === 'error' && <Text style={styles.error}>{state.message}</Text>}
+              {state?.status === 'preview' && <Text style={styles.alternativeMeta}>Preview—no order placed</Text>}
+              {amazonPreview && (
+                <Text style={styles.alternativeMeta}>
+                  Preview updates your Amazon cart and checks checkout. No order will be placed.
+                </Text>
+              )}
               <View style={styles.actions}>
                 {item ? (
                   <QuantityStepper
@@ -164,7 +178,7 @@ export default function CartScreen() {
                 {item && !(loading && !itemOffer(item)) ? (
                   <Animated.View entering={FadeIn.duration(300)}>
                     <PillButton
-                      label={placing ? 'Placing order…' : state?.status === 'error' ? 'Try again' : 'Checkout'}
+                      label={amazonPreview ? (placing ? 'Previewing…' : 'Preview checkout') : placing ? 'Placing order…' : state?.status === 'error' ? 'Try again' : 'Checkout'}
                       variant="strong"
                       size="small"
                       loading={placing}
@@ -186,7 +200,8 @@ export default function CartScreen() {
     );
   };
 
-  const buyable = items.filter((item) => canBuy(item) && checkouts[item.id]?.status !== 'placing');
+  const buyable = items.filter((item) => canBuy(item) && checkouts[item.id]?.status !== 'placing' &&
+    !(live && Platform.OS !== 'web' && (item.offer?.retailer === 'amazon' || extractAsin(item.url) !== null)));
   const placingAll = items.some((item) => checkouts[item.id]?.status === 'placing');
   const total = buyable.reduce((sum, item) => sum + (itemOffer(item)?.priceCents ?? 0) * item.quantity, 0);
   const count = buyable.reduce((sum, item) => sum + item.quantity, 0);
@@ -276,7 +291,7 @@ export default function CartScreen() {
         </ScrollView>
       )}
 
-      {ready && items.length > 0 && (
+      {ready && buyable.length > 0 && (
         <View style={[styles.checkoutBar, { bottom: overBar }]}>
           <PillButton
             variant="accent"
