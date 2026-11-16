@@ -26,9 +26,11 @@ export type SubaccountInput = {
 };
 
 export async function recordSubaccountFor(ctx: MutationCtx, input: SubaccountInput) {
+  // Identity is the shopper, not the provider account: the sandbox demo reuses one
+  // pre-verified subaccount across shoppers, and each still needs its own row.
   const existing = await ctx.db
     .query("shopperSubaccounts")
-    .withIndex("by_providerAccountId", (q) => q.eq("providerAccountId", input.providerAccountId))
+    .withIndex("by_shopperId", (q) => q.eq("shopperId", input.shopperId))
     .first();
   const now = Date.now();
   if (existing) {
@@ -52,21 +54,32 @@ export async function recordSubaccountFor(ctx: MutationCtx, input: SubaccountInp
 }
 
 /** Money already in, minus what the card has already spent. */
+/**
+ * Money in minus card spend for one subaccount, read from its own rows only: a
+ * refund subtracts the amount that came back, never twice, and never to a negative.
+ */
 export async function ledgerBalanceCents(ctx: QueryCtx, subaccountId: Id<"shopperSubaccounts">) {
-  const rows = await ctx.db.query("payments").take(500);
+  const payments = await ctx.db
+    .query("payments")
+    .withIndex("by_subaccountId", (q) => q.eq("subaccountId", subaccountId))
+    .take(200);
   let inCents = 0;
-  for (const row of rows) {
-    if (row.subaccountId !== subaccountId) continue;
-    if (row.status === "succeeded" || row.status === "partially_refunded") inCents += row.amountCents;
-    if (row.refundAmountCents) inCents -= row.refundAmountCents;
+  for (const payment of payments) {
+    if (payment.status === "succeeded" || payment.status === "partially_refunded") {
+      inCents += payment.amountCents;
+    }
+    if (payment.status === "refunded") inCents += 0;
+    if (payment.refundAmountCents) inCents -= payment.refundAmountCents;
   }
-  const charges = await ctx.db.query("cardTransactions").take(500);
+  const charges = await ctx.db
+    .query("cardTransactions")
+    .withIndex("by_subaccountId", (q) => q.eq("subaccountId", subaccountId))
+    .take(200);
   let outCents = 0;
   for (const charge of charges) {
-    if (charge.subaccountId !== subaccountId) continue;
     if (charge.status === "succeeded") outCents += charge.amountCents;
   }
-  return inCents - outCents;
+  return Math.max(0, inCents - outCents);
 }
 
 export async function pendingPaymentFor(ctx: QueryCtx, requestId: Id<"purchaseRequests">) {
@@ -146,6 +159,12 @@ export async function recordEventOnce(ctx: MutationCtx, input: WebhookEventInput
     .withIndex("by_providerEventId", (q) => q.eq("providerEventId", input.providerEventId))
     .first();
   if (existing) {
+    // A delivery we rejected for a bad signature must not block the provider's
+    // verified retry of the same event.
+    if (!existing.signatureVerified && input.signatureVerified && existing.processedAt === undefined) {
+      await ctx.db.patch("whopWebhookEvents", existing._id, { signatureVerified: true });
+      return { firstTime: true, eventId: existing._id, processed: false };
+    }
     return { firstTime: false, eventId: existing._id, processed: existing.processedAt !== undefined };
   }
   const eventId = await ctx.db.insert("whopWebhookEvents", {
@@ -198,20 +217,12 @@ export async function recordPaid(ctx: MutationCtx, input: PaidInput) {
     }
   }
   if (!request) {
-    const pending = await ctx.db.query("payments").take(500);
-    const match = pending.find(
-      (p) => p.status === "pending" && p.amountCents === input.amountCents && p.currency.toLowerCase() === (input.currency ?? "").toLowerCase(),
-    );
-    if (!match) {
-      throw new ConvexError({
-        code: "UNMATCHED_PAYMENT",
-        message: "A payment arrived that matches no pending Cart quote; nothing was recorded against an order.",
-      });
-    }
-    request = await ctx.db.get("purchaseRequests", match.requestId);
-    if (!request) {
-      throw new ConvexError({ code: "UNMATCHED_PAYMENT", message: "A payment referenced a purchase request that no longer exists." });
-    }
+    // Equal amounts are not identity: a delivery we cannot tie to a Cart quote is
+    // left unmatched rather than credited to whoever happens to hold that amount.
+    throw new ConvexError({
+      code: "UNMATCHED_PAYMENT",
+      message: "A payment arrived without a Cart request in its metadata; nothing was recorded against an order.",
+    });
   }
 
   const row = await ctx.db
@@ -235,7 +246,9 @@ export async function recordPaid(ctx: MutationCtx, input: PaidInput) {
 
   const expected = request.quote?.totalCents ?? null;
   const mismatch =
-    expected !== null && input.amountCents !== null && expected !== input.amountCents
+    input.amountCents === null
+      ? "The provider did not report an amount, so the payment could not be matched to the quote."
+      : expected !== null && input.amountCents !== null && expected !== input.amountCents
       ? `Payment was ${input.amountCents} but the approved quote was ${expected}.`
       : input.currency && request.quote && input.currency.toLowerCase() !== request.quote.currency?.toLowerCase()
         ? `Payment currency ${input.currency} does not match the quote currency ${request.quote.currency}.`

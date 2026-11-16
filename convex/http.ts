@@ -101,7 +101,7 @@ const whopWebhook = httpAction(async (ctx, request): Promise<Response> => {
             : null,
       amountCents: cents(payment.amount),
       currency: payment.currency ?? null,
-      failed: /(failed|canceled|refunded)/i.test(type),
+      failed: type !== "payment.succeeded",
     });
 
   return new Response(JSON.stringify({ ok: true }), {

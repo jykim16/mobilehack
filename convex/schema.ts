@@ -307,6 +307,7 @@ export default defineSchema({
     updatedAt: v.number(),
   })
     .index("by_providerPaymentId", ["providerPaymentId"])
+    .index("by_subaccountId", ["subaccountId"])
     .index("by_requestId", ["requestId"])
     .index("by_shopperId_and_status", ["shopperId", "status"]),
 
@@ -333,6 +334,7 @@ export default defineSchema({
     updatedAt: v.number(),
   })
     .index("by_orderId", ["orderId"])
+    .index("by_subaccountId", ["subaccountId"])
     .index("by_providerTransactionId", ["providerTransactionId"])
     .index("by_shopperId_and_status", ["shopperId", "status"]),
 

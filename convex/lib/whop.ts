@@ -89,7 +89,8 @@ export async function createCheckoutConfiguration(
     body: {
       account_id: input.subaccountId,
       variant: {
-        title: input.title.slice(0, 120),
+        // Whop caps the dynamic plan title at 30 characters.
+        title: input.title.slice(0, 30),
         billing_type: "one_time",
         initial_price: Number((input.amountCents / 100).toFixed(2)),
         currency: input.currency.toLowerCase(),

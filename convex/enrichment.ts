@@ -1356,6 +1356,15 @@ export const revalidateOffer = internalAction({
     const offer = await ctx.runQuery(internal.enrichment.offerForRevalidation, { offerId });
     if (!offer) return { status: "unavailable", totalCents: null, note: "The offer no longer exists." };
     const extraction = await extractWithCache(ctx, offer.url, offer.canonicalKey, true);
+    if (extraction.stale) {
+      return {
+        status: "unavailable",
+        totalCents: null,
+        note: `A fresh read of the retailer failed, and a cached price from ${describeAge(
+          extraction.observedAt,
+        )} cannot authorize a charge. Nothing was charged.`,
+      };
+    }
     if (!extraction.offer || extraction.offer.priceCents === null) {
       return {
         status: "unavailable",

@@ -1,5 +1,5 @@
 import { ConvexError, v } from "convex/values";
-import { action, query } from "./_generated/server";
+import { action, internalAction, query, type ActionCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { requireShopper } from "./lib/auth";
@@ -38,6 +38,19 @@ export const startPayment = action({
   },
   handler: async (ctx, { requestId, quoteVersion, idempotencyKey }): Promise<StartPaymentResult> => {
     const shopperId = await requireShopper(ctx);
+    return await openingCheckout(ctx, shopperId, requestId, quoteVersion, idempotencyKey);
+  },
+});
+
+/** The checkout-opening body, shared by startPayment and approveAndPay. */
+async function openingCheckout(
+  ctx: ActionCtx,
+  shopperId: Id<"users">,
+  requestId: Id<"purchaseRequests">,
+  quoteVersion: number,
+  idempotencyKey: string,
+): Promise<StartPaymentResult> {
+  {
     const request = await ctx.runQuery(internal.purchases.getRequestInternal, { requestId });
     if (!request || request.shopperId !== shopperId) {
       throw new ConvexError({ code: "NOT_FOUND", message: "Purchase request not found." });
@@ -95,6 +108,51 @@ export const startPayment = action({
       failureReason: created.failureReason ?? null,
       reused: false,
     };
+  }
+}
+
+/** Internal entry point so approveAndPay can reuse the same opening path. */
+export const startPaymentInternal = internalAction({
+  args: {
+    shopperId: v.id("users"),
+    requestId: v.id("purchaseRequests"),
+    quoteVersion: v.number(),
+    idempotencyKey: v.string(),
+  },
+  handler: async (ctx, { shopperId, requestId, quoteVersion, idempotencyKey }): Promise<StartPaymentResult> =>
+    await openingCheckout(ctx, shopperId, requestId, quoteVersion, idempotencyKey),
+});
+
+/**
+ * Approval and the hosted checkout in one call, for a UI that approves by paying.
+ * It approves the exact quote version, opens the order at `awaiting_payment` and
+ * returns the checkout URL — it never submits an order, and nothing can submit one
+ * until a payment is confirmed for this version.
+ */
+export const approveAndPay = action({
+  returns: v.object({ ...paymentView, reused: v.boolean(), orderId: v.id("orders") }),
+  args: {
+    requestId: v.id("purchaseRequests"),
+    quoteVersion: v.number(),
+    idempotencyKey: v.string(),
+  },
+  handler: async (
+    ctx,
+    { requestId, quoteVersion, idempotencyKey },
+  ): Promise<StartPaymentResult & { orderId: Id<"orders"> }> => {
+    const shopperId = await requireShopper(ctx);
+    const approved = await ctx.runMutation(internal.whop.approveForPayment, {
+      shopperId,
+      requestId,
+      quoteVersion,
+    });
+    const started = await ctx.runAction(internal.payments.startPaymentInternal, {
+      shopperId,
+      requestId,
+      quoteVersion,
+      idempotencyKey,
+    });
+    return { ...started, orderId: approved.orderId };
   },
 });
 
@@ -140,6 +198,7 @@ export const status = query({
             revalidatedAt: order.revalidatedAt ?? null,
             revalidation: order.revalidation ?? null,
             refundedAt: order.refundedAt ?? null,
+            error: order.error ?? null,
           }
         : null,
     };
