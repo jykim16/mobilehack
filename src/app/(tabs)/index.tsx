@@ -1,11 +1,11 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { router } from 'expo-router';
-import { useEffect, useRef, useState } from 'react';
+import { router, useFocusEffect } from 'expo-router';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Keyboard, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import Animated, { FadeIn, FadeInDown, FadeOut, LinearTransition } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { extractAsin } from '@/amazon';
+import { AMAZON_CART_URL, extractAsin, useAmazonCartSync, useAmazonSession, type OwnedCartItemState } from '@/amazon';
 import { ItemCard } from '@/components/item-card';
 import { PillButton } from '@/components/pill-button';
 import { PriceText } from '@/components/product-bits';
@@ -16,7 +16,8 @@ import { Wordmark } from '@/components/wordmark';
 import { Radius, Spacing, Type, tabularNumbers, useColors, useThemedStyles, type Palette } from '@/constants/theme';
 import { useAddFromInput } from '@/data/add-item';
 import { useCheckout } from '@/data/checkout';
-import { errorMessage, itemOffer, useShop } from '@/data/shop-store';
+import { alternativeLine, resolveItemOffer } from '@/data/offer-identity';
+import { checkoutOffer, errorMessage, itemOffer, useShop } from '@/data/shop-store';
 import type { CartItem, QueryAlternative } from '@/data/types';
 import { formatPrice } from '@/lib/format';
 
@@ -42,6 +43,25 @@ export default function CartScreen() {
   const { ready, error, items, live, addItem, setQuantity, removeItem, loadDemoCart } = useShop();
   const checkoutItem = useCheckout();
   const addFromInput = useAddFromInput();
+  const amazonCart = useAmazonCartSync();
+  const { status: amazonStatus, openBrowserSheet } = useAmazonSession();
+  const resumeAmazonCart = amazonCart.resume;
+  useFocusEffect(useCallback(() => resumeAmazonCart(), [resumeAmazonCart]));
+  const syncLine = (state: OwnedCartItemState | undefined, title?: string) =>
+    state && (
+      <AmazonSyncLine
+        state={state}
+        title={title}
+        connected={amazonStatus !== 'signed_out'}
+        onSignIn={() => openBrowserSheet()}
+        onOpenAmazon={() => openBrowserSheet(AMAZON_CART_URL)}
+        onRetry={() => amazonCart.retry(state.itemId)}
+        onDismiss={() => amazonCart.dismiss(state.itemId)}
+      />
+    );
+  const removedSync = Object.values(amazonCart.items).filter(
+    (state) => state.desiredQty === 0 && !items.some((item) => item.id === state.itemId)
+  );
   const [adds, setAdds] = useState<Add[]>([]);
   const [addError, setAddError] = useState<string | null>(null);
   const inFlight = useRef(new Set<string>());
@@ -160,6 +180,7 @@ export default function CartScreen() {
                   Preview updates your Amazon cart and checks checkout. No order will be placed.
                 </Text>
               )}
+              {item && syncLine(amazonCart.items[item.id])}
               <View style={styles.actions}>
                 {item ? (
                   <QuantityStepper
@@ -203,7 +224,7 @@ export default function CartScreen() {
   const buyable = items.filter((item) => canBuy(item) && checkouts[item.id]?.status !== 'placing' &&
     !(live && Platform.OS !== 'web' && (item.offer?.retailer === 'amazon' || extractAsin(item.url) !== null)));
   const placingAll = items.some((item) => checkouts[item.id]?.status === 'placing');
-  const total = buyable.reduce((sum, item) => sum + (itemOffer(item)?.priceCents ?? 0) * item.quantity, 0);
+  const total = buyable.reduce((sum, item) => sum + (checkoutOffer(item)?.priceCents ?? 0) * item.quantity, 0);
   const count = buyable.reduce((sum, item) => sum + item.quantity, 0);
 
   const checkoutAll = async () => {
@@ -241,6 +262,13 @@ export default function CartScreen() {
         </View>
       ) : (
         <ScrollView contentContainerStyle={[styles.list, { paddingBottom: 96 }]} contentInsetAdjustmentBehavior="automatic" keyboardShouldPersistTaps="handled">
+          {removedSync.length > 0 && (
+            <Animated.View style={styles.card} entering={FadeIn} exiting={FadeOut} layout={LinearTransition}>
+              {removedSync.map((state) => (
+                <View key={state.itemId}>{syncLine(state, state.title || 'Removed item')}</View>
+              ))}
+            </Animated.View>
+          )}
           {adds.map((add) => {
             const item = add.itemId ? items.find((i) => i.id === add.itemId) : undefined;
             const offer = item ? (itemOffer(item) ?? item.offer) : null;
@@ -353,33 +381,89 @@ function groupByRetailer(items: CartItem[]) {
 }
 
 function canBuy(item: CartItem) {
-  const offer = itemOffer(item);
+  const offer = checkoutOffer(item);
   return Boolean(offer && offer.purchasable !== false);
 }
 
 function CardPrice({ item }: { item: CartItem | undefined }) {
   const styles = useThemedStyles(createStyles);
-  const offer = item ? itemOffer(item) : null;
-  if (offer) {
-    return (
-      <Animated.View entering={FadeIn.duration(300)}>
-        <PriceText priceCents={offer.priceCents} listPriceCents={offer.listPriceCents} />
-      </Animated.View>
-    );
-  }
-  if (!item || gathering(item)) {
+  if (!item) {
     return (
       <Shimmer style={styles.priceSkeleton}>
         <SkeletonBlock width={76} height={18} />
       </Shimmer>
     );
   }
-  const note = item.offerAvailability?.note;
-  return note ? (
-    <Text style={styles.note} numberOfLines={2}>
-      {note}
-    </Text>
-  ) : null;
+  const { offer, checkoutOffer: buyable, alternative } = resolveItemOffer(item);
+  const note = buyable ? null : [item.offerAvailability?.note, alternative && alternativeLine(alternative)].filter(Boolean).join(' ');
+  if (!offer && gathering(item)) {
+    return (
+      <Shimmer style={styles.priceSkeleton}>
+        <SkeletonBlock width={76} height={18} />
+      </Shimmer>
+    );
+  }
+  return (
+    <Animated.View entering={FadeIn.duration(300)}>
+      {offer && <PriceText priceCents={offer.priceCents} listPriceCents={offer.listPriceCents} />}
+      {note ? (
+        <Text style={styles.note} numberOfLines={2}>
+          {note}
+        </Text>
+      ) : null}
+    </Animated.View>
+  );
+}
+
+/** Where an explicit Cart add/remove stands in the shopper's Amazon cart, with the one action that moves it forward. */
+function AmazonSyncLine({
+  state,
+  title,
+  connected,
+  onSignIn,
+  onOpenAmazon,
+  onRetry,
+  onDismiss,
+}: {
+  state: OwnedCartItemState;
+  title?: string;
+  connected: boolean;
+  onSignIn: () => void;
+  onOpenAmazon: () => void;
+  onRetry: () => void;
+  onDismiss: () => void;
+}) {
+  const styles = useThemedStyles(createStyles);
+  const removing = state.desiredQty === 0;
+  let text: string;
+  let actions: { label: string; onPress: () => void }[] = [];
+  if (state.status === 'synced') {
+    text = 'In your Amazon cart';
+  } else if ((state.status === 'pending' || state.status === 'syncing') && connected) {
+    text = removing ? 'Removing from your Amazon cart…' : 'Adding to your Amazon cart…';
+  } else if (state.status === 'pending' || state.status === 'syncing' || state.status === 'needs_signin') {
+    text = removing ? 'Sign in to Amazon to remove it there too.' : 'Sign in to Amazon to add it there too.';
+    actions = [{ label: 'Sign in', onPress: onSignIn }];
+  } else if (state.status === 'failed') {
+    text = state.message ?? "Amazon didn't update.";
+    actions = [{ label: 'Retry', onPress: onRetry }];
+  } else {
+    text = state.message ?? 'Check your Amazon cart.';
+    actions = [
+      { label: 'Open Amazon', onPress: onOpenAmazon },
+      { label: 'Dismiss', onPress: onDismiss },
+    ];
+  }
+  return (
+    <View style={styles.syncRow}>
+      <Text style={styles.alternativeMeta}>{title ? `${title}: ${text}` : text}</Text>
+      {actions.map((action) => (
+        <Pressable key={action.label} accessibilityRole="button" hitSlop={8} onPress={action.onPress}>
+          {({ pressed }) => <Text style={[styles.syncAction, pressed && styles.quietActionPressed]}>{action.label}</Text>}
+        </Pressable>
+      ))}
+    </View>
+  );
 }
 
 /** One row: a product title or link, and a round + that adds it. Return submits too. */
@@ -483,4 +567,6 @@ const createStyles = (Colors: Palette) => StyleSheet.create({
   emptyBody: { ...Type.body, color: Colors.textSecondary, textAlign: 'center' },
   quietAction: { ...Type.body, color: Colors.textSecondary, marginTop: Spacing.md },
   quietActionPressed: { color: Colors.text },
+  syncRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'baseline', columnGap: Spacing.md, rowGap: 2 },
+  syncAction: { ...Type.secondary, color: Colors.accent },
 });

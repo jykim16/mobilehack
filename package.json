@@ -58,7 +58,7 @@
     "lint": "expo lint",
     "convex": "convex dev",
     "typecheck": "tsc --noEmit",
-    "test:amazon": "node --test src/amazon/__tests__/safety.test.mjs"
+    "test:amazon": "node --test src/amazon/__tests__/safety.test.mjs src/amazon/__tests__/owned-cart-sync.test.mjs"
   },
   "private": true
 }

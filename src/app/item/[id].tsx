@@ -1,4 +1,5 @@
 import { router, useLocalSearchParams } from 'expo-router';
+import { useState } from 'react';
 import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -8,9 +9,12 @@ import { PriceText, ProductImage, RatingText, RetailerLogo } from '@/components/
 import { ReviewPreview } from '@/components/review-preview';
 import { StoreComparison } from '@/components/store-comparison';
 import { Spacing, Type, useColors, useThemedStyles, type Palette } from '@/constants/theme';
-import { itemComparison, itemOffer, useItem, usePurchaseRequest } from '@/data/shop-store';
+import { alternativeLine, resolveItemOffer } from '@/data/offer-identity';
+import { itemComparison, useItem, usePurchaseRequest } from '@/data/shop-store';
 import type { CartItem, Offer, Price, PriceHistory } from '@/data/types';
-import { formatPrice, formatShortDate } from '@/lib/format';
+import { formatAgo, formatPrice, formatShortDate } from '@/lib/format';
+
+const STALE_MS = 24 * 60 * 60 * 1000;
 
 export default function ItemDetails() {
   const Colors = useColors();
@@ -20,6 +24,7 @@ export default function ItemDetails() {
   const item = useItem(id);
   const request = usePurchaseRequest(item?.pendingRequest?.requestId);
   const quote = request?.status === 'pending_approval' ? request.quote : null;
+  const [now] = useState(Date.now);
 
   if (!item) {
     return (
@@ -30,7 +35,7 @@ export default function ItemDetails() {
   }
 
   const { priceHistory } = item;
-  const offer = itemOffer(item);
+  const { offer, checkoutOffer, alternative } = resolveItemOffer(item);
   const price = offer ? estimate(item, offer) : null;
   const store = offer ?? item.offer;
   const availability = item.offerAvailability?.note;
@@ -62,11 +67,16 @@ export default function ItemDetails() {
         </View>
 
         {availability && <Text style={styles.muted}>{availability}</Text>}
+        {!checkoutOffer && alternative && <Text style={styles.muted}>{alternativeLine(alternative)}</Text>}
 
         {offer && (
           <DetailSection title="Price history">
             <View>
               <PriceText priceCents={offer.priceCents} listPriceCents={offer.listPriceCents} />
+              <Text style={styles.muted}>
+                Item price from {offer.retailerName}&apos;s listing · checked {formatAgo(offer.updatedAt, now)}
+                {now - offer.updatedAt > STALE_MS ? ' · may be out of date' : ''}
+              </Text>
               {priceHistory && !priceHistory.trackingSinceAdded && <Text style={styles.muted}>{historyLine(priceHistory)}</Text>}
             </View>
             {priceHistory?.trackingSinceAdded ? (

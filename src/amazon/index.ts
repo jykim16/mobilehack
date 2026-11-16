@@ -2,8 +2,16 @@ export {
   AmazonBrowserProvider,
   type AmazonBrowserProviderProps,
   useAmazonCartAdapter,
+  useAmazonCartSync,
   useAmazonSession,
 } from './AmazonBrowserProvider';
+export {
+  type AmazonCartSyncValue,
+  OWNED_CART_MESSAGES,
+  type OwnedCartIntent,
+  type OwnedCartItemState,
+  type OwnedCartSyncStatus,
+} from './owned-cart-sync';
 export { AmazonDevHarness, type AmazonDevHarnessProps } from './AmazonDevHarness';
 export {
   amazonConvexApi,

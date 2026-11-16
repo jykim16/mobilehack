@@ -66,6 +66,12 @@ import {
   SyncedCartLedger,
 } from './daemon-engine';
 import {
+  type AmazonCartSyncValue,
+  type OwnedCartDeltaInput,
+  type OwnedCartDeltaResult,
+  OwnedCartSync,
+} from './owned-cart-sync';
+import {
   applyLedgerReconciliationsToState,
   computeLiveCartQuantityPlan,
   ConvexSyncRetryQueue,
@@ -195,6 +201,7 @@ interface PendingPageReadyWaiter {
 interface CombinedAmazonContextValue {
   session: AmazonSessionHookValue;
   adapter: AmazonCartAdapterValue;
+  cartSync: AmazonCartSyncValue;
 }
 
 const AmazonContext = createContext<CombinedAmazonContextValue | null>(null);
@@ -365,6 +372,7 @@ export function AmazonBrowserProvider({
   const [syncedCartLedger] = useState(
     () => new SyncedCartLedger(createPlatformStorageAdapter(), shopperId),
   );
+  const [ownedCartSync] = useState(() => new OwnedCartSync({ storage: createPlatformStorageAdapter() }));
 
   const [isSignedIn, setIsSignedIn] = useState(false);
   const [busyCount, setBusyCount] = useState(0);
@@ -650,6 +658,7 @@ export function AmazonBrowserProvider({
     });
     knownConvexOrderRefByRetailerIdRef.current.clear();
     void syncedCartLedger.reset(shopperId);
+    void ownedCartSync.reset(shopperId ?? null);
 
     setIsSignedIn(empty.isSignedIn);
     isSignedInRef.current = empty.isSignedIn;
@@ -667,7 +676,7 @@ export function AmazonBrowserProvider({
     lastSyncedAtRef.current = empty.lastSyncedAt;
     setLastSyncError(empty.lastSyncError);
     setPendingSyncCount(empty.pendingSyncCount);
-  }, [shopperId, syncQueue, syncedCartLedger]);
+  }, [ownedCartSync, shopperId, syncQueue, syncedCartLedger]);
 
   const runVerifiedBrowserLogout = useCallback(
     async (targetEpoch: number): Promise<void> => {
@@ -2530,6 +2539,142 @@ export function AmazonBrowserProvider({
     [enqueueCommand, ensureReadySessionEpoch, evalStep, navigateTo, sessionBarrier, syncCartRowsToState],
   );
 
+  const applyOwnedCartDelta = useCallback(
+    (input: OwnedCartDeltaInput): Promise<OwnedCartDeltaResult> => {
+      const asin = extractAsin(input.asin);
+      if (!asin) return Promise.reject(new Error('Invalid Amazon ASIN.'));
+      const callerEpoch = sessionBarrier.epoch;
+      return enqueueCommand(async (): Promise<OwnedCartDeltaResult> => {
+        let opEpoch: number;
+        try {
+          opEpoch = await ensureReadySessionEpoch(sessionBarrier.isLogoutPending ? undefined : callerEpoch);
+        } catch (error) {
+          return { kind: 'requires_signin', reason: error instanceof Error ? error.message : String(error) };
+        }
+        const readCart = async () => {
+          await navigateTo(AMAZON_CART_URL);
+          if (!sessionBarrier.isCurrent(opEpoch)) throw new Error('Amazon session was reset.');
+          const snap = await evalStep<{ signedIn: boolean; challenge: AmazonAuthChallenge; items: ScrapedAmazonCartRow[] }>(
+            (reqId) => buildScrapeCartScript(reqId),
+          );
+          if (!sessionBarrier.isCurrent(opEpoch)) throw new Error('Amazon session was reset.');
+          const rows = snap.items.filter((row) => row.asin.trim().toUpperCase() === asin);
+          return { snap, rowCount: rows.length, qty: rows.reduce((sum, row) => sum + row.quantity, 0) };
+        };
+
+        const before = await readCart();
+        if (!before.snap.signedIn || before.snap.challenge !== 'none') {
+          return { kind: 'requires_signin', reason: 'Amazon sign-in is required.' };
+        }
+        syncCartRowsToState(before.snap.items, Date.now(), opEpoch);
+        if (input.expectedLiveQty !== null && before.qty !== input.expectedLiveQty) {
+          return { kind: 'drift', liveQty: before.qty, rowCount: before.rowCount };
+        }
+        if (input.delta === 0 || input.delta > 10) {
+          return { kind: 'observed', liveQty: before.qty, rowCount: before.rowCount };
+        }
+        const target = before.qty + input.delta;
+        if (input.delta < 0 && (before.rowCount !== 1 || target < 0)) {
+          return { kind: 'drift', liveQty: before.qty, rowCount: before.rowCount };
+        }
+
+        let error: string | undefined;
+        try {
+          if (input.delta > 0) {
+            const added = await runAddToCartUnlocked(
+              {
+                asin,
+                url: canonicalAmazonProductUrl(asin),
+                quantity: input.delta,
+                variantLabel: input.variantLabel ?? undefined,
+              },
+              opEpoch,
+            );
+            if (!added.ok) error = added.error;
+          } else if (target === 0) {
+            const res = await evalStep<{ mutated: boolean; reason?: string }>((reqId) =>
+              buildMutateCartRowScript(reqId, asin, 'delete'),
+            );
+            if (!res.mutated) error = res.reason ?? 'delete_control_not_found';
+            await delay(1400);
+          } else {
+            for (let step = 0; step < -input.delta; step += 1) {
+              if (!sessionBarrier.isCurrent(opEpoch)) throw new Error('Amazon session was reset.');
+              const res = await evalStep<{ mutated: boolean; reason?: string }>((reqId) =>
+                buildMutateCartRowScript(reqId, asin, 'decrement'),
+              );
+              if (!res.mutated) {
+                error = res.reason ?? 'decrement_control_not_found';
+                break;
+              }
+              await delay(1100);
+            }
+          }
+        } catch (mutationError) {
+          error = mutationError instanceof Error ? mutationError.message : String(mutationError);
+        }
+
+        if (!sessionBarrier.isCurrent(opEpoch)) {
+          return { kind: 'mutated', beforeQty: before.qty, afterQty: null, error: 'Amazon session was reset.' };
+        }
+        try {
+          const after = await readCart();
+          syncCartRowsToState(after.snap.items, Date.now(), opEpoch);
+          return { kind: 'mutated', beforeQty: before.qty, afterQty: after.qty, error };
+        } catch (readError) {
+          return {
+            kind: 'mutated',
+            beforeQty: before.qty,
+            afterQty: null,
+            error: readError instanceof Error ? readError.message : String(readError),
+          };
+        }
+      });
+    },
+    [enqueueCommand, ensureReadySessionEpoch, evalStep, navigateTo, runAddToCartUnlocked, sessionBarrier, syncCartRowsToState],
+  );
+
+  useEffect(() => {
+    ownedCartSync.setEngine({
+      applyDelta: applyOwnedCartDelta,
+      canRun: () =>
+        Platform.OS !== 'web' &&
+        ownerIsReady() &&
+        isSignedInRef.current &&
+        !sessionBarrier.isLogoutPending &&
+        AppState.currentState === 'active',
+    });
+    return () => ownedCartSync.setEngine(null);
+  }, [applyOwnedCartDelta, ownedCartSync, ownerIsReady, sessionBarrier]);
+
+  const ownedCartShopperRef = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    const next = shopperId ?? null;
+    const previous = ownedCartShopperRef.current;
+    ownedCartShopperRef.current = next;
+    if (previous === undefined) {
+      void ownedCartSync.hydrate(next);
+    } else if (previous !== next) {
+      void ownedCartSync.reset(next);
+    }
+  }, [ownedCartSync, shopperId]);
+
+  useEffect(() => {
+    if (Platform.OS !== 'web' && ownerReady && isSignedIn) ownedCartSync.resume();
+  }, [isSignedIn, ownedCartSync, ownerReady]);
+
+  const ownedCartItems = useSyncExternalStore(ownedCartSync.subscribe, ownedCartSync.getItems, ownedCartSync.getItems);
+  const cartSyncValue = useMemo<AmazonCartSyncValue>(
+    () => ({
+      items: ownerReady ? ownedCartItems : {},
+      setIntent: (input) => ownedCartSync.setIntent(input),
+      retry: (itemId) => ownedCartSync.retry(itemId),
+      dismiss: (itemId) => ownedCartSync.dismiss(itemId),
+      resume: () => ownedCartSync.resume(),
+    }),
+    [ownedCartItems, ownedCartSync, ownerReady],
+  );
+
   const listPurchases = useCallback(async (): Promise<Purchase[]> => {
     if (!ownerIsReady()) return [];
     return [...purchasesRef.current].sort((a, b) => (b.placedAt ?? 0) - (a.placedAt ?? 0));
@@ -3036,8 +3181,8 @@ export function AmazonBrowserProvider({
   );
 
   const contextValue = useMemo<CombinedAmazonContextValue>(
-    () => ({ session: sessionValue, adapter: adapterValue }),
-    [sessionValue, adapterValue],
+    () => ({ session: sessionValue, adapter: adapterValue, cartSync: cartSyncValue }),
+    [sessionValue, adapterValue, cartSyncValue],
   );
 
   const offscreenOffset = Math.max(dimensions.height * 2, 2400);
@@ -3121,6 +3266,14 @@ export function useAmazonSession(): AmazonSessionHookValue {
     throw new Error('useAmazonSession must be used inside <AmazonBrowserProvider>.');
   }
   return ctx.session;
+}
+
+export function useAmazonCartSync(): AmazonCartSyncValue {
+  const ctx = useContext(AmazonContext);
+  if (!ctx) {
+    throw new Error('useAmazonCartSync must be used inside <AmazonBrowserProvider>.');
+  }
+  return ctx.cartSync;
 }
 
 export function useAmazonCartAdapter(): AmazonCartAdapterValue {
