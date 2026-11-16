@@ -102,6 +102,7 @@ export function PaymentRows() {
   const { card, address } = demoProfile;
   return (
     <View style={styles.rows}>
+      <Text style={styles.muted}>Demo card and address · Not used for this order</Text>
       <View style={styles.infoRow}>
         <CardBrandLogo brand={card.brand} />
         <View style={styles.infoText}>

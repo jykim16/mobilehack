@@ -8,6 +8,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { formatRelativeSyncTime, useAmazonSession } from '@/amazon';
 import { Radius, Spacing, Type, useColors, useThemedStyles, type Palette } from '@/constants/theme';
 import { convexConfigured, rememberAccountEmail, useAccountEmail } from '@/lib/session';
+import { whopPreviewEnabled } from '@/payments/preview-config';
+import { WhopAccountCard } from '@/payments/whop-account-card';
 
 export default function AccountScreen() {
   const styles = useThemedStyles(createStyles);
@@ -19,6 +21,8 @@ export default function AccountScreen() {
         Account
       </Text>
       {convexConfigured ? <SignedInSection /> : <Text style={styles.muted}>Offline demo. Nothing is saved to an account.</Text>}
+
+      {whopPreviewEnabled && <WhopAccountCard onDetails={() => router.push('/payment-details')} />}
 
       <View style={styles.group}>
         <Row icon="sparkles-outline" title="Connect an agent" detail="Let an AI agent add to your cart over MCP" onPress={() => router.push('/connect-agent')} />
