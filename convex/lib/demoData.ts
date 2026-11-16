@@ -2,14 +2,22 @@ import type { SectionName } from "./validators";
 
 export const HERO_ASIN = "B09XS7JWHH";
 export const HERO_URL = `https://www.amazon.com/dp/${HERO_ASIN}`;
-export const HERO_INITIAL_PRICE_CENTS = 27999;
-export const HERO_DROPPED_PRICE_CENTS = 22999;
+/**
+ * The price the user reported for this exact listing on November 15, 2026:
+ * $194.99. It is user-reported, not independently verified: an anonymous read of
+ * the page shows no featured offer and Amazon Resale as the seller profile, and
+ * the third-party trackers put the third-party used price near $199. The earlier
+ * seeded $279.99 was a staged demo number that no source supported.
+ */
+export const HERO_INITIAL_PRICE_CENTS = 19499;
 export const AIRFLY_URL = "https://www.bestbuy.com/site/twelve-south-airfly-pro/6411178.p";
 
 const DAY = 24 * 3600_000;
 
 type SeedOffer = {
   canonicalKey: string;
+  /** Where the number came from, when it is not an independent read of the page. */
+  provenanceNote?: string;
   variantLabel: string;
   retailer: string;
   retailerName: string;
@@ -46,7 +54,8 @@ export const SEED_PRODUCTS: SeedProduct[] = [
     brand: "Sony",
     category: "wireless headphones",
     imageUrl: "https://m.media-amazon.com/images/I/51aXvjzcukL._AC_SL1500_.jpg",
-    description: "Over-ear Bluetooth headphones with adaptive noise canceling and 30-hour battery.",
+    description:
+      "WH-1000XM5 Premium Noise Cancelling Wireless Headphones: Auto NC Optimizer, up to 30 hrs of battery, carrying case, crystal clear calls, touch control, multipoint connection.",
     variants: [
       { label: "Black", sku: HERO_ASIN },
       { label: "Silver", sku: "B09Y2MYL5C" },
@@ -60,6 +69,8 @@ export const SEED_PRODUCTS: SeedProduct[] = [
         seller: "Amazon.com",
         url: HERO_URL,
         priceCents: HERO_INITIAL_PRICE_CENTS,
+        provenanceNote:
+          "Price reported by the user on November 15, 2026 for this exact listing. Not independently verified: the page shows no featured offer and Amazon Resale as the seller profile.",
         listPriceCents: 39999,
         shippingCents: 0,
         deliveryEstimate: "Arrives in 2-3 days with free Prime delivery",

@@ -8,7 +8,6 @@ import { normalizedQuery } from "./lib/cache";
 import {
   AIRFLY_URL,
   HERO_ASIN,
-  HERO_DROPPED_PRICE_CENTS,
   HERO_INITIAL_PRICE_CENTS,
   HERO_URL,
   SEED_PRODUCTS,
@@ -39,7 +38,7 @@ async function ensureCatalog(ctx: MutationCtx) {
     for (const variant of p.variants) {
       variantIds.set(variant.label, await ctx.db.insert("variants", { productId, ...variant }));
     }
-    for (const { history, variantLabel, ...o } of p.offers) {
+    for (const { history, provenanceNote, variantLabel, ...o } of p.offers) {
       const offerId = await ctx.db.insert("offers", {
         ...o,
         productId,
@@ -47,6 +46,16 @@ async function ensureCatalog(ctx: MutationCtx) {
         currency: "USD",
         inStock: true,
         simulated: true,
+        provenance: provenanceNote
+          ? {
+              method: "seed",
+              sourceUrl: o.url,
+              observedAt: now,
+              supportingText: null,
+              verifiedKey: null,
+              note: provenanceNote,
+            }
+          : undefined,
         updatedAt: now,
       });
       for (const h of history) {
@@ -200,7 +209,14 @@ export const advancePriceInternal = internalMutation({
 async function restoreSeededOffers(ctx: MutationCtx) {
   const now = Date.now();
   for (const product of SEED_PRODUCTS) {
-    for (const { history, variantLabel, ...seed } of product.offers) {
+    const seededProduct = await ctx.db
+      .query("products")
+      .withIndex("by_demoKey", (q) => q.eq("demoKey", product.demoKey))
+      .unique();
+    if (seededProduct && (seededProduct.title !== product.title || seededProduct.description !== product.description)) {
+      await ctx.db.patch(seededProduct._id, { title: product.title, description: product.description });
+    }
+    for (const { history, provenanceNote, variantLabel, ...seed } of product.offers) {
       const offer = await ctx.db
         .query("offers")
         .withIndex("by_canonicalKey", (q) => q.eq("canonicalKey", seed.canonicalKey))
@@ -213,7 +229,16 @@ async function restoreSeededOffers(ctx: MutationCtx) {
         condition: undefined,
         conditionClass: undefined,
         alternates: undefined,
-        provenance: undefined,
+        provenance: provenanceNote
+          ? {
+              method: "seed",
+              sourceUrl: seed.url,
+              observedAt: now,
+              supportingText: null,
+              verifiedKey: null,
+              note: provenanceNote,
+            }
+          : undefined,
         simulated: true,
         updatedAt: now,
       });
