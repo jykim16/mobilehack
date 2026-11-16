@@ -277,8 +277,22 @@ export default defineSchema({
     cardTransactionLimitCents: v.optional(v.number()),
     cardIssuedAt: v.optional(v.number()),
     cardNote: v.optional(v.string()),
+    /** Balances Cart computes from its own ledger (money in minus card spend). */
     availableBalanceCents: v.optional(v.number()),
     balanceCheckedAt: v.optional(v.number()),
+    /**
+     * The provider's own view of this account, stored unmodified and separately
+     * labeled from our ledger. These fields already exist on deployed rows written
+     * by the payment work in #37, so they must be declared here for a deployment
+     * from main to validate; they are optional and nothing on main writes them yet.
+     */
+    providerAvailableCents: v.optional(v.number()),
+    providerPendingCents: v.optional(v.number()),
+    providerCurrency: v.optional(v.string()),
+    providerFetchedAt: v.optional(v.number()),
+    providerSettlementDate: v.optional(v.string()),
+    providerCardCount: v.optional(v.number()),
+    providerOnboarding: v.optional(v.string()),
     createdAt: v.number(),
     updatedAt: v.number(),
   })
