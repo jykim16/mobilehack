@@ -5,6 +5,7 @@ import { createContext, use, useCallback, useEffect, useState, type ReactNode } 
 import { convexConfigured, useSession } from '@/lib/session';
 
 import * as cartApi from './cart-api';
+import { CheckoutNotPlaced, checkoutResult } from './checkout-status';
 import { api } from './convex-api';
 import { mockComparison } from './mock-comparison';
 import { mockReviews } from './mock-reviews';
@@ -127,10 +128,11 @@ function placementOf(convex: ConvexReactClient, requestId: string) {
         return;
       }
       if (!request) return;
-      const order = request.order?.status;
-      if (request.status === 'ordered' || order === 'placed') finish();
-      else if (request.status === 'failed' || order === 'failed') finish(new Error(request.error ?? 'The order failed. Try again.'));
-      else if (order === 'requote_required') finish(new Error('The price changed. Try again.'));
+      const result = checkoutResult(request.order);
+      if (request.requestId !== requestId) finish(new CheckoutNotPlaced('unconfirmed'));
+      else if (request.status === 'failed') finish(new CheckoutNotPlaced('failed'));
+      else if (result === 'placed') finish();
+      else if (result !== 'placing') finish(new CheckoutNotPlaced(result));
     };
     const timer = setTimeout(() => finish(new Error('Still placing this order. Check Purchases before trying again.')), 180_000);
     const unsubscribe = watch.onUpdate(check);

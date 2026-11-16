@@ -8,6 +8,7 @@ import { ProductImage, RatingText } from '@/components/product-bits';
 import { ShipmentTimeline, shipmentProgress } from '@/components/shipment-timeline';
 import { Radius, Spacing, Type, useColors, useThemedStyles, type Palette } from '@/constants/theme';
 import { mockShipmentEvents } from '@/data/mock-shipment';
+import { checkoutResult } from '@/data/checkout-status';
 import { usePurchaseRequest, useShop } from '@/data/shop-store';
 import type { Purchase } from '@/data/types';
 import { etaDate, formatShortDate, isToday } from '@/lib/format';
@@ -51,8 +52,8 @@ export default function PurchaseDetails() {
   const { newest, label } = shipmentProgress(shipment, events);
   const eta = shipment?.eta ? etaDate(shipment.eta) : null;
   const deliveredOn = newest?.occurredAt ?? eta;
-  const confirmed = purchase.status === 'placed';
-  const title = orderTitles[purchase.status] ?? label;
+  const confirmed = checkoutResult(purchase) === 'placed';
+  const title = confirmed ? label : orderTitles[purchase.status] ?? 'Order not confirmed';
   const subtitle =
     shipment?.status === 'delivered'
       ? deliveredOn
@@ -143,6 +144,8 @@ export default function PurchaseDetails() {
 }
 
 const orderTitles: Partial<Record<Purchase['status'], string>> = {
+  awaiting_payment: 'Payment required · No order placed',
+  awaiting_client: 'Order not confirmed',
   submitting: 'Placing order',
   unknown: 'Checking order status',
   requote_required: 'Price changed',

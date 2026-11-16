@@ -118,6 +118,7 @@ export default function CartScreen() {
   const checkout = async (item: CartItem) => {
     if (inFlight.current.has(item.id)) return;
     inFlight.current.add(item.id);
+    setToast(false);
     setCheckout(item.id, { status: 'placing' });
     try {
       await checkoutItem(item);
