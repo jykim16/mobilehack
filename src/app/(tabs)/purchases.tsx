@@ -41,7 +41,7 @@ export default function PurchasesScreen() {
           <Text style={styles.emptyBody}>Orders you check out show up here with their delivery status.</Text>
         </View>
       ) : (
-        <ScrollView contentContainerStyle={styles.list}>
+        <ScrollView contentContainerStyle={styles.list} contentInsetAdjustmentBehavior="automatic">
           {purchases.map((purchase) => {
             const item = purchasedItems[purchase.itemId];
             const { quote } = purchase;
