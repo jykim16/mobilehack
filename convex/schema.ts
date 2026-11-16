@@ -4,6 +4,11 @@ import { v } from "convex/values";
 import { mcpTables } from "./mcp/tables";
 import {
   actor,
+  cardStatus,
+  cardTransactionStatus,
+  paymentStatus,
+  revalidation,
+  subaccountStatus,
   conditionClass,
   decision,
   enrichmentStatus,
@@ -234,11 +239,114 @@ export default defineSchema({
     placedAt: v.optional(v.number()),
     simulated: v.boolean(),
     error: v.optional(v.string()),
+    /** Money trail: the payment that funded this order and the card charge against it. */
+    paymentId: v.optional(v.id("payments")),
+    cardTransactionId: v.optional(v.id("cardTransactions")),
+    subaccountId: v.optional(v.id("shopperSubaccounts")),
+    /** The retailer was re-read immediately before the charge. */
+    revalidatedAt: v.optional(v.number()),
+    revalidation: v.optional(revalidation),
+    refundedAt: v.optional(v.number()),
   })
     .index("by_purchaseRequestId", ["purchaseRequestId"])
     .index("by_shopperId", ["shopperId"])
     .index("by_orderRef", ["orderRef"])
     .index("by_retailerOrderId", ["retailerOrderId"]),
+
+  /**
+   * One Whop subaccount per shopper who funds a Cart purchase. Balances, the card
+   * and its limits live on the subaccount; Cart never holds a platform-wide pool.
+   * Only the provider's card id and its last four digits are stored.
+   */
+  shopperSubaccounts: defineTable({
+    shopperId: v.id("users"),
+    provider: v.literal("whop"),
+    providerAccountId: v.string(),
+    environment: v.union(v.literal("sandbox"), v.literal("production")),
+    status: subaccountStatus,
+    /** Production onboarding is a documented per-shopper step; the demo reuses one
+     * pre-verified sandbox subaccount and records kycRequired so nobody confuses it. */
+    kycRequired: v.boolean(),
+    onboardingUrl: v.optional(v.string()),
+    payoutsEnabled: v.optional(v.boolean()),
+    cardId: v.optional(v.string()),
+    cardLast4: v.optional(v.string()),
+    cardStatus: cardStatus,
+    cardSpendLimitCents: v.optional(v.number()),
+    /** Issuer-side cap on a single charge, which is how a per-order limit is enforced. */
+    cardTransactionLimitCents: v.optional(v.number()),
+    cardIssuedAt: v.optional(v.number()),
+    cardNote: v.optional(v.string()),
+    availableBalanceCents: v.optional(v.number()),
+    balanceCheckedAt: v.optional(v.number()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_shopperId", ["shopperId"])
+    .index("by_providerAccountId", ["providerAccountId"]),
+
+  /** Money in: the one-time Whop checkout for an approved quote. */
+  payments: defineTable({
+    shopperId: v.id("users"),
+    requestId: v.id("purchaseRequests"),
+    quoteVersion: v.number(),
+    subaccountId: v.id("shopperSubaccounts"),
+    providerCheckoutConfigId: v.optional(v.string()),
+    checkoutUrl: v.optional(v.string()),
+    /** Set by the webhook; unique per provider payment, so a replay records once. */
+    providerPaymentId: v.optional(v.string()),
+    amountCents: v.number(),
+    currency: v.string(),
+    status: paymentStatus,
+    paidAt: v.optional(v.number()),
+    failureReason: v.optional(v.string()),
+    refundId: v.optional(v.string()),
+    refundAmountCents: v.optional(v.number()),
+    refundedAt: v.optional(v.number()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_providerPaymentId", ["providerPaymentId"])
+    .index("by_requestId", ["requestId"])
+    .index("by_shopperId_and_status", ["shopperId", "status"]),
+
+  /** Money out: the retailer charge against the subaccount's card. */
+  cardTransactions: defineTable({
+    shopperId: v.id("users"),
+    subaccountId: v.id("shopperSubaccounts"),
+    requestId: v.id("purchaseRequests"),
+    quoteVersion: v.number(),
+    orderId: v.optional(v.id("orders")),
+    cardId: v.string(),
+    amountCents: v.number(),
+    currency: v.string(),
+    status: cardTransactionStatus,
+    providerTransactionId: v.optional(v.string()),
+    /** Display only: the provider's masked card, never a PAN or a CVV. */
+    maskedCard: v.optional(v.string()),
+    merchantName: v.string(),
+    orderReference: v.string(),
+    /** A charge whose outcome never came back; it blocks retries until reconciled. */
+    unknownCharge: v.boolean(),
+    note: v.optional(v.string()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_orderId", ["orderId"])
+    .index("by_providerTransactionId", ["providerTransactionId"])
+    .index("by_shopperId_and_status", ["shopperId", "status"]),
+
+  /** Every webhook delivery, keyed by the provider's event id so a replay is a no-op. */
+  whopWebhookEvents: defineTable({
+    providerEventId: v.string(),
+    type: v.string(),
+    receivedAt: v.number(),
+    signatureVerified: v.boolean(),
+    processedAt: v.optional(v.number()),
+    outcome: v.optional(v.string()),
+    /** A hash of the body, not the body: no customer data is kept for debugging. */
+    payloadDigest: v.string(),
+  }).index("by_providerEventId", ["providerEventId"]),
 
   shipments: defineTable({
     shopperId: v.id("users"),

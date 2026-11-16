@@ -1,4 +1,7 @@
 import { ConvexError } from "convex/values";
+
+const readEnv = (name: string): string | undefined =>
+  typeof process !== "undefined" ? process.env[name] : undefined;
 import type { Doc, Id } from "../_generated/dataModel";
 import type { ActionCtx, MutationCtx, QueryCtx } from "../_generated/server";
 import { internal } from "../_generated/api";
@@ -266,7 +269,12 @@ export async function decideFor(
       simulated: req.quote.simulated,
     });
   }
-  if (serverSubmits) {
+  if (readEnv("WHOP_API_KEY") && !req.quote.simulated) {
+    // A real retailer quote is funded first: the shopper pays their own Whop
+    // subaccount, and the card charges only once that payment is confirmed.
+    await ctx.db.patch("orders", orderId, { status: "awaiting_payment" });
+    await ctx.scheduler.runAfter(0, internal.whop.fundPurchase, { requestId: req._id });
+  } else if (serverSubmits) {
     await ctx.scheduler.runAfter(0, internal.orders.submitOrder, { orderId });
   }
   return await result("approved");
