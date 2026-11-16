@@ -102,6 +102,8 @@ export interface CheckoutReviewLineItem {
 
 export interface AmazonSessionCheckResult {
   signedIn: boolean;
+  /** True only on positive signed-out evidence (Amazon header sign-in prompt); unknown pages are false. */
+  signedOut?: boolean;
   challenge: AmazonAuthChallenge;
   currentUrl: string;
   cartCount: number | null;

@@ -36,6 +36,7 @@ import {
   buildScrapeOrderConfirmationScript,
   buildScrapeProgressTrackerScript,
   buildScrapeYourOrdersScript,
+  buildSessionCheckScript,
   buildSubmitCheckoutOrderScript,
 } from '../scripts.ts';
 
@@ -1685,6 +1686,8 @@ test('(i.4) SessionResetBarrier keeps Amazon operations fail-closed locked when 
   const okVerdict = barrier.verifySignOutResult(resetEpoch, {
     currentUrl: 'https://www.amazon.com/gp/cart/view.html',
     signedIn: false,
+    signedOut: true,
+    challenge: 'none',
   });
   assert.equal(okVerdict.ok, true);
   assert.equal(barrier.isLogoutPending, false);
@@ -3511,4 +3514,389 @@ test('(k.3) [MEDIUM] immediate reconcileViaSyncOrders executes strictly inside r
     'checkout:reconcile_end',
     'second_command:start',
   ]);
+});
+
+
+function providerSource() {
+  return ts.createSourceFile(
+    'AmazonBrowserProvider.tsx',
+    readFileSync(new URL('../AmazonBrowserProvider.tsx', import.meta.url), 'utf8'),
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TSX,
+  );
+}
+
+function runExtracted(code, context) {
+  const js = ts.transpileModule('const extracted = ' + code + ';', {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.React },
+    fileName: 'extracted.tsx',
+  }).outputText;
+  return vm.runInNewContext('(() => { ' + js + '\nreturn extracted; })()', context);
+}
+
+function providerHookBody(hook, marker, context) {
+  const source = providerSource();
+  const found = [];
+  (function visit(node) {
+    if (
+      ts.isCallExpression(node) &&
+      node.expression.getText(source) === hook &&
+      node.arguments[0] &&
+      node.arguments[0].getText(source).includes(marker)
+    ) {
+      found.push(node.arguments[0].getText(source));
+    }
+    ts.forEachChild(node, visit);
+  })(source);
+  assert.equal(found.length, 1, hook + ' containing ' + marker);
+  return runExtracted(found[0], context);
+}
+
+function makeAppStateMock(initial = 'active') {
+  const listeners = [];
+  return {
+    currentState: initial,
+    listeners,
+    addEventListener: (_event, fn) => {
+      listeners.push(fn);
+      return { remove: () => listeners.splice(listeners.indexOf(fn), 1) };
+    },
+    emit(next) {
+      this.currentState = next;
+      for (const fn of [...listeners]) fn(next);
+    },
+  };
+}
+
+test('(m.1) daemon defaults off: provider and AmazonSyncDaemon start no subscription, poller, quote, cart, or backend write unless opted in', () => {
+  const source = providerSource();
+  let providerDefault;
+  let daemonEnabledExpr;
+  (function visit(node) {
+    if (ts.isFunctionDeclaration(node) && node.name?.text === 'AmazonBrowserProvider') {
+      for (const el of node.parameters[0].name.elements) {
+        if (el.name.getText(source) === 'enableBackendDaemon') providerDefault = el.initializer?.getText(source);
+      }
+    }
+    if (ts.isJsxSelfClosingElement(node) && node.tagName.getText(source) === 'AmazonSyncDaemon') {
+      for (const attr of node.attributes.properties) {
+        if (attr.name?.getText(source) === 'enabled') daemonEnabledExpr = attr.initializer.expression.getText(source);
+      }
+    }
+    ts.forEachChild(node, visit);
+  })(source);
+  assert.equal(providerDefault, 'false');
+  assert.equal(daemonEnabledExpr, 'enableBackendDaemon && ownerReady');
+
+  const daemonSource = ts.createSourceFile(
+    'AmazonSyncDaemon.tsx',
+    readFileSync(new URL('../AmazonSyncDaemon.tsx', import.meta.url), 'utf8'),
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TSX,
+  );
+  let daemonFn;
+  (function visit(node) {
+    if (ts.isFunctionDeclaration(node) && node.name?.text === 'AmazonSyncDaemon') {
+      daemonFn = node.getText(daemonSource).replace(/^export\s+/, '');
+    }
+    ts.forEachChild(node, visit);
+  })(daemonSource);
+  const backendCalls = [];
+  const convex = new Proxy({}, { get: (_t, prop) => (...args) => { backendCalls.push(String(prop)); return args; } });
+  const rendered = [];
+  const context = {
+    useAmazonDaemonBridge: () => ({ isSignedIn: () => true }),
+    useConvex: () => convex,
+    Platform: { OS: 'ios' },
+    DAEMON_POLL_INTERVAL_MS: 2500,
+    ORDER_SYNC_INTERVAL_MS: 30000,
+    DaemonAuthBoundary: function DaemonAuthBoundary() {},
+    AmazonSyncDaemonActive: function AmazonSyncDaemonActive() {},
+    React: { createElement: (type, props, ...children) => { rendered.push(type.name); return { type, props, children }; } },
+  };
+  const AmazonSyncDaemon = runExtracted('(' + daemonFn.replace('function AmazonSyncDaemon', 'function') + ')', context);
+  assert.equal(AmazonSyncDaemon({}), null);
+  assert.equal(AmazonSyncDaemon({ enabled: false }), null);
+  assert.deepEqual(rendered, []);
+  assert.deepEqual(backendCalls, []);
+  assert.notEqual(AmazonSyncDaemon({ enabled: true }), null);
+  assert.ok(rendered.includes('AmazonSyncDaemonActive'));
+});
+
+test('(m.2) daemon off: mount, foreground resume, and sign-in completion dispatch zero cart, order, quote, or backend work', async () => {
+  for (const enableBackendDaemon of [false, true]) {
+    const calls = [];
+    const spy = (name) => async () => { calls.push(name); return {}; };
+    const appState = makeAppStateMock('active');
+    const intervals = [];
+    const flushes = [];
+    const effectContext = {
+      Platform: { OS: 'ios' },
+      enableBackendDaemon,
+      AppState: appState,
+      setInterval: (fn) => { intervals.push(fn); return intervals.length; },
+      clearInterval: () => {},
+      Date,
+      shouldRunIdleHeartbeat,
+      HEARTBEAT_INTERVAL_MS,
+      busyCountRef: { current: 0 },
+      isSheetOpenRef: { current: false },
+      currentUrlRef: { current: 'https://www.amazon.com/gp/cart/view.html' },
+      challengeRef: { current: 'none' },
+      lastHeartbeatAtRef: { current: 0 },
+      lastSyncedAtRef: { current: 0 },
+      isSignedInRef: { current: false },
+      sessionBarrier: { isLogoutPending: false },
+      checkSession: spy('checkSession'),
+      syncOrders: spy('syncOrders'),
+      refreshCart: spy('refreshCart'),
+      convexSync: { recordClientPlacement: spy('convex.recordClientPlacement') },
+      autoConvexSyncRef: { current: undefined },
+      convexSyncRef: { current: undefined },
+      ownerIsReady: () => true,
+      syncQueue: { flush: async (client) => { flushes.push(client); return {}; } },
+    };
+
+    const flushEffect = providerHookBody('useEffect', 'syncQueue.flush(effective)', effectContext);
+    flushEffect();
+    const resumeEffect = providerHookBody('useEffect', 'AppState.addEventListener', effectContext);
+    const cleanup = resumeEffect();
+
+    let settled = null;
+    const notifyPageReady = providerCallback('notifyPageReady', {
+      ...effectContext,
+      setCurrentUrl: () => {},
+      setChallenge: () => {},
+      setIsSignedIn: (v) => { effectContext.isSignedInRef.current = v; },
+      settleSignInWaiters: (v) => { settled = v; },
+      pageWaitersRef: { current: new Set() },
+    });
+    notifyPageReady('https://www.amazon.com/gp/cart/view.html', true, 'none');
+    assert.equal(settled, true);
+    assert.equal(effectContext.isSignedInRef.current, true);
+
+    appState.emit('background');
+    appState.emit('active');
+    for (const tick of intervals) tick();
+    await new Promise((r) => setImmediate(r));
+    cleanup?.();
+
+    if (!enableBackendDaemon) {
+      assert.deepEqual(calls, [], 'daemon off must not run cart/order/session automation');
+      assert.deepEqual(flushes, [], 'daemon off must not flush backend retry queue');
+      assert.equal(appState.listeners.length, 0);
+      assert.equal(intervals.length, 0);
+    } else {
+      assert.ok(calls.includes('syncOrders'), 'positive control: opted-in resume syncs orders');
+      assert.equal(flushes.length, 1, 'positive control: opted-in mount flushes retry queue');
+    }
+  }
+});
+
+test('(m.3) logout verification requires positive signed-out header evidence; CAPTCHA, MFA, empty or unknown pages keep the owner locked', async () => {
+  const probeFor = async (env) => (await runInjectedStepScript(buildSessionCheckScript('probe'), env)).data;
+  const greeting = (text, href = '') => (sel) => {
+    if (sel.includes('#nav-logobar-greeting')) return { textContent: text, getAttribute: () => href };
+    return null;
+  };
+  const captcha = await probeFor({ pathname: '/errors/validateCaptcha', href: 'https://www.amazon.com/errors/validateCaptcha', querySelector: () => null });
+  const mfa = await probeFor({ pathname: '/ap/mfa', href: 'https://www.amazon.com/ap/mfa', querySelector: () => null });
+  const emptyCart = await probeFor({ pathname: '/gp/cart/view.html', href: 'https://www.amazon.com/gp/cart/view.html', querySelector: () => null });
+  const signedIn = await probeFor({ pathname: '/gp/cart/view.html', href: 'https://www.amazon.com/gp/cart/view.html', querySelector: greeting('Hello, Shopper') });
+  const signedOut = await probeFor({ pathname: '/gp/cart/view.html', href: 'https://www.amazon.com/gp/cart/view.html', querySelector: greeting('Sign in ›', '/ap/signin') });
+
+  for (const probe of [captcha, mfa, emptyCart]) {
+    assert.equal(probe.signedIn, false);
+    assert.equal(probe.signedOut, false);
+  }
+  assert.equal(signedIn.signedOut, false);
+  assert.equal(signedOut.signedOut, true);
+  assert.equal(signedOut.challenge, 'none');
+
+  for (const probe of [captcha, mfa, emptyCart, signedIn, { ...signedOut, challenge: 'signin' }]) {
+    const barrier = new SessionResetBarrier();
+    const epoch = barrier.beginReset({ requiresBrowserSignOut: true });
+    assert.equal(barrier.verifySignOutResult(epoch, probe).ok, false);
+    assert.equal(barrier.isLogoutPending, true);
+
+    const records = new Map();
+    const owner = new PersistedBrowserOwner({ getItem: async (k) => records.get(k) ?? null, setItem: async (k, v) => { records.set(k, v); } });
+    const bound = await owner.initialize('B', async () => {
+      const verdict = barrier.verifySignOutResult(epoch, probe);
+      if (!verdict.ok) throw new Error(verdict.reason);
+    });
+    assert.equal(bound, false);
+    assert.equal(owner.isReady('B'), false);
+    assert.notEqual([...records.values()].at(-1), 'B');
+  }
+
+  const barrier = new SessionResetBarrier();
+  const epoch = barrier.beginReset({ requiresBrowserSignOut: true });
+  assert.equal(barrier.verifySignOutResult(epoch, signedOut).ok, true);
+  assert.equal(barrier.isCurrent(epoch), true);
+});
+
+test('(m.4) provider isolation steps refuse dispatch after reset and stop mid-loop when revoked during an awaited step', async () => {
+  for (const revokeDuringFirstStep of [false, true]) {
+    let current = true;
+    const dispatched = [];
+    const context = {
+      sessionBarrier: { isCurrent: () => current },
+      evalStep: async (build) => {
+        const label = build('req');
+        dispatched.push(label);
+        if (label === 'scrape') {
+          return { signedIn: true, challenge: 'none', currentUrl: 'https://www.amazon.com/gp/cart/view.html', items: [{ asin: 'B09XS7JWHH', title: 'Mock', quantity: 1, unitPriceCents: 100 }] };
+        }
+        if (label.startsWith('step:') && revokeDuringFirstStep) current = false;
+        return { mutated: true };
+      },
+      navigateTo: async () => {},
+      runAddToCartUnlocked: async () => { dispatched.push('add'); return { ok: true }; },
+      delay: async () => {},
+      AMAZON_CART_URL: 'https://www.amazon.com/gp/cart/view.html',
+      buildScrapeCartScript: () => 'scrape',
+      buildMoveSavedToCartScript: () => 'move',
+      buildMutateCartRowScript: (_r, asin, op) => 'step:' + op,
+      buildSaveCartRowForLaterScript: () => 'save',
+      setIsSignedIn: () => {},
+      setChallenge: () => {},
+      isSignedInRef: { current: false },
+      challengeRef: { current: 'none' },
+    };
+    const makeDeps = providerCallback('makeUnlockedIsolationDeps', context);
+    const deps = makeDeps(() => 7);
+    const run = isolateSingleActiveCartItem({ ...deps, asin: 'B09XS7JWHH', url: 'https://www.amazon.com/dp/B09XS7JWHH', quantity: 3 });
+    if (revokeDuringFirstStep) {
+      await assert.rejects(run, /reset/);
+      assert.deepEqual(dispatched.filter((d) => d.startsWith('step:')), ['step:increment']);
+    } else {
+      await run.catch(() => undefined);
+      assert.deepEqual(dispatched.filter((d) => d.startsWith('step:')), ['step:increment', 'step:increment']);
+    }
+  }
+
+  let current = false;
+  const dispatched = [];
+  const makeDeps = providerCallback('makeUnlockedIsolationDeps', {
+    sessionBarrier: { isCurrent: () => current },
+    evalStep: async (build) => { dispatched.push(build('req')); return { mutated: true }; },
+    navigateTo: async () => { dispatched.push('navigate'); },
+    runAddToCartUnlocked: async () => { dispatched.push('add'); return { ok: true }; },
+    delay: async () => {},
+    AMAZON_CART_URL: 'cart',
+    buildScrapeCartScript: () => 'scrape',
+    buildMoveSavedToCartScript: () => 'move',
+    buildMutateCartRowScript: () => 'step',
+    buildSaveCartRowForLaterScript: () => 'save',
+    setIsSignedIn: () => {},
+    setChallenge: () => {},
+    isSignedInRef: { current: false },
+    challengeRef: { current: 'none' },
+  });
+  const deps = makeDeps(() => 1);
+  for (const call of [deps.navigateToCart(), deps.scrapeCart(), deps.moveSavedToCart('B09XS7JWHH'), deps.addTargetToCart({ asin: 'B09XS7JWHH' }), deps.stepRowQuantity('B09XS7JWHH', 'increment'), deps.saveRowForLater('B000OTHER0')]) {
+    await assert.rejects(call, /reset/);
+  }
+  assert.deepEqual(dispatched, []);
+});
+
+test('(m.5) a queued flush waiter from before clear() cannot send the next shopper job through the old client', async () => {
+  const queue = new ConvexSyncRetryQueue();
+  const sent = [];
+  let releaseA;
+  let bOnline = false;
+  const clientA = {
+    recordClientPlacement: async (args) => {
+      sent.push('A-client:' + args.orderRef);
+      if (args.orderRef === 'A-order') await new Promise((r) => { releaseA = r; });
+    },
+  };
+  const clientB = {
+    recordClientPlacement: async (args) => {
+      if (!bOnline) throw new Error('offline');
+      sent.push('B-client:' + args.orderRef);
+    },
+  };
+  const placement = (orderRef) => ({ orderRef, retailerOrderId: '114-1234567-1234567', placedAt: 1, quote: null });
+
+  const first = queue.enqueuePlacement(placement('A-order'), clientA);
+  const staleWaiter = queue.flush(clientA);
+  while (!releaseA) await Promise.resolve();
+  queue.clear();
+  await queue.enqueuePlacement(placement('B-private-order'), clientB);
+  assert.equal(queue.pendingCount, 1);
+  releaseA();
+  await Promise.all([first, staleWaiter]);
+  await new Promise((r) => setImmediate(r));
+
+  assert.deepEqual(sent, ['A-client:A-order']);
+  assert.equal(queue.pendingCount, 1, 'B job is preserved for the B client');
+  bOnline = true;
+  await queue.flush(clientB);
+  assert.deepEqual(sent, ['A-client:A-order', 'B-client:B-private-order']);
+  assert.equal(queue.pendingCount, 0);
+});
+
+test('(m.6) Close, owner revocation, unmount, and failed reconnect settle every outstanding sign-in waiter', async () => {
+  const waiters = new Set();
+  const results = [];
+  const settleContext = { signInWaitersRef: { current: waiters } };
+  const settleSignInWaiters = providerCallback('settleSignInWaiters', settleContext);
+  const addWaiter = () => waiters.add((v) => results.push(v));
+
+  addWaiter();
+  const closeBrowserSheet = providerCallback('closeBrowserSheet', {
+    ownerIsReady: () => true,
+    setIsSheetOpen: () => {},
+    settleSignInWaiters,
+    isSignedInRef: { current: true },
+  });
+  closeBrowserSheet();
+  assert.deepEqual(results, [false]);
+
+  const records = new Map();
+  const owner = new PersistedBrowserOwner({ getItem: async (k) => records.get(k) ?? null, setItem: async (k, v) => { records.set(k, v); } });
+  await owner.initialize('A', async () => {});
+  const barrier = new SessionResetBarrier();
+  const layout = providerHookBody('useLayoutEffect', 'browserOwner.activate()', {
+    browserOwner: owner,
+    shopperId: 'A',
+    sessionBarrier: barrier,
+    Platform: { OS: 'ios' },
+    settleSignInWaiters,
+  });
+  const cleanup = layout();
+  addWaiter();
+  owner.invalidate();
+  assert.deepEqual(results, [false, false]);
+  assert.equal(barrier.isLogoutPending, true);
+  addWaiter();
+  cleanup();
+  assert.deepEqual(results, [false, false, false]);
+
+  addWaiter();
+  const openBrowserSheet = providerCallback('openBrowserSheet', {
+    ownerIsReady: () => false,
+    resetSession: async () => { throw new Error('offline'); },
+    setIsSheetOpen: () => { throw new Error('must not open'); },
+    settleSignInWaiters,
+  });
+  openBrowserSheet();
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(results, [false, false, false, false]);
+
+  let opened = 0;
+  const ensureSignedIn = providerCallback('ensureSignedIn', {
+    checkSession: async () => ({ signedIn: true }),
+    ownerIsReady: () => false,
+    signInWaitersRef: { current: waiters },
+    openBrowserSheet: () => { opened += 1; },
+    Promise,
+  });
+  assert.equal(await ensureSignedIn(), false);
+  assert.equal(opened, 0);
+  assert.equal(waiters.size, 0);
 });
