@@ -3,6 +3,7 @@ import { Platform } from 'react-native';
 
 import { extractAsin, useAmazonSession, type AmazonPlaceOrderResult } from '@/amazon';
 
+import { resolveItemOffer } from './offer-identity';
 import { useShop } from './shop-store';
 import type { CartItem } from './types';
 
@@ -17,6 +18,10 @@ export function useCheckout(): (item: CartItem) => Promise<'preview' | 'purchase
       if (!live || !amazon || Platform.OS === 'web') {
         await checkoutItem(item);
         return 'purchased';
+      }
+      const { amazonAsin } = resolveItemOffer(item);
+      if (!amazonAsin || amazonAsin !== (extractAsin(item.offer?.url) ?? extractAsin(item.url))) {
+        throw new Error("Cart can't match this item to one Amazon listing, so it won't preview checkout.");
       }
       if (placing.current.has(item.id)) throw new Error('This order is already being placed.');
       placing.current.add(item.id);

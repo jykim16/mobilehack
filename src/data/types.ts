@@ -94,12 +94,36 @@ export interface CartItem {
   offers: Offer[];
   /** The new-condition offer that stands in for the item; null when the URL only lists used or refurbished copies. */
   newOffer?: Offer | null;
-  offerAvailability?: { newOfferAvailable: boolean; note: string | null };
+  offerAvailability?: {
+    newOfferAvailable: boolean;
+    note: string | null;
+    /** Backend #39: false when the saved offer's variant, store, or currency is unknown. */
+    identityVerified?: boolean;
+    /** Backend #39: true only when newOffer is the same listing the shopper saved. */
+    checkoutEligible?: boolean;
+  };
+  /** Backend #39: other eligible listings, offered explicitly and never used as this item's price. */
+  alternatives?: OfferAlternative[];
   rating: Rating | null;
   price: Price | null;
   priceHistory: PriceHistory | null;
   pendingRequest?: { requestId: string; quoteVersion: number; totalCents: number | null; expiresAt: number } | null;
   comparison?: PriceComparison | null;
+}
+
+export interface OfferAlternative {
+  offerId: string;
+  retailer: string;
+  retailerName: string;
+  url: string;
+  variantId: string;
+  variantLabel: string | null;
+  priceCents: number;
+  currency: Currency;
+  sameVariant: boolean;
+  sameRetailer: boolean;
+  sameCurrency: boolean;
+  reason: string;
 }
 
 export interface QueryAlternative {

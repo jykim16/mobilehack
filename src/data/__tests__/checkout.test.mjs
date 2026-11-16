@@ -9,6 +9,22 @@ const compiled = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
 }).outputText;
 
+const identitySource = readFileSync(new URL('../offer-identity.ts', import.meta.url), 'utf8');
+const identityCompiled = ts.transpileModule(identitySource, {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+}).outputText;
+const extractAsin = (url) => url?.match(/\/dp\/([A-Z0-9]{10})/)?.[1] ?? null;
+
+function loadOfferIdentity() {
+  const exports = {};
+  const modules = { '@/amazon': { extractAsin }, '@/lib/format': { formatPrice: (cents) => `${(cents / 100).toFixed(2)}` } };
+  vm.runInNewContext(identityCompiled, { exports, URL, require: (name) => {
+    assert.ok(Object.hasOwn(modules, name), `Unexpected module: ${name}`);
+    return modules[name];
+  } });
+  return exports;
+}
+
 function checkoutHarness({ platform = 'ios', live = true, execute } = {}) {
   const attempts = [];
   const fallback = [];
@@ -22,7 +38,7 @@ function checkoutHarness({ platform = 'ios', live = true, execute } = {}) {
     },
     'react-native': { Platform: { OS: platform } },
     '@/amazon': {
-      extractAsin: (url) => url.match(/\/dp\/([A-Z0-9]{10})/)?.[1] ?? null,
+      extractAsin,
       useAmazonSession: () => ({
         checkoutAmazonItem: async (input) => {
           attempts.push(input);
@@ -31,6 +47,7 @@ function checkoutHarness({ platform = 'ios', live = true, execute } = {}) {
         openBrowserSheet: () => { opened += 1; },
       }),
     },
+    './offer-identity': loadOfferIdentity(),
     './shop-store': { useShop: () => ({ live, checkoutItem: async (item) => { fallback.push(item); } }) },
   };
   const exports = {};
@@ -175,4 +192,37 @@ test('every app Amazon provider mount explicitly disables the backend daemon', (
   };
   visit(ast);
   assert.equal(mounts, 1);
+});
+
+const listing = (overrides) => ({
+  id: 'offer-black-used', retailer: 'amazon', variantId: 'variant-black', currency: 'USD', priceCents: 4000,
+  url: 'https://www.amazon.com/dp/B000000001', ...overrides,
+});
+
+test('a fallback offer for another variant is refused before any Amazon basket action', async () => {
+  const harness = checkoutHarness();
+  const mismatched = {
+    ...item,
+    url: 'https://www.amazon.com/dp/B000000001',
+    offer: listing({}),
+    offerAvailability: { newOfferAvailable: true, note: 'Only used copies' },
+    newOffer: listing({ id: 'offer-white-new', variantId: 'variant-white', priceCents: 2500, url: 'https://www.amazon.com/dp/B000000002' }),
+  };
+  await assert.rejects(harness.render()(mismatched), /can't match this item to one Amazon listing/);
+  assert.equal(harness.attempts.length, 0);
+  assert.equal(harness.fallback.length, 0);
+});
+
+test('a same-listing new offer keeps the dry-run preview path', async () => {
+  const harness = checkoutHarness();
+  const sameListing = {
+    ...item,
+    url: 'https://www.amazon.com/dp/B000000001',
+    offer: listing({}),
+    offerAvailability: { newOfferAvailable: true, note: null },
+    newOffer: listing({ id: 'offer-black-new', priceCents: 4500 }),
+  };
+  assert.equal(await harness.render()(sameListing), 'preview');
+  assert.equal(harness.attempts.length, 1);
+  assert.equal(harness.attempts[0].dryRun, true);
 });

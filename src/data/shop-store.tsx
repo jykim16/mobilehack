@@ -3,7 +3,9 @@ import { ConvexHttpClient } from 'convex/browser';
 import { useAction, useConvex, useMutation, useQueries, useQuery, type ConvexReactClient } from 'convex/react';
 import { ConvexError } from 'convex/values';
 import { createContext, use, useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { Platform } from 'react-native';
 
+import { useAmazonCartSync } from '@/amazon';
 import { convexConfigured, useSession } from '@/lib/session';
 
 import * as cartApi from './cart-api';
@@ -11,6 +13,7 @@ import { CheckoutNotPlaced, checkoutResult } from './checkout-status';
 import { api } from './convex-api';
 import { mockComparison } from './mock-comparison';
 import { mockReviews } from './mock-reviews';
+import { amazonUrlAsin, resolveItemOffer } from './offer-identity';
 import { ensureTestUserItem, testUserSession } from './test-user';
 import type {
   CartItem,
@@ -76,7 +79,7 @@ function toPending(result: Pick<PurchaseRequest, 'requestId' | 'status' | 'quote
 }
 
 const purchaseArgs = (item: CartItem) => {
-  const offer = itemOffer(item);
+  const offer = checkoutOffer(item);
   if (!offer) throw new Error(item.offerAvailability?.note ?? 'This item has no price yet.');
   return {
     itemId: item.id,
@@ -171,6 +174,23 @@ function LiveShopProvider({ children }: { children: ReactNode }) {
   const addItem = useMutation(api.cart.addItem);
   const setQuantity = useMutation(api.cart.setQuantity);
   const removeItem = useMutation(api.cart.removeItem);
+  const amazonCart = useAmazonCartSync();
+  const syncAmazon = (scope: number, itemId: string, url: string, quantity: number, create: boolean) => {
+    if (Platform.OS === 'web') return;
+    const item = items?.find((i) => i.id === itemId);
+    amazonCart.setIntent(
+      {
+        itemId,
+        asin: create ? amazonUrlAsin(url) : null,
+        url,
+        title: item?.product?.title ?? '',
+        variantLabel: item?.variant?.label ?? null,
+        quantity,
+        create,
+      },
+      scope
+    );
+  };
   const setupMyCart = useMutation(api.demo.setupMyCart);
   const requestPurchase = useAction(api.purchases.requestPurchase);
   const decidePurchase = useMutation(api.purchases.decidePurchase);
@@ -214,20 +234,32 @@ function LiveShopProvider({ children }: { children: ReactNode }) {
     purchases: purchases ?? [],
     purchasedItems,
     cartCount: countOf(items ?? []),
-    addItem: async (url) => (await addItem({ url, idempotencyKey: idempotencyKey() })).itemId,
+    addItem: async (url) => {
+      const scope = amazonCart.scope();
+      const { itemId } = await addItem({ url, idempotencyKey: idempotencyKey() });
+      syncAmazon(scope, itemId, url, 1, true);
+      return itemId;
+    },
     addItemFromQuery: async (query) => {
       try {
-        return await convex.action(api.cart.addItemFromQuery, { query, idempotencyKey: idempotencyKey() });
+        const scope = amazonCart.scope();
+        const result = await convex.action(api.cart.addItemFromQuery, { query, idempotencyKey: idempotencyKey() });
+        syncAmazon(scope, result.itemId, result.resolvedUrl, 1, true);
+        return result;
       } catch (e) {
         if (e instanceof Error && /could not find (public )?function/i.test(e.message)) throw new Error('Paste a product URL for now.');
         throw e;
       }
     },
     setQuantity: async (itemId, quantity) => {
+      const scope = amazonCart.scope();
       await setQuantity({ itemId, quantity });
+      syncAmazon(scope, itemId, '', quantity, false);
     },
     removeItem: async (itemId) => {
+      const scope = amazonCart.scope();
       await removeItem({ itemId });
+      syncAmazon(scope, itemId, '', 0, false);
     },
     loadDemoCart: async () => {
       await setupMyCart({});
@@ -240,7 +272,7 @@ function LiveShopProvider({ children }: { children: ReactNode }) {
           const pending = item.pendingRequest;
           if (pending && pending.expiresAt > Date.now()) {
             const request = await convex.query(api.purchases.getPurchaseStatus, { requestId: pending.requestId });
-            const matches = request.quantity === item.quantity && request.offerId === itemOffer(item)?.id;
+            const matches = request.quantity === item.quantity && request.offerId === checkoutOffer(item)?.id;
             if (matches && request.status === 'pending_approval' && request.quote) return toPending(request);
           }
           return toPending(await requestPurchase(purchaseArgs(item)));
@@ -401,12 +433,14 @@ export const usePurchaseRequest: (requestId: string | null | undefined) => Purch
  * The item's cross-store comparison. A deployed getItem that predates the field omits it entirely, and
  * only then does the demo comparison stand in (demo: true); null from the backend means no lookup yet.
  */
-/**
- * The offer the app prices and buys. A backend that reports offer availability names the new-condition
- * offer, which is null when the URL only lists used or refurbished copies; an older backend has only the saved offer.
- */
+/** The saved listing to show for an item; see resolveItemOffer for the identity rule. */
 export function itemOffer(item: CartItem): Offer | null {
-  return item.offerAvailability ? (item.newOffer ?? null) : item.offer;
+  return resolveItemOffer(item).offer;
+}
+
+/** The listing Cart may buy for an item: null unless it is exactly the saved listing. */
+export function checkoutOffer(item: CartItem): Offer | null {
+  return resolveItemOffer(item).checkoutOffer;
 }
 
 export function itemComparison(item: CartItem): { comparison: PriceComparison | null; demo: boolean } {
