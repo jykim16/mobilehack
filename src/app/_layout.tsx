@@ -33,7 +33,11 @@ export default function RootLayout() {
 }
 
 function ShopperAmazonProvider({ children }: { children: ReactNode }) {
-  return <AmazonBrowserProvider shopperId={useShopperId()}>{children}</AmazonBrowserProvider>;
+  return (
+    <AmazonBrowserProvider shopperId={useShopperId()} enableBackendDaemon={false}>
+      {children}
+    </AmazonBrowserProvider>
+  );
 }
 
 function RootStack() {

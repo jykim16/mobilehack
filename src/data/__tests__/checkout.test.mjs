@@ -26,7 +26,7 @@ function checkoutHarness({ platform = 'ios', live = true, execute } = {}) {
       useAmazonSession: () => ({
         checkoutAmazonItem: async (input) => {
           attempts.push(input);
-          return execute ? execute(input) : { status: 'dry_run_halted' };
+          return execute ? execute(input) : { status: 'dry_run_halted', safetyGate: { orderSubmitted: false } };
         },
         openBrowserSheet: () => { opened += 1; },
       }),
@@ -53,7 +53,7 @@ for (const platform of ['ios', 'android']) {
     const harness = checkoutHarness({ platform });
     const checkout = harness.render();
     for (let tap = 0; tap < 2; tap += 1) {
-      await assert.rejects(checkout(item), /Stopped before placing/);
+      assert.equal(await checkout(item), 'preview');
     }
     assert.equal(harness.attempts.length, 2);
     assert.ok(harness.attempts.every((input) => input.dryRun === true && input.item === item));
@@ -63,7 +63,7 @@ for (const platform of ['ios', 'android']) {
 
 test('an ASIN URL routes to dry-run even before retailer enrichment', async () => {
   const harness = checkoutHarness();
-  await assert.rejects(harness.render()({ ...item, offer: null }), /Stopped before placing/);
+  assert.equal(await harness.render()({ ...item, offer: null }), 'preview');
   assert.equal(harness.attempts[0].dryRun, true);
   assert.equal(harness.fallback.length, 0);
 });
@@ -75,8 +75,8 @@ test('repeated taps during sign-in completion use one dry-run attempt, including
   await assert.rejects(harness.render()(item), /already being placed/);
   assert.equal(harness.attempts.length, 1);
   assert.equal(harness.attempts[0].dryRun, true);
-  finish({ status: 'dry_run_halted' });
-  await assert.rejects(first, /Stopped before placing/);
+  finish({ status: 'dry_run_halted', safetyGate: { orderSubmitted: false } });
+  assert.equal(await first, 'preview');
   assert.equal(harness.fallback.length, 0);
 });
 
@@ -106,8 +106,73 @@ test('web, offline demo, and other retailers keep their existing checkout path',
   ];
   for (const [options, selected] of cases) {
     const harness = checkoutHarness(options);
-    await harness.render()(selected);
+    assert.equal(await harness.render()(selected), 'purchased');
     assert.equal(harness.attempts.length, 0);
     assert.deepEqual(harness.fallback, [selected]);
   }
+});
+
+test('an unexpected placed result can never be classified as a preview or a purchase', async () => {
+  const harness = checkoutHarness({ execute: async () => ({ status: 'placed' }) });
+  await assert.rejects(harness.render()(item), /Unexpected Amazon preview response/);
+  assert.equal(harness.fallback.length, 0);
+  assert.equal(harness.attempts.length, 1);
+});
+
+test('a dry-run response that reports submission is rejected', async () => {
+  const harness = checkoutHarness({ execute: async () => ({
+    status: 'dry_run_halted', safetyGate: { orderSubmitted: true },
+  }) });
+  await assert.rejects(harness.render()(item), /Unexpected Amazon preview response/);
+  assert.equal(harness.fallback.length, 0);
+});
+
+test('the actual Cart callback keeps preview items in Cart and never emits a purchase success toast', async () => {
+  const cart = readFileSync(new URL('../../app/(tabs)/index.tsx', import.meta.url), 'utf8');
+  const ast = ts.createSourceFile('index.tsx', cart, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  let callback;
+  const visit = (node) => {
+    if (ts.isVariableDeclaration(node) && node.name.getText(ast) === 'checkout') callback = node.initializer;
+    ts.forEachChild(node, visit);
+  };
+  visit(ast);
+  assert.ok(callback);
+  const actual = ts.transpileModule(`exports.checkout = ${callback.getText(ast)}`, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  const exports = {};
+  const changes = [];
+  const toasts = [];
+  const unpinned = [];
+  vm.runInNewContext(actual, {
+    exports,
+    inFlight: { current: new Set() },
+    setCheckout: (id, state) => changes.push([id, state?.status]),
+    checkoutItem: async () => 'preview',
+    unpin: (id) => unpinned.push(id),
+    setToast: (value) => toasts.push(value),
+    errorMessage: (error) => error.message,
+  });
+  await exports.checkout(item);
+  assert.deepEqual(changes, [[item.id, 'placing'], [item.id, 'preview']]);
+  assert.deepEqual(toasts, [false]);
+  assert.deepEqual(unpinned, []);
+});
+
+test('every app Amazon provider mount explicitly disables the backend daemon', () => {
+  const layout = readFileSync(new URL('../../app/_layout.tsx', import.meta.url), 'utf8');
+  const ast = ts.createSourceFile('_layout.tsx', layout, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  let mounts = 0;
+  const visit = (node) => {
+    if (ts.isJsxOpeningElement(node) && node.tagName.getText(ast) === 'AmazonBrowserProvider') {
+      mounts += 1;
+      const disabled = node.attributes.properties.find((attr) =>
+        ts.isJsxAttribute(attr) && attr.name.getText(ast) === 'enableBackendDaemon');
+      assert.ok(disabled?.initializer && ts.isJsxExpression(disabled.initializer));
+      assert.equal(disabled.initializer.expression?.kind, ts.SyntaxKind.FalseKeyword);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(ast);
+  assert.equal(mounts, 1);
 });

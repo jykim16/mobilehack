@@ -40,7 +40,8 @@ function AmazonRow() {
       <Row
         icon="logo-amazon"
         title="Amazon · Connected"
-        detail={`Dry-run checkout · ${formatRelativeSyncTime(lastSyncedAt)}`}
+        detail={`Preview—no order placed · ${formatRelativeSyncTime(lastSyncedAt)}`}
+        onPress={() => openBrowserSheet()}
       />
     );
   }
@@ -48,7 +49,7 @@ function AmazonRow() {
     <Row
       icon="logo-amazon"
       title="Connect Amazon"
-      detail="Checkout preview only. No order will be placed."
+      detail="Opens Amazon sign-in. Preview only—no order placed."
       onPress={settled === 'signed_out' ? () => openBrowserSheet() : undefined}
     />
   );
