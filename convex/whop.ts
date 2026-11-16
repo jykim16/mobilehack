@@ -446,6 +446,7 @@ export const fulfil = internalAction({
 
     const revalidation = await ctx.runAction(internal.enrichment.revalidateOffer, {
       offerId: request.offerId,
+      approvedTotalCents: request.quote.totalCents,
     });
     await ctx.runMutation(internal.whop.setOrder, {
       orderId: order._id,

@@ -1344,10 +1344,10 @@ export const offerForRevalidation = internalQuery({
  * as unchanged.
  */
 export const revalidateOffer = internalAction({
-  args: { offerId: v.id("offers") },
+  args: { offerId: v.id("offers"), approvedTotalCents: v.optional(v.number()) },
   handler: async (
     ctx,
-    { offerId },
+    { offerId, approvedTotalCents },
   ): Promise<{
     status: "unchanged" | "changed" | "unavailable";
     totalCents: number | null;
@@ -1382,7 +1382,9 @@ export const revalidateOffer = internalAction({
         note: "The retailer now shows this item as unavailable, so the order needs a fresh approval.",
       };
     }
-    const quotedTotal = offer.priceCents + offer.shippingCents;
+    // Compare against what the shopper approved, not against a record the live
+    // scrape has since overwritten.
+    const quotedTotal = approvedTotalCents ?? offer.priceCents + offer.shippingCents;
     if (liveTotal !== quotedTotal) {
       return {
         status: "changed",
