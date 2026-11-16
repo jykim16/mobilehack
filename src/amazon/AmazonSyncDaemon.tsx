@@ -107,7 +107,9 @@ export interface AmazonSyncDaemonProps {
 }
 
 /**
- * Automatic background Convex <-> WebKit/Chromium synchronization daemon.
+ * Opt-in background Convex <-> WebKit/Chromium synchronization daemon. `enabled` defaults to
+ * `false`: it renders nothing and starts no subscription, poller, quote, cart, or backend write
+ * unless explicitly enabled.
  *
  * Safely skips execution when mounted outside `<ConvexProvider>` / `<ConvexAuthProvider>`
  * or on web, and otherwise runs:
@@ -122,7 +124,7 @@ export interface AmazonSyncDaemonProps {
  *    in with active non-delivered orders, pushing carrier & `eta` updates via `syncClientShipment`.
  */
 export function AmazonSyncDaemon({
-  enabled = true,
+  enabled = false,
   pollIntervalMs = DAEMON_POLL_INTERVAL_MS,
   orderSyncIntervalMs = ORDER_SYNC_INTERVAL_MS,
 }: AmazonSyncDaemonProps) {

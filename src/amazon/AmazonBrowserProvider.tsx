@@ -327,8 +327,10 @@ export interface AmazonBrowserProviderProps {
    */
   convexSync?: ConvexAmazonSyncClient;
   /**
-   * Mount `<AmazonSyncDaemon />` automatically inside `<AmazonBrowserProvider>` when Convex
-   * context is active. Defaults to `true` (safely skips in standalone harnesses without Convex).
+   * Opt-in background automation. Defaults to `false`: no `<AmazonSyncDaemon />` (Convex
+   * subscriptions, cart pollers, live quote attachment, order polling), no idle heartbeat,
+   * no AppState foreground cart/order sync, and no automatic retry-queue flush. Pass `true`
+   * only after the background cart/backend writes have been approved for the release.
    */
   enableBackendDaemon?: boolean;
 }
@@ -337,7 +339,7 @@ export function AmazonBrowserProvider({
   children,
   shopperId = null,
   convexSync,
-  enableBackendDaemon = true,
+  enableBackendDaemon = false,
 }: AmazonBrowserProviderProps) {
   const insets = useSafeAreaInsets();
   const dimensions = useWindowDimensions();
@@ -356,22 +358,6 @@ export function AmazonBrowserProvider({
   const autoCheckoutCoordinatorRef = useRef<ConvexCheckoutCoordinator | undefined>(undefined);
   const convexSyncRef = useRef<ConvexAmazonSyncClient | undefined>(convexSync);
   const [sessionBarrier] = useState(() => new SessionResetBarrier());
-  useLayoutEffect(() => {
-    browserOwner.activate();
-    let wasReady = browserOwner.isReady(shopperId);
-    const unsubscribe = browserOwner.subscribe(() => {
-      const ready = browserOwner.isReady(shopperId);
-      if (wasReady && !ready) {
-        sessionBarrier.beginReset({ requiresBrowserSignOut: Platform.OS !== 'web' });
-      }
-      wasReady = ready;
-    });
-    return () => {
-      unsubscribe();
-      browserOwner.deactivate();
-      sessionBarrier.beginReset({ requiresBrowserSignOut: Platform.OS !== 'web' });
-    };
-  }, [browserOwner, sessionBarrier, shopperId]);
   const checkoutInFlightCountRef = useRef(0);
   const canGoBackRef = useRef(false);
   const lastHeartbeatAtRef = useRef(0);
@@ -417,10 +403,10 @@ export function AmazonBrowserProvider({
   useEffect(() => {
     const effective = convexSync ?? autoConvexSyncRef.current;
     convexSyncRef.current = effective;
-    if (effective && ownerIsReady() && !sessionBarrier.isLogoutPending) {
+    if (enableBackendDaemon && effective && ownerIsReady() && !sessionBarrier.isLogoutPending) {
       void syncQueue.flush(effective);
     }
-  }, [convexSync, ownerIsReady, sessionBarrier, syncQueue]);
+  }, [convexSync, enableBackendDaemon, ownerIsReady, sessionBarrier, syncQueue]);
 
   const registerAutoConvexBridge = useCallback(
     (bridge: {
@@ -487,6 +473,25 @@ export function AmazonBrowserProvider({
       resolve(result);
     }
   }, []);
+
+  useLayoutEffect(() => {
+    browserOwner.activate();
+    let wasReady = browserOwner.isReady(shopperId);
+    const unsubscribe = browserOwner.subscribe(() => {
+      const ready = browserOwner.isReady(shopperId);
+      if (wasReady && !ready) {
+        sessionBarrier.beginReset({ requiresBrowserSignOut: Platform.OS !== 'web' });
+        settleSignInWaiters(false);
+      }
+      wasReady = ready;
+    });
+    return () => {
+      unsubscribe();
+      browserOwner.deactivate();
+      sessionBarrier.beginReset({ requiresBrowserSignOut: Platform.OS !== 'web' });
+      settleSignInWaiters(false);
+    };
+  }, [browserOwner, sessionBarrier, settleSignInWaiters, shopperId]);
 
   const notifyPageReady = useCallback(
     (url: string, signedIn: boolean, nextChallenge: AmazonAuthChallenge) => {
@@ -819,7 +824,9 @@ export function AmazonBrowserProvider({
   const openBrowserSheet = useCallback(
     (initialUrl?: string) => {
       if (!ownerIsReady()) {
-        void resetSession().then(() => setIsSheetOpen(true)).catch(() => undefined);
+        void resetSession()
+          .then(() => setIsSheetOpen(true))
+          .catch(() => settleSignInWaiters(false));
         return;
       }
       const reveal = () => {
@@ -856,16 +863,13 @@ export function AmazonBrowserProvider({
 
       reveal();
     },
-    [enqueueCommand, ownerIsReady, resetSession, runVerifiedBrowserLogout, sessionBarrier],
+    [enqueueCommand, ownerIsReady, resetSession, runVerifiedBrowserLogout, sessionBarrier, settleSignInWaiters],
   );
 
   const closeBrowserSheet = useCallback(() => {
-    if (!ownerIsReady()) return;
     setIsSheetOpen(false);
-    if (!isSignedInRef.current) {
-      settleSignInWaiters(false);
-    }
-  }, [ownerIsReady, settleSignInWaiters]);
+    settleSignInWaiters(false);
+  }, [settleSignInWaiters]);
 
   const checkSession = useCallback((): Promise<AmazonSessionCheckResult> => {
     const callerEpoch = sessionBarrier.epoch;
@@ -896,6 +900,7 @@ export function AmazonBrowserProvider({
 
   const ensureSignedIn = useCallback(async (): Promise<boolean> => {
     const check = await checkSession();
+    if (!ownerIsReady()) return false;
     if (check.signedIn) return true;
 
     return new Promise<boolean>((resolve) => {
@@ -903,7 +908,7 @@ export function AmazonBrowserProvider({
       // Preserve active MFA/CVF/CAPTCHA or existing /ap/signin challenge if already active
       openBrowserSheet();
     });
-  }, [checkSession, openBrowserSheet]);
+  }, [checkSession, openBrowserSheet, ownerIsReady]);
 
   const runAddToCartUnlocked = useCallback(
     async (input: AmazonAddToCartInput, opEpoch: number): Promise<AmazonAddToCartResult> => {
@@ -1993,42 +1998,59 @@ export function AmazonBrowserProvider({
   }, [enqueueCommand, ensureReadySessionEpoch, runSyncOrdersUnlocked, sessionBarrier]);
 
   const makeUnlockedIsolationDeps = useCallback(
-    (getOpEpoch: () => number) => ({
-      navigateToCart: async () => {
-        if (!sessionBarrier.isCurrent(getOpEpoch())) {
-          throw new Error('Amazon session was reset.');
-        }
-        await navigateTo(AMAZON_CART_URL);
-      },
-      scrapeCart: async () => {
+    (getOpEpoch: () => number) => {
+      const fencedStep = async <T,>(buildScript: (reqId: string) => string): Promise<T> => {
         const opEpoch = getOpEpoch();
         if (!sessionBarrier.isCurrent(opEpoch)) {
           throw new Error('Amazon session was reset.');
         }
-        const snap = await evalStep<CartSnapshotScrape>((reqId) => buildScrapeCartScript(reqId));
-        if (sessionBarrier.isCurrent(opEpoch)) {
+        const result = await evalStep<T>(buildScript);
+        if (!sessionBarrier.isCurrent(opEpoch)) {
+          throw new Error('Amazon session was reset.');
+        }
+        return result;
+      };
+      return {
+        navigateToCart: async () => {
+          if (!sessionBarrier.isCurrent(getOpEpoch())) {
+            throw new Error('Amazon session was reset.');
+          }
+          await navigateTo(AMAZON_CART_URL);
+        },
+        scrapeCart: async () => {
+          const snap = await fencedStep<CartSnapshotScrape>((reqId) => buildScrapeCartScript(reqId));
           setIsSignedIn(snap.signedIn);
           isSignedInRef.current = snap.signedIn;
           setChallenge(snap.challenge);
           challengeRef.current = snap.challenge;
-        }
-        return snap;
-      },
-      moveSavedToCart: (targetAsin: string) =>
-        evalStep<{ mutated: boolean; reason?: string }>((reqId) =>
-          buildMoveSavedToCartScript(reqId, targetAsin),
-        ),
-      addTargetToCart: (input: AmazonAddToCartInput) => runAddToCartUnlocked(input, getOpEpoch()),
-      stepRowQuantity: (targetAsin: string, op: 'increment' | 'decrement') =>
-        evalStep<{ mutated: boolean; reason?: string }>((reqId) =>
-          buildMutateCartRowScript(reqId, targetAsin, op),
-        ),
-      saveRowForLater: (extraAsin: string) =>
-        evalStep<{ mutated: boolean; reason?: string }>((reqId) =>
-          buildSaveCartRowForLaterScript(reqId, extraAsin),
-        ),
-      waitMs: delay,
-    }),
+          return snap;
+        },
+        moveSavedToCart: (targetAsin: string) =>
+          fencedStep<{ mutated: boolean; reason?: string }>((reqId) =>
+            buildMoveSavedToCartScript(reqId, targetAsin),
+          ),
+        addTargetToCart: async (input: AmazonAddToCartInput) => {
+          const opEpoch = getOpEpoch();
+          if (!sessionBarrier.isCurrent(opEpoch)) {
+            throw new Error('Amazon session was reset.');
+          }
+          const added = await runAddToCartUnlocked(input, opEpoch);
+          if (!sessionBarrier.isCurrent(opEpoch)) {
+            throw new Error('Amazon session was reset.');
+          }
+          return added;
+        },
+        stepRowQuantity: (targetAsin: string, op: 'increment' | 'decrement') =>
+          fencedStep<{ mutated: boolean; reason?: string }>((reqId) =>
+            buildMutateCartRowScript(reqId, targetAsin, op),
+          ),
+        saveRowForLater: (extraAsin: string) =>
+          fencedStep<{ mutated: boolean; reason?: string }>((reqId) =>
+            buildSaveCartRowForLaterScript(reqId, extraAsin),
+          ),
+        waitMs: delay,
+      };
+    },
     [evalStep, navigateTo, runAddToCartUnlocked, sessionBarrier],
   );
 
@@ -2289,7 +2311,7 @@ export function AmazonBrowserProvider({
 
   // Background WebKit / Chromium 60s idle session keep-alive + AppState foreground wakeup
   useEffect(() => {
-    if (Platform.OS === 'web') return;
+    if (Platform.OS === 'web' || !enableBackendDaemon) return;
 
     const maybeRunHeartbeat = (forceOnForeground = false) => {
       const now = Date.now();
@@ -2338,7 +2360,7 @@ export function AmazonBrowserProvider({
       clearInterval(interval);
       sub.remove();
     };
-  }, [checkSession, refreshCart, sessionBarrier, syncOrders]);
+  }, [checkSession, enableBackendDaemon, refreshCart, sessionBarrier, syncOrders]);
 
   // Android hardware Back button handling while the interactive Amazon browser sheet is open
   useEffect(() => {

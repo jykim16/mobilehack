@@ -63,7 +63,7 @@ const SHARED_DOM_HELPERS = `
     }
 
     if (challenge !== 'none') {
-      return { signedIn: false, challenge: challenge };
+      return { signedIn: false, signedOut: false, challenge: challenge };
     }
 
     // Authenticated checkout pipeline pages have no standard retail top nav
@@ -75,7 +75,7 @@ const SHARED_DOM_HELPERS = `
         '#spc-orders, #subtotals-marketplace-table, #placeYourOrder, input[name="placeYourOrder1"], [data-testid*="order-summary"]'
       );
       if (hasCheckoutDom) {
-        return { signedIn: true, challenge: 'none' };
+        return { signedIn: true, signedOut: false, challenge: 'none' };
       }
     }
 
@@ -85,10 +85,10 @@ const SHARED_DOM_HELPERS = `
       var mText = cleanText(mobileGreeting).toLowerCase();
       var mHref = String(mobileGreeting.getAttribute('href') || '');
       if (mText.indexOf('sign in') !== -1 || mHref.indexOf('/ap/signin') !== -1) {
-        return { signedIn: false, challenge: 'none' };
+        return { signedIn: false, signedOut: true, challenge: 'none' };
       }
       if (mText.length > 0 && mText.indexOf('sign in') === -1) {
-        return { signedIn: true, challenge: 'none' };
+        return { signedIn: true, signedOut: false, challenge: 'none' };
       }
     }
 
@@ -97,24 +97,24 @@ const SHARED_DOM_HELPERS = `
     if (desktopGreeting) {
       var dText = cleanText(desktopGreeting).toLowerCase();
       if (dText.indexOf('sign in') !== -1) {
-        return { signedIn: false, challenge: 'none' };
+        return { signedIn: false, signedOut: true, challenge: 'none' };
       }
       if (dText.indexOf('hello,') !== -1) {
-        return { signedIn: true, challenge: 'none' };
+        return { signedIn: true, signedOut: false, challenge: 'none' };
       }
     }
 
     var signInAnchors = document.querySelector('a[href*="/ap/signin"][id*="nav"]');
     if (signInAnchors) {
-      return { signedIn: false, challenge: 'none' };
+      return { signedIn: false, signedOut: true, challenge: 'none' };
     }
 
     var signOutLink = document.querySelector('a[href*="/gp/flex/sign-out"], #nav-item-signout');
     if (signOutLink) {
-      return { signedIn: true, challenge: 'none' };
+      return { signedIn: true, signedOut: false, challenge: 'none' };
     }
 
-    return { signedIn: false, challenge: 'none' };
+    return { signedIn: false, signedOut: false, challenge: 'none' };
   }
 
   function readNavCartCount() {
@@ -184,6 +184,7 @@ export function buildSessionCheckScript(reqId: string): string {
     var auth = detectAuthState();
     return {
       signedIn: auth.signedIn,
+      signedOut: auth.signedOut,
       challenge: auth.challenge,
       currentUrl: String(location.href || ''),
       cartCount: readNavCartCount(),
