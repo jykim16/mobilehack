@@ -4,7 +4,7 @@ import { PillButton } from '@/components/pill-button';
 import { Radius, Spacing, Type, tabularNumbers, useColors, useThemedStyles, type Palette } from '@/constants/theme';
 import { formatDateTime, formatPrice } from '@/lib/format';
 
-import { failureCopy, maskedCard, paymentCopy, spendableCents, type AccountBalance, type ApprovedQuote, type OrderStages } from './model';
+import { maskedCard, paymentCopy, type AccountBalance, type ApprovedQuote, type OrderStages } from './model';
 import type { PaymentView } from './controller';
 
 export function QuoteApproval({ approval, busy, onApprove }: { approval: ApprovedQuote; busy: boolean; onApprove: (approval: ApprovedQuote) => void }) {
@@ -36,11 +36,12 @@ export function PaymentStatusCard({ view, onRefresh }: { view: PaymentView; onRe
         <Text style={styles.muted}>{copy?.detail ?? 'No payment outcome has been confirmed.'}</Text>
       </View>
       {snapshot && <>
+        {snapshot.sandbox && <Text style={styles.body}>Simulated card / Sandbox retailer charge</Text>}
         <Text style={styles.amount}>{formatPrice(snapshot.payment.amountCents, snapshot.payment.currency)} {snapshot.payment.currency}</Text>
-        {snapshot.status === 'failed' && snapshot.failureReason && <Text style={styles.body}>{failureCopy[snapshot.failureReason]}</Text>}
+        {snapshot.status === 'failed' && snapshot.failureReason && <Text style={styles.body}>{snapshot.failureReason}</Text>}
         {snapshot.card?.status === 'unsupported' && <Text style={styles.body}>Simulated retailer charge · Card issuing is not supported for this account.</Text>}
         {card && <Text style={styles.body}>{card}</Text>}
-        <Text style={styles.muted}>Payment reference {snapshot.payment.paymentId}{'\n'}Updated {formatDateTime(snapshot.updatedAt)}</Text>
+        <Text style={styles.muted}>Payment reference {snapshot.payment.paymentId}{'\n'}{snapshot.updatedAt === null ? 'Status update time unavailable' : `Updated ${formatDateTime(snapshot.updatedAt)}`}</Text>
       </>}
       {view.error && <Text style={styles.body} accessibilityRole="alert">{view.error}</Text>}
       {view.busy && <View style={styles.inline}><ActivityIndicator color={colors.textSecondary} /><Text style={styles.muted}>Checking secure payment status…</Text></View>}
@@ -51,12 +52,15 @@ export function PaymentStatusCard({ view, onRefresh }: { view: PaymentView; onRe
 
 export function BalanceCard({ balance }: { balance: AccountBalance }) {
   const styles = useThemedStyles(createStyles);
+  const amount = (cents: number | null) => cents === null || !balance.currency ? 'Unknown' : `${formatPrice(cents, balance.currency)} ${balance.currency}`;
   return (
     <View style={styles.card}>
-      <Text style={styles.heading} accessibilityRole="header">Your balance</Text>
-      <View><Text style={styles.muted}>Available to spend</Text><Text style={styles.amount}>{formatPrice(spendableCents(balance), balance.currency)} {balance.currency}</Text></View>
-      <View style={styles.row}><Text style={styles.body}>Pending</Text><Text style={styles.body}>{formatPrice(balance.pendingCents, balance.currency)} {balance.currency}</Text></View>
+      <Text style={styles.heading} accessibilityRole="header">Provider account balance</Text>
+      {!balance.ownershipConfirmed && <Text style={styles.body}>Account ownership is not confirmed. These funds may be shared and are not confirmed as yours to spend.</Text>}
+      <View><Text style={styles.muted}>Provider available</Text><Text style={styles.amount}>{amount(balance.availableCents)}</Text></View>
+      <View style={styles.row}><Text style={styles.body}>Provider pending</Text><Text style={styles.body}>{amount(balance.pendingCents)}</Text></View>
       <Text style={styles.muted}>Pending funds are not available to spend.</Text>
+      <Text style={styles.muted}>{balance.fetchedAt === null ? 'Provider balance freshness unknown.' : `Provider balance as of ${formatDateTime(balance.fetchedAt)}`}</Text>
       {balance.kycRequired && <Text style={styles.body}>Identity verification is required before withdrawal. Withdrawals are not available in Cart yet.</Text>}
     </View>
   );
@@ -64,10 +68,15 @@ export function BalanceCard({ balance }: { balance: AccountBalance }) {
 
 export function OrderProgress({ stages }: { stages: OrderStages }) {
   const styles = useThemedStyles(createStyles);
+  const orderPending = stages.orderStatus === 'unknown' ? 'Order outcome unconfirmed. Refresh or contact support; do not retry.'
+    : stages.orderStatus === 'failed' ? 'Order failed. Contact support before trying again.'
+    : stages.orderStatus === 'requote_required' ? 'Terms changed. Review and approve a new quote.'
+    : stages.orderStatus === 'awaiting_payment' ? 'Awaiting payment confirmation'
+    : 'Awaiting retailer confirmation';
   const rows = [
     { label: 'Payment confirmed', at: stages.paymentConfirmedAt, pending: 'Awaiting payment confirmation' },
-    { label: 'Order placed', at: stages.orderPlacedAt, pending: 'Awaiting retailer confirmation' },
-    { label: 'Shipment', at: stages.shipmentAt, pending: 'Awaiting shipment update' },
+    { label: stages.simulated ? 'Simulated retailer order placed' : 'Order placed', at: stages.orderPlacedAt, pending: orderPending },
+    { label: stages.simulated ? 'Simulated shipment' : 'Shipment', at: stages.shipmentAt, pending: 'Awaiting shipment update' },
   ];
   return (
     <View style={styles.card}>

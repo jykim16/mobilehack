@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { paymentCapability, type PaymentCapability } from './adapter';
 import { createPaymentController } from './controller';
 import { fixtureApproval, fixtureBalance, fixturePayment } from './fixtures';
-import { maskedCard, paymentCopy, sameApproval, spendableCents, type PaymentSnapshot, type PaymentStatus } from './model';
+import { maskedCard, paymentCopy, sameApproval, type PaymentSnapshot, type PaymentStatus } from './model';
 
 function setup(snapshot: PaymentSnapshot = fixturePayment) {
   let current = snapshot;
@@ -104,12 +104,13 @@ describe('read-only hosted payment coordinator', () => {
 
 describe('payment view models', () => {
   it('keeps unknown, refunded, cancelled, and abandoned copy distinct', () => {
-    expect(new Set(Object.values(paymentCopy).map(({ title }) => title)).size).toBe(7);
+    expect(new Set(Object.values(paymentCopy).map(({ title }) => title)).size).toBe(9);
     expect(paymentCopy.unknown.detail).toContain('A charge may have occurred');
   });
-  it('never counts pending funds as spendable', () => {
-    expect(spendableCents(fixtureBalance)).toBe(4500);
-    expect(spendableCents({ ...fixtureBalance, availableCents: 0 })).toBe(0);
+  it('keeps provider pending separate and ownership unconfirmed', () => {
+    expect(fixtureBalance.availableCents).toBe(4500);
+    expect(fixtureBalance.pendingCents).toBe(12960);
+    expect(fixtureBalance.ownershipConfirmed).toBe(false);
   });
   it('shows only validated masked card data', () => {
     expect(maskedCard({ status: 'unsupported' })).toBeNull();

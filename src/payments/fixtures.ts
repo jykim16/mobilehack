@@ -1,4 +1,5 @@
 import type { AccountBalance, ApprovedQuote, OrderStages, PaymentSnapshot } from './model';
+import { providerBalance, type WhopAccountPayload } from './whop-adapter';
 
 export const fixtureApproval: ApprovedQuote = {
   requestId: 'fixture-request',
@@ -16,8 +17,16 @@ export const fixturePayment: PaymentSnapshot = {
   status: 'awaiting_payment',
   payment: { paymentId: 'fixture-payment', checkoutUrl: 'https://checkout.example.test/fixture', amountCents: 12960, currency: 'USD' },
   updatedAt: 1794787500000,
-  card: { status: 'unsupported' },
+  sandbox: true,
+  card: { status: 'simulated', last4: '0000' },
 };
 
-export const fixtureBalance: AccountBalance = { availableCents: 4500, pendingCents: 12960, currency: 'USD', kycRequired: true };
-export const fixtureStages: OrderStages = { paymentConfirmedAt: 1794787500000, orderPlacedAt: null, shipmentAt: null };
+export const fixtureAccount: WhopAccountPayload = {
+  exists: true, environment: 'sandbox', mode: 'whop_sandbox',
+  capabilities: { paymentCollection: 'whop', cardIssuance: 'simulated', cardCharges: 'simulated', retailerOrdering: 'simulated', cardNumbersExposed: false },
+  kycRequired: true,
+  providerBalance: { availableCents: 4500, pendingCents: 12960, currency: 'USD', fetchedAt: 1794787500000 },
+  card: { status: 'unsupported', maskedCard: '•••• 0000', last4: '0000', simulated: true },
+};
+export const fixtureBalance: AccountBalance = providerBalance(fixtureAccount);
+export const fixtureStages: OrderStages = { paymentConfirmedAt: 1794787500000, orderPlacedAt: null, shipmentAt: null, simulated: true, orderStatus: 'awaiting_client' };

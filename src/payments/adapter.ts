@@ -11,5 +11,5 @@ export type PaymentCapability =
 
 export const paymentCapability: PaymentCapability = {
   available: false,
-  reason: 'Hosted payments are not connected. The live payment contract is not yet available.',
+  reason: 'Hosted payments are disabled until the backend confirms an unambiguous shopper mapping.',
 };

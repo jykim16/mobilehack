@@ -18,9 +18,10 @@ export default function PaymentFixturePreview() {
   const insets = useSafeAreaInsets();
   const [status, setStatus] = useState<PaymentStatus>('awaiting_payment');
   const [scenario, setScenario] = useState<'payment' | 'approval' | 'loading' | 'error'>('payment');
+  const [balanceCase, setBalanceCase] = useState<'reported' | 'negative' | 'unknown'>('reported');
   const capability = useMemo<PaymentCapability>(() => ({
     available: true,
-    reader: { checkoutOrigins: ['https://checkout.example.test'], readByRequestId: async () => ({ ...fixturePayment, status, failureReason: status === 'failed' ? 'declined' : undefined }) },
+    reader: { checkoutOrigins: ['https://checkout.example.test'], readByRequestId: async () => ({ ...fixturePayment, status, failureReason: status === 'failed' ? 'The provider declined the payment.' : undefined }) },
   }), [status]);
   const { view, refresh, open } = usePayment(fixtureApproval.requestId, capability, mockBrowser);
   const paymentConfirmed = status === 'paid' || status === 'refunded';
@@ -40,8 +41,11 @@ export default function PaymentFixturePreview() {
         view={scenario === 'loading' ? { snapshot: null, busy: true, error: null } : scenario === 'error' ? { snapshot: { ...fixturePayment, status: 'unknown' }, busy: false, error: 'Unable to refresh payment status. The outcome is unconfirmed.' } : view}
         onRefresh={refresh}
       />}
-      <OrderProgress stages={{ ...fixtureStages, paymentConfirmedAt: paymentConfirmed ? fixtureStages.paymentConfirmedAt : null }} />
-      <BalanceCard balance={fixtureBalance} />
+      <OrderProgress stages={{ ...fixtureStages, paymentConfirmedAt: paymentConfirmed ? fixtureStages.paymentConfirmedAt : null, orderStatus: paymentConfirmed ? 'awaiting_client' : 'awaiting_payment' }} />
+      <View style={styles.options}>
+        {(['reported', 'negative', 'unknown'] as const).map((value) => <Pressable key={value} accessibilityRole="button" accessibilityState={{ selected: balanceCase === value }} onPress={() => setBalanceCase(value)} style={[styles.option, balanceCase === value && styles.selected]}><Text style={styles.optionText}>{value} balance</Text></Pressable>)}
+      </View>
+      <BalanceCard balance={balanceCase === 'negative' ? { ...fixtureBalance, availableCents: -275 } : balanceCase === 'unknown' ? { ...fixtureBalance, availableCents: null, pendingCents: null, fetchedAt: null } : fixtureBalance} />
     </ScrollView>
   );
 }

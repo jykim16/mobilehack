@@ -54,6 +54,10 @@ export function createPaymentController(
         return;
       }
       if (snapshot.status !== 'awaiting_payment') return;
+      if (!snapshot.payment.checkoutUrl) {
+        publish({ error: 'Checkout is not available yet. Refresh the payment status.' });
+        return;
+      }
       const url = new URL(snapshot.payment.checkoutUrl);
       if (url.protocol !== 'https:' || url.username || url.password || !capability.reader.checkoutOrigins.includes(url.origin)) {
         publish({ error: 'Checkout is unavailable. Refresh or contact support.' });

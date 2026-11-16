@@ -1,6 +1,6 @@
 import type { Quote } from '../data/types';
 
-export type PaymentStatus = 'awaiting_payment' | 'paid' | 'failed' | 'cancelled' | 'abandoned' | 'refunded' | 'unknown';
+export type PaymentStatus = 'awaiting_payment' | 'paid' | 'failed' | 'cancelled' | 'abandoned' | 'refunded' | 'partially_refunded' | 'disputed' | 'unknown';
 
 export type ApprovedQuote = {
   requestId: string;
@@ -10,7 +10,7 @@ export type ApprovedQuote = {
 
 export type HostedPayment = {
   paymentId: string;
-  checkoutUrl: string;
+  checkoutUrl: string | null;
   amountCents: number;
   currency: string;
 };
@@ -18,22 +18,27 @@ export type HostedPayment = {
 export type PaymentSnapshot = ApprovedQuote & {
   status: PaymentStatus;
   payment: HostedPayment;
-  updatedAt: number;
-  failureReason?: 'declined' | 'expired' | 'unavailable';
-  card: { status: 'unsupported' } | { status: 'available'; brand: string; last4: string } | null;
+  updatedAt: number | null;
+  failureReason?: string;
+  sandbox: boolean;
+  card: { status: 'unsupported' } | { status: 'simulated'; last4: string | null } | { status: 'available'; brand: string; last4: string } | null;
 };
 
 export type AccountBalance = {
-  availableCents: number;
-  pendingCents: number;
-  currency: string;
+  availableCents: number | null;
+  pendingCents: number | null;
+  currency: string | null;
   kycRequired: boolean;
+  fetchedAt: number | null;
+  ownershipConfirmed: boolean;
 };
 
 export type OrderStages = {
   paymentConfirmedAt: number | null;
   orderPlacedAt: number | null;
   shipmentAt: number | null;
+  simulated: boolean;
+  orderStatus: string | null;
 };
 
 export const paymentCopy: Record<PaymentStatus, { title: string; detail: string }> = {
@@ -43,13 +48,9 @@ export const paymentCopy: Record<PaymentStatus, { title: string; detail: string 
   cancelled: { title: 'Payment cancelled', detail: 'The payment provider confirmed this checkout was cancelled.' },
   abandoned: { title: 'Checkout abandoned', detail: 'The payment provider marked this checkout as abandoned.' },
   refunded: { title: 'Payment refunded', detail: 'The provider confirmed a refund. Your bank may take time to make it available.' },
+  partially_refunded: { title: 'Payment partially refunded', detail: 'The provider confirmed a partial refund. The rest of the payment has not been refunded.' },
+  disputed: { title: 'Payment disputed', detail: 'The provider reported a dispute. Contact support before taking further payment action.' },
   unknown: { title: 'Payment outcome unconfirmed', detail: 'A charge may have occurred. Refresh the status or contact support with the payment reference before trying another payment.' },
-};
-
-export const failureCopy = {
-  declined: 'The provider declined the payment.',
-  expired: 'The provider reported that checkout expired.',
-  unavailable: 'The provider could not complete the payment.',
 };
 
 export function sameApproval(a: ApprovedQuote, b: ApprovedQuote): boolean {
@@ -61,12 +62,9 @@ export function sameApproval(a: ApprovedQuote, b: ApprovedQuote): boolean {
   return terms(a) === terms(b);
 }
 
-export function spendableCents(balance: AccountBalance): number {
-  return balance.availableCents;
-}
-
 export function maskedCard(card: PaymentSnapshot['card']): string | null {
-  if (!card || card.status !== 'available' || !/^\d{4}$/.test(card.last4)) return null;
+  if (!card || card.status === 'unsupported' || !card.last4 || !/^\d{4}$/.test(card.last4)) return null;
+  if (card.status === 'simulated') return `Simulated card •••• ${card.last4}`;
   const brand = /^(visa|mastercard|amex|discover)$/i.test(card.brand) ? card.brand : 'Card';
   return `${brand} •••• ${card.last4}`;
 }
