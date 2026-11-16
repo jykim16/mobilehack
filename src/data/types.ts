@@ -177,7 +177,7 @@ export interface Shipment {
 export interface Order {
   orderId: string;
   orderRef: string;
-  status: 'submitting' | 'placed' | 'unknown' | 'requote_required' | 'failed';
+  status: 'awaiting_payment' | 'awaiting_client' | 'submitting' | 'placed' | 'unknown' | 'requote_required' | 'failed';
   retailerOrderId: string | null;
   placedAt: number | null;
   simulated: boolean;
@@ -244,4 +244,3 @@ export interface ReviewList {
   reviews: Review[];
   bySource: { source: ReviewSource; count: number; average: number | null }[];
 }
-

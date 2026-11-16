@@ -11,6 +11,7 @@ import { Radius, Spacing, Type, useThemedStyles, type Palette } from '@/constant
 import { errorMessage, useShop } from '@/data/shop-store';
 import type { Purchase } from '@/data/types';
 import { etaDate, formatPrice, formatShortDate, isToday } from '@/lib/format';
+import { checkoutMessages, checkoutResult } from '@/data/checkout-status';
 
 export default function PurchasesScreen() {
   const styles = useThemedStyles(createStyles);
@@ -71,7 +72,7 @@ export default function PurchasesScreen() {
                 <RetailerHeader
                   retailer={quote.retailer}
                   retailerName={quote.retailerName}
-                  detail={purchase.placedAt ? `Ordered ${formatShortDate(purchase.placedAt)}` : 'Order placed'}
+                  detail={checkoutResult(purchase) === 'placed' ? `Ordered ${formatShortDate(purchase.placedAt!)}` : 'Order not confirmed'}
                 />
                 <ItemCard
                   title={quote.productTitle}
@@ -106,11 +107,11 @@ export default function PurchasesScreen() {
   );
 }
 
-function statusLine({ status, shipment }: Purchase) {
-  if (status === 'submitting') return 'Placing order';
-  if (status === 'failed') return 'Order failed';
-  if (status === 'requote_required') return 'Price changed · Review it in your cart';
-  if (status === 'unknown') return 'Checking order status';
+function statusLine(purchase: Purchase) {
+  const result = checkoutResult(purchase);
+  if (result === 'placing') return 'Placing order';
+  if (result !== 'placed') return checkoutMessages[result];
+  const { shipment } = purchase;
   if (!shipment) return 'Order placed';
   const eta = shipment.eta ? etaDate(shipment.eta) : null;
   switch (shipment.status) {
