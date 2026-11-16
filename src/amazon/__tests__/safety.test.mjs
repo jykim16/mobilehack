@@ -2,6 +2,9 @@ import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
 import test from 'node:test';
 import vm from 'node:vm';
+import { readFileSync } from 'node:fs';
+import ts from 'typescript';
+import { AMAZON_LIVE_SUBMISSION_ENABLED, DurableSubmissionClaims, PersistedBrowserOwner } from '../durable-safety.ts';
 
 import {
   buildShipmentEvents,
@@ -588,6 +591,7 @@ test('(e) repeat approval/placeOrder on same orderRef cannot double-submit while
   ledger.recordUnknown({
     orderRef,
     submittedAt: 1_700_000_000_000,
+    baselineCapturedAt: 1_700_000_000_000,
     approvedItems: [{ asin: 'B09XS7JWHH', quantity: 1 }],
     expectedTotalCents: 24900,
     preExistingOrderIds: ['114-0000001-0000001'],
@@ -606,6 +610,7 @@ test('(e) repeat approval/placeOrder on same orderRef cannot double-submit while
       asin: 'B09XS7JWHH',
       items: [{ asin: 'B09XS7JWHH', quantity: 1 }],
       totalCents: 24900,
+      placedAtPrecision: 'timestamp',
       placedAtMs: 1_700_000_010_000,
       syncedAt: 1_700_000_030_000,
     },
@@ -911,6 +916,7 @@ test('(h.2) historical purchases, unparsed ASINs, mismatched totals/quantities, 
   ledger.recordUnknown({
     orderRef: 'CART-REQ_HIST',
     submittedAt,
+    baselineCapturedAt: submittedAt,
     approvedItems: [{ asin: 'B09XS7JWHH', quantity: 2 }],
     expectedTotalCents: 49800,
   });
@@ -923,6 +929,7 @@ test('(h.2) historical purchases, unparsed ASINs, mismatched totals/quantities, 
       asin: 'B09XS7JWHH',
       items: [{ asin: 'B09XS7JWHH', quantity: 2 }],
       totalCents: 49800,
+      placedAtPrecision: 'timestamp',
       placedAtMs: submittedAt,
       syncedAt: submittedAt + 5000,
     },
@@ -932,6 +939,7 @@ test('(h.2) historical purchases, unparsed ASINs, mismatched totals/quantities, 
       asin: 'B09XS7JWHH',
       items: [{ asin: 'B09XS7JWHH', quantity: 2 }],
       totalCents: 49800,
+      placedAtPrecision: 'timestamp',
       placedAtMs: new Date('2026-10-01T12:00:00Z').getTime(),
       syncedAt: submittedAt + 5000,
     },
@@ -940,6 +948,7 @@ test('(h.2) historical purchases, unparsed ASINs, mismatched totals/quantities, 
       retailerOrderId: '114-3333333-3333333',
       asin: null,
       totalCents: 49800,
+      placedAtPrecision: 'timestamp',
       placedAtMs: submittedAt,
       syncedAt: submittedAt + 5000,
     },
@@ -949,6 +958,7 @@ test('(h.2) historical purchases, unparsed ASINs, mismatched totals/quantities, 
       asin: 'B09XS7JWHH',
       items: [{ asin: 'B09XS7JWHH', quantity: 1 }],
       totalCents: 49800,
+      placedAtPrecision: 'timestamp',
       placedAtMs: submittedAt,
       syncedAt: submittedAt + 5000,
     },
@@ -958,6 +968,7 @@ test('(h.2) historical purchases, unparsed ASINs, mismatched totals/quantities, 
       asin: 'B09XS7JWHH',
       items: [{ asin: 'B09XS7JWHH', quantity: 2 }],
       totalCents: 24900,
+      placedAtPrecision: 'timestamp',
       placedAtMs: submittedAt,
       syncedAt: submittedAt + 5000,
     },
@@ -973,6 +984,7 @@ test('(h.2) historical purchases, unparsed ASINs, mismatched totals/quantities, 
       asin: 'B09XS7JWHH',
       items: [{ asin: 'B09XS7JWHH', quantity: 2 }],
       totalCents: 49800,
+      placedAtPrecision: 'timestamp',
       placedAtMs: submittedAt,
       syncedAt: submittedAt + 10_000,
     },
@@ -981,6 +993,7 @@ test('(h.2) historical purchases, unparsed ASINs, mismatched totals/quantities, 
       asin: 'B09XS7JWHH',
       items: [{ asin: 'B09XS7JWHH', quantity: 2 }],
       totalCents: 49800,
+      placedAtPrecision: 'timestamp',
       placedAtMs: submittedAt,
       syncedAt: submittedAt + 10_000,
     },
@@ -1186,6 +1199,7 @@ test('(h.5) settleSubmittedOrderConfirmation catches post-submit evalStep timeou
   const result = await settleSubmittedOrderConfirmation({
     orderRef: 'CART-TIMEOUT_1',
     submittedAt: 1_700_000_000_000,
+    baselineCapturedAt: 1_700_000_000_000,
     approvedItems: [{ asin: 'B09XS7JWHH', quantity: 1 }],
     expectedTotalCents: 24900,
     preExistingOrderIds: ['114-0000000-0000000'],
@@ -1589,6 +1603,7 @@ test('(i.3) SessionResetBarrier fences mid-flight confirmation and addItem conti
   const settled = await settleSubmittedOrderConfirmation({
     orderRef: 'CART-STALE-EPOCH',
     submittedAt: 1_700_000_000_000,
+    baselineCapturedAt: 1_700_000_000_000,
     approvedItems: [{ asin: 'B09XS7JWHH', quantity: 1 }],
     expectedTotalCents: 24900,
     verifiedQuote: quote,
@@ -2427,6 +2442,8 @@ test('(j.9) checkoutAmazonItem enforces sign-in, dryRun:true halt, and exact Con
     closeBrowserSheet: () => {
       sequence.push('closeBrowserSheet');
     },
+    submissionAuthority: { available: true, claim: async () => true },
+    captureOrderBaseline: async () => ({ capturedAt: Date.now(), orderIds: [] }),
     runExclusive: async (fn) => fn(),
     isolationDeps: {
       navigateToCart: async () => {},
@@ -2576,12 +2593,53 @@ test('(j.9) checkoutAmazonItem enforces sign-in, dryRun:true halt, and exact Con
   assert.equal(placeOrderClicked, 0);
   assert.deepEqual(sequence, ['ensureSignedIn', 'closeBrowserSheet', 'spcInspect']);
 
+  for (const flags of [{}, { dryRun: false }, { userConfirmed: true }, { dryRun: false, userConfirmed: false }, { dryRun: true, userConfirmed: true }]) {
+    sequence.length = 0;
+    const result = await executeDeterministicItemCheckout({ ...makeCommonDeps(), input: { item: cartItem, ...flags } });
+    assert.equal(result.status, 'dry_run_halted');
+    assert.equal(placeOrderClicked, 0);
+    assert.deepEqual(sequence, ['spcInspect']);
+  }
+  const disabled = await executeDeterministicItemCheckout({
+    ...makeCommonDeps(), submissionAuthority: undefined,
+    input: { item: cartItem, dryRun: false, userConfirmed: true },
+  });
+  assert.equal(disabled.status, 'safety_blocked');
+  assert.equal(placeOrderClicked, 0);
+  assert.equal(AMAZON_LIVE_SUBMISSION_ENABLED, false);
+
+  const records = new Map();
+  const storage = { getItem: async (key) => records.get(key) ?? null, setItem: async (key, value) => { records.set(key, value); } };
+  const claim = new DurableSubmissionClaims(storage);
+  const lostAckDeps = makeCommonDeps();
+  let dispatches = 0;
+  const attempt = (claims, ledger) => executeDeterministicItemCheckout({
+    ...lostAckDeps,
+    input: { item: cartItem, dryRun: false, userConfirmed: true },
+    submissionLedger: ledger,
+    submissionAuthority: { available: true, claim: (ref, at) => claims.claim('opaque-shopper', ref, at) },
+    submitCheckoutOrder: async () => {
+      dispatches += 1;
+      assert.equal(ledger.get('CART-AWAITING1')?.state, 'unknown');
+      assert.equal(records.size, 1);
+      throw new Error('mock lost WebView acknowledgement');
+    },
+  });
+  const lost = await attempt(claim, new OrderSubmissionLedger());
+  assert.equal(lost.status, 'unknown');
+  const restarted = await attempt(new DurableSubmissionClaims(storage), new OrderSubmissionLedger());
+  assert.equal(restarted.status, 'unknown');
+  assert.equal(dispatches, 1);
+  const unavailable = await attempt(new DurableSubmissionClaims({ getItem: async () => { throw new Error('unavailable'); }, setItem: async () => {} }), new OrderSubmissionLedger());
+  assert.equal(unavailable.status, 'unknown');
+  assert.equal(dispatches, 1);
+
   // 2. Human-confirmed live checkout (`userConfirmed: true`, `dryRun: false`) -> exact Convex + WebKit sequence!
   sequence.length = 0;
   const liveDeps = makeCommonDeps();
   const liveRes = await executeDeterministicItemCheckout({
     ...liveDeps,
-    input: { item: cartItem, userConfirmed: true },
+    input: { item: cartItem, dryRun: false, userConfirmed: true },
   });
 
   assert.equal(liveRes.status, 'placed');
@@ -2608,12 +2666,171 @@ test('(j.9) checkoutAmazonItem enforces sign-in, dryRun:true halt, and exact Con
     input: {
       item: cartItem,
       orderRef: 'CART-AWAITING1',
+      dryRun: false,
       userConfirmed: true,
     },
   });
   assert.equal(dupRes.status, 'placed');
   assert.equal(dupRes.safetyGate.orderSubmitted, false);
   assert.equal(placeOrderClicked, 1);
+});
+
+test('(l.1) durable claims serialize separate instances, retain unknown across restart, and scope shopper/order without lossy keys', async () => {
+  const records = new Map();
+  const storage = { getItem: async (key) => records.get(key) ?? null, setItem: async (key, value) => { records.set(key, value); } };
+  const first = new DurableSubmissionClaims(storage);
+  const second = new DurableSubmissionClaims(storage);
+  assert.deepEqual(await Promise.all([first.claim('A', 'canonical', 100), second.claim('A', 'canonical', 100)]), [true, false]);
+  assert.equal(await new DurableSubmissionClaims(storage).claim('A', 'canonical', 200), false);
+  assert.equal(await second.claim('B', 'canonical', 200), true);
+  assert.equal(await first.claim('A!', 'canonical', 200), true);
+  assert.equal(await first.claim(null, 'canonical', 200), false);
+  const rejectingWrite = new DurableSubmissionClaims({ getItem: async () => null, setItem: async () => { throw new Error('disk unavailable'); } });
+  assert.equal(await rejectingWrite.claim('A', 'other', 200), false);
+});
+
+test('(l.2) cold boot and null-to-B cookie timing cannot expose a session before persisted owner and verified reset', async () => {
+  const records = new Map();
+  const storage = { getItem: async (key) => records.get(key) ?? null, setItem: async (key, value) => { records.set(key, value); } };
+  const owner = new PersistedBrowserOwner(storage);
+  let resets = 0;
+  let finishReset;
+  const initializing = owner.initialize('B', async () => { resets += 1; await new Promise((resolve) => { finishReset = resolve; }); });
+  assert.equal(owner.isReady('B'), false);
+  while (!finishReset) await Promise.resolve();
+  assert.equal(owner.isReady('B'), false);
+  finishReset();
+  assert.equal(await initializing, true);
+  assert.equal(resets, 1);
+  assert.equal(owner.isReady('B'), true);
+  assert.equal(owner.isReady('A'), false);
+  const restored = new PersistedBrowserOwner(storage);
+  assert.equal(restored.isReady('B'), false);
+  assert.equal(await restored.initialize('B', async () => { throw new Error('must not reset trusted owner'); }), true);
+  const switched = new PersistedBrowserOwner(storage);
+  assert.equal(await switched.initialize('A', async () => { throw new Error('offline signout'); }), false);
+  assert.equal(switched.isReady('A'), false);
+  const nullBoot = new PersistedBrowserOwner(storage);
+  assert.equal(await nullBoot.initialize(null, async () => { resets += 1; }), false);
+  assert.equal(nullBoot.isReady('B'), false);
+  assert.equal(await nullBoot.initialize('B', async () => { resets += 1; }), true);
+  assert.equal(resets, 3);
+  assert.deepEqual([...records.values()], ['B']);
+  const unavailable = new PersistedBrowserOwner({ getItem: async () => { throw new Error('storage unavailable'); }, setItem: async () => {} });
+  assert.equal(await unavailable.initialize('B', async () => {}), false);
+  assert.equal(unavailable.isReady('B'), false);
+});
+
+test('(l.3) unknown reconciliation rejects earlier same-day, date-only, stale/missing baseline and out-of-window evidence', () => {
+  const submittedAt = Date.parse('2026-11-15T14:30:00Z');
+  const candidate = {
+    retailerOrderId: '114-1234567-1234567', asin: 'B09XS7JWHH',
+    items: [{ asin: 'B09XS7JWHH', quantity: 1 }], totalCents: 24900,
+    placedAtMs: submittedAt + 1000, placedAtPrecision: 'timestamp', syncedAt: submittedAt + 5000,
+  };
+  for (const [baselineCapturedAt, changes] of [
+    [submittedAt, { placedAtMs: submittedAt - 5.5 * 60 * 60 * 1000 }],
+    [submittedAt, { placedAtPrecision: 'date' }],
+    [submittedAt, { placedAtPrecision: undefined }],
+    [submittedAt - 30_001, {}], [undefined, {}], [submittedAt + 1, {}],
+    [submittedAt, { placedAtMs: submittedAt + 10 * 60 * 1000 + 1 }],
+  ]) {
+    const ledger = new OrderSubmissionLedger();
+    ledger.recordUnknown({ orderRef: 'canonical', submittedAt, baselineCapturedAt, approvedItems: candidate.items, expectedTotalCents: 24900 });
+    assert.deepEqual(ledger.reconcileFromSyncedOrders([{ ...candidate, ...changes }]), []);
+    assert.equal(ledger.get('canonical')?.state, 'unknown');
+  }
+  const ledger = new OrderSubmissionLedger();
+  ledger.recordUnknown({ orderRef: 'canonical', submittedAt, baselineCapturedAt: submittedAt, approvedItems: candidate.items, expectedTotalCents: 24900 });
+  assert.equal(ledger.reconcileFromSyncedOrders([candidate]).length, 1);
+  const manual = new OrderSubmissionLedger();
+  manual.recordUnknown({ orderRef: 'canonical', submittedAt, approvedItems: candidate.items, expectedTotalCents: 24900 });
+  manual.recordPlaced('canonical', candidate.retailerOrderId, submittedAt + 1000);
+  assert.equal(manual.get('canonical')?.state, 'placed');
+});
+
+test('(l.4) superseded owner binding writes finish before the next reset/bind transaction and cannot corrupt cold restore', async () => {
+  let persisted = 'previous';
+  let finishAWrite;
+  let aWriteStarted;
+  const writingA = new Promise((resolve) => { aWriteStarted = resolve; });
+  const storage = {
+    getItem: async () => persisted,
+    setItem: async (_key, value) => {
+      if (value === 'A') {
+        aWriteStarted();
+        await new Promise((resolve) => { finishAWrite = resolve; });
+      }
+      persisted = value;
+    },
+  };
+  const a = new PersistedBrowserOwner(storage);
+  const b = new PersistedBrowserOwner(storage);
+  const initA = a.initialize('A', async () => {});
+  await writingA;
+  a.invalidate();
+  let bResets = 0;
+  const initB = b.initialize('B', async () => { bResets += 1; });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(b.isReady('B'), false);
+  assert.equal(bResets, 0);
+  finishAWrite();
+  assert.equal(await initA, false);
+  assert.equal(await initB, true);
+  assert.equal(persisted, 'B');
+  assert.equal(bResets, 1);
+  a.deactivate();
+  assert.equal(await a.initialize('A', async () => { throw new Error('revoked callback must not reset'); }), false);
+  const coldA = new PersistedBrowserOwner({ getItem: async () => persisted, setItem: async (_key, value) => { persisted = value; } });
+  let coldResets = 0;
+  assert.equal(await coldA.initialize('A', async () => { coldResets += 1; }), true);
+  assert.equal(coldResets, 1);
+});
+
+function providerCallback(name, context) {
+  const source = ts.createSourceFile('AmazonBrowserProvider.tsx', readFileSync(new URL('../AmazonBrowserProvider.tsx', import.meta.url), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  let callback;
+  function visit(node) {
+    if (ts.isVariableDeclaration(node) && node.name.getText(source) === name && node.initializer && ts.isCallExpression(node.initializer)) {
+      callback = node.initializer.arguments[0].getText(source);
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(source);
+  assert.ok(callback, `Missing provider callback ${name}`);
+  const js = ts.transpileModule(`const callback = ${callback};`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  return vm.runInNewContext(`(() => { ${js}\nreturn callback; })()`, context);
+}
+
+test('(l.5) actual retained provider callbacks cannot read cached requests or defer the next shopper request', async () => {
+  const records = new Map();
+  const storage = { getItem: async (key) => records.get(key) ?? null, setItem: async (key, value) => { records.set(key, value); } };
+  const a = new PersistedBrowserOwner(storage);
+  await a.initialize('A', async () => {});
+  const request = { requestId: 'B-request', quoteVersion: 1, expiresAt: Date.now() + 60_000, status: 'pending_approval', quote: { productTitle: 'mock B-only quote' }, order: null };
+  let state = [request];
+  const context = {
+    ownerIsReady: () => a.isReady('A'),
+    sessionBarrier: { isLogoutPending: false, epoch: 42, isCurrent: () => true },
+    idempotencyMapRef: { current: new Map([['shared-key', request.requestId]]) },
+    pendingRequestsRef: { current: state },
+    setPendingRequests: (update) => { state = update(state); },
+    enqueueCommand: async () => { throw new Error('Browser commands must not run'); },
+  };
+  const oldRequest = providerCallback('requestPurchase', context);
+  const oldDecision = providerCallback('decidePurchase', context);
+  a.invalidate();
+  const b = new PersistedBrowserOwner(storage);
+  await b.initialize('B', async () => {});
+  await assert.rejects(oldRequest({ idempotencyKey: 'shared-key' }), /ownership/);
+  await assert.rejects(oldDecision({ requestId: request.requestId, quoteVersion: 1, decision: 'defer' }), /ownership/);
+  assert.equal(state[0].status, 'pending_approval');
+  const bContext = { ...context, ownerIsReady: () => b.isReady('B') };
+  const currentRequest = providerCallback('requestPurchase', bContext);
+  const currentDecision = providerCallback('decidePurchase', bContext);
+  assert.equal((await currentRequest({ idempotencyKey: 'shared-key' })).requestId, request.requestId);
+  assert.equal((await currentDecision({ requestId: request.requestId, quoteVersion: 1, decision: 'defer' })).outcome, 'deferred');
+  assert.equal(state[0].status, 'deferred');
 });
 
 test('(j.10) coordinateConvexOneTapApproval reuses existing pending approval and fails closed on stale_quote', async () => {
@@ -2736,10 +2953,12 @@ test('(j.11) checkoutAmazonItem falls back to status="unknown" on unverified con
   };
 
   const res = await executeDeterministicItemCheckout({
-    input: { item: cartItem, userConfirmed: true },
+    input: { item: cartItem, dryRun: false, userConfirmed: true },
     isSignedIn: () => true,
     ensureSignedIn: async () => true,
     closeBrowserSheet: () => {},
+    submissionAuthority: { available: true, claim: async () => true },
+    captureOrderBaseline: async () => ({ capturedAt: Date.now(), orderIds: [] }),
     runExclusive: async (fn) => fn(),
     isolationDeps: {
       navigateToCart: async () => {},
@@ -2798,7 +3017,8 @@ test('(j.11) checkoutAmazonItem falls back to status="unknown" on unverified con
           asin: 'B09XS7JWHH',
           items: [{ asin: 'B09XS7JWHH', quantity: 1 }],
           totalCents: 24900,
-          placedAtMs: now,
+          placedAtPrecision: 'timestamp',
+      placedAtMs: now,
           syncedAt: now,
         },
       ]);
@@ -2896,10 +3116,12 @@ test('(k.1) [HIGH] retrying checkoutAmazonItem({ item }) without orderRef reuses
   };
 
   const makeAttemptDeps = () => ({
-    input: { item: cartItem, userConfirmed: true }, // NOTE: NO orderRef or requestId passed!
+    input: { item: cartItem, dryRun: false, userConfirmed: true }, // NOTE: NO orderRef or requestId passed!
     isSignedIn: () => true,
     ensureSignedIn: async () => true,
     closeBrowserSheet: () => {},
+    submissionAuthority: { available: true, claim: async () => true },
+    captureOrderBaseline: async () => ({ capturedAt: Date.now(), orderIds: [] }),
     runExclusive: async (fn) => fn(),
     isolationDeps: {
       navigateToCart: async () => {},
@@ -2964,7 +3186,8 @@ test('(k.1) [HIGH] retrying checkoutAmazonItem({ item }) without orderRef reuses
           asin: 'B09XS7JWHH',
           items: [{ asin: 'B09XS7JWHH', quantity: 1 }],
           totalCents: 24900,
-          placedAtMs: now,
+          placedAtPrecision: 'timestamp',
+      placedAtMs: now,
           syncedAt: now,
         },
       ]);
@@ -3196,10 +3419,12 @@ test('(k.3) [MEDIUM] immediate reconcileViaSyncOrders executes strictly inside r
   };
 
   const checkoutPromise = executeDeterministicItemCheckout({
-    input: { item: cartItem, userConfirmed: true },
+    input: { item: cartItem, dryRun: false, userConfirmed: true },
     isSignedIn: () => true,
     ensureSignedIn: async () => true,
     closeBrowserSheet: () => {},
+    submissionAuthority: { available: true, claim: async () => true },
+    captureOrderBaseline: async () => ({ capturedAt: Date.now(), orderIds: [] }),
     runExclusive: (fn) => enqueueCommand(fn),
     isolationDeps: {
       navigateToCart: async () => {
@@ -3287,5 +3512,3 @@ test('(k.3) [MEDIUM] immediate reconcileViaSyncOrders executes strictly inside r
     'second_command:start',
   ]);
 });
-
-

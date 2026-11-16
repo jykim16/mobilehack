@@ -238,10 +238,11 @@ export interface AmazonCheckoutItemInput {
   quoteVersion?: number;
   orderRef?: string;
   /**
-   * Defaults to `false` for explicit human one-tap checkout (`checkoutAmazonItem`).
+   * Defaults to `true`. Live checkout also requires explicit `userConfirmed: true`.
    * Pass `dryRun: true` in automated tests or dry-run quote previews so `#placeYourOrder` is never clicked.
    */
   dryRun?: boolean;
+  userConfirmed?: boolean;
 }
 
 export interface AmazonSessionHookValue {
