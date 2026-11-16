@@ -291,6 +291,8 @@ export async function listPurchasesFor(ctx: QueryCtx, shopperId: Id<"users">) {
       .filter(
         (o) =>
           o.status === "placed" ||
+          o.status === "awaiting_payment" ||
+          o.status === "requote_required" ||
           o.status === "submitting" ||
           o.status === "unknown" ||
           o.status === "awaiting_client",

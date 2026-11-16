@@ -1,5 +1,5 @@
 import { ConvexError, v } from "convex/values";
-import { action, query } from "./_generated/server";
+import { action, internalAction, query, type ActionCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { requireShopper } from "./lib/auth";
@@ -38,6 +38,19 @@ export const startPayment = action({
   },
   handler: async (ctx, { requestId, quoteVersion, idempotencyKey }): Promise<StartPaymentResult> => {
     const shopperId = await requireShopper(ctx);
+    return await openingCheckout(ctx, shopperId, requestId, quoteVersion, idempotencyKey);
+  },
+});
+
+/** The checkout-opening body, shared by startPayment and approveAndPay. */
+async function openingCheckout(
+  ctx: ActionCtx,
+  shopperId: Id<"users">,
+  requestId: Id<"purchaseRequests">,
+  quoteVersion: number,
+  idempotencyKey: string,
+): Promise<StartPaymentResult> {
+  {
     const request = await ctx.runQuery(internal.purchases.getRequestInternal, { requestId });
     if (!request || request.shopperId !== shopperId) {
       throw new ConvexError({ code: "NOT_FOUND", message: "Purchase request not found." });
@@ -95,6 +108,51 @@ export const startPayment = action({
       failureReason: created.failureReason ?? null,
       reused: false,
     };
+  }
+}
+
+/** Internal entry point so approveAndPay can reuse the same opening path. */
+export const startPaymentInternal = internalAction({
+  args: {
+    shopperId: v.id("users"),
+    requestId: v.id("purchaseRequests"),
+    quoteVersion: v.number(),
+    idempotencyKey: v.string(),
+  },
+  handler: async (ctx, { shopperId, requestId, quoteVersion, idempotencyKey }): Promise<StartPaymentResult> =>
+    await openingCheckout(ctx, shopperId, requestId, quoteVersion, idempotencyKey),
+});
+
+/**
+ * Approval and the hosted checkout in one call, for a UI that approves by paying.
+ * It approves the exact quote version, opens the order at `awaiting_payment` and
+ * returns the checkout URL — it never submits an order, and nothing can submit one
+ * until a payment is confirmed for this version.
+ */
+export const approveAndPay = action({
+  returns: v.object({ ...paymentView, reused: v.boolean(), orderId: v.id("orders") }),
+  args: {
+    requestId: v.id("purchaseRequests"),
+    quoteVersion: v.number(),
+    idempotencyKey: v.string(),
+  },
+  handler: async (
+    ctx,
+    { requestId, quoteVersion, idempotencyKey },
+  ): Promise<StartPaymentResult & { orderId: Id<"orders"> }> => {
+    const shopperId = await requireShopper(ctx);
+    const approved = await ctx.runMutation(internal.whop.approveForPayment, {
+      shopperId,
+      requestId,
+      quoteVersion,
+    });
+    const started = await ctx.runAction(internal.payments.startPaymentInternal, {
+      shopperId,
+      requestId,
+      quoteVersion,
+      idempotencyKey,
+    });
+    return { ...started, orderId: approved.orderId };
   },
 });
 
@@ -118,6 +176,9 @@ export const status = query({
       requestStatus: request.status,
       quoteVersion: request.quoteVersion,
       quoteTotalCents: request.quote?.totalCents ?? null,
+      /** Approve, paid, placed and shipped are four separate moments. */
+      approvedAt: request.decidedAt ?? null,
+      requestedAt: request._creationTime,
       payment: payment
         ? {
             paymentId: payment._id,
@@ -140,6 +201,7 @@ export const status = query({
             revalidatedAt: order.revalidatedAt ?? null,
             revalidation: order.revalidation ?? null,
             refundedAt: order.refundedAt ?? null,
+            error: order.error ?? null,
           }
         : null,
     };
@@ -155,17 +217,42 @@ export const subaccount = query({
     if (!row) {
       return {
         exists: false as const,
+        provider: "whop" as const,
+        mode: null,
+        capabilities: {
+          paymentCollection: "whop" as const,
+          cardIssuance: "simulated" as const,
+          cardCharges: "simulated" as const,
+          retailerOrdering: "simulated" as const,
+          cardNumbersExposed: false as const,
+        },
+        status: null,
         kycRequired: true,
-        availableCents: 0,
-        pendingCents: 0,
-        cardStatus: "none" as const,
-        cardLast4: null,
-        spendLimitCents: null,
-        transactionLimitCents: null,
+        cartAvailableCents: 0,
+        cartPendingCents: 0,
+        providerBalance: {
+          availableCents: null,
+          pendingCents: null,
+          currency: null,
+          fetchedAt: null,
+          settlementDate: null,
+        },
+        card: {
+          status: "none" as const,
+          maskedCard: null,
+          last4: null,
+          simulated: true,
+          note: null,
+          spendLimitCents: null,
+          transactionLimitCents: null,
+          issuedAt: null,
+          providerCardsOnAccount: null,
+        },
         checkedAt: null,
+        providerCheckedAt: null,
       };
     }
-    const availableCents = await ledgerBalanceCents(ctx, row._id);
+    const cartAvailableCents = await ledgerBalanceCents(ctx, row._id);
     const payments = await ctx.db
       .query("payments")
       .withIndex("by_shopperId_and_status", (q) => q.eq("shopperId", shopperId).eq("status", "pending"))
@@ -173,18 +260,47 @@ export const subaccount = query({
     const pendingCents = payments.reduce((sum, p) => sum + p.amountCents, 0);
     return {
       exists: true as const,
+      provider: "whop" as const,
       providerAccountId: row.providerAccountId,
       environment: row.environment,
+      /** How this deployment behaves: a sandbox payment is real money movement in
+       * Whop's sandbox, while card issuance and retailer ordering are simulated. */
+      mode: (row.environment === "sandbox" ? "whop_sandbox" : "whop_production") as
+        | "whop_sandbox"
+        | "whop_production",
+      capabilities: {
+        paymentCollection: "whop" as const,
+        cardIssuance: row.cardStatus === "active" ? ("whop" as const) : ("simulated" as const),
+        cardCharges: row.cardStatus === "active" ? ("whop" as const) : ("simulated" as const),
+        retailerOrdering: "simulated" as const,
+        cardNumbersExposed: false as const,
+      },
       status: row.status,
       kycRequired: row.kycRequired,
-      availableCents,
-      pendingCents,
-      cardStatus: row.cardStatus,
-      cardLast4: row.cardLast4 ?? null,
-      spendLimitCents: row.cardSpendLimitCents ?? null,
-      transactionLimitCents: row.cardTransactionLimitCents ?? null,
-      cardNote: row.cardNote ?? null,
+      /** Cart's own ledger: money confirmed in minus card spend. */
+      cartAvailableCents,
+      cartPendingCents: pendingCents,
+      /** The provider's numbers, unmodified. Null means we could not read them. */
+      providerBalance: {
+        availableCents: row.providerAvailableCents ?? null,
+        pendingCents: row.providerPendingCents ?? null,
+        currency: row.providerCurrency ?? null,
+        fetchedAt: row.providerFetchedAt ?? null,
+        settlementDate: row.providerSettlementDate ?? null,
+      },
+      card: {
+        status: row.cardStatus,
+        maskedCard: row.cardLast4 ? `•••• ${row.cardLast4}` : null,
+        last4: row.cardLast4 ?? null,
+        simulated: row.cardStatus !== "active",
+        note: row.cardNote ?? null,
+        spendLimitCents: row.cardSpendLimitCents ?? null,
+        transactionLimitCents: row.cardTransactionLimitCents ?? null,
+        issuedAt: row.cardIssuedAt ?? null,
+        providerCardsOnAccount: row.providerCardCount ?? null,
+      },
       checkedAt: row.balanceCheckedAt ?? null,
+      providerCheckedAt: row.providerFetchedAt ?? null,
     };
   },
 });

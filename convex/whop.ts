@@ -1,4 +1,4 @@
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
 import { internalAction, internalMutation, internalQuery } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
@@ -20,8 +20,12 @@ import {
   issueCard,
   refundPayment,
   whopConfig,
+  whopFetch,
   whopEnvironment,
 } from "./lib/whop";
+
+const readEnv = (name: string): string | undefined =>
+  typeof process !== "undefined" ? process.env[name] : undefined;
 
 const subaccountStatus = v.union(
   v.literal("pending_kyc"),
@@ -29,6 +33,14 @@ const subaccountStatus = v.union(
   v.literal("restricted"),
   v.literal("failed"),
 );
+
+export const userContact = internalQuery({
+  args: { shopperId: v.id("users") },
+  handler: async (ctx, { shopperId }) => {
+    const user = await ctx.db.get("users", shopperId);
+    return { email: user?.email ?? null, name: user?.name ?? null };
+  },
+});
 
 export const subaccount = internalQuery({
   args: { shopperId: v.id("users") },
@@ -137,6 +149,13 @@ export const setSubaccount = internalMutation({
     cardNote: v.optional(v.string()),
     availableBalanceCents: v.optional(v.number()),
     balanceCheckedAt: v.optional(v.number()),
+    providerAvailableCents: v.optional(v.number()),
+    providerPendingCents: v.optional(v.number()),
+    providerCurrency: v.optional(v.string()),
+    providerFetchedAt: v.optional(v.number()),
+    providerSettlementDate: v.optional(v.string()),
+    providerCardCount: v.optional(v.number()),
+    providerOnboarding: v.optional(v.string()),
   },
   handler: async (ctx, { subaccountId, ...patch }) => {
     await ctx.db.patch("shopperSubaccounts", subaccountId, {
@@ -198,7 +217,10 @@ export const webhookTrail = internalQuery({
   args: { limit: v.optional(v.number()) },
   handler: async (ctx, { limit }) => {
     const take = limit ?? 10;
-    const events = await ctx.db.query("whopWebhookEvents").withIndex("by_providerEventId").take(take);
+    const events = await ctx.db
+      .query("whopWebhookEvents")
+      .order("desc")
+      .take(take);
     const payments = await ctx.db.query("payments").take(take);
     const charges = await ctx.db.query("cardTransactions").take(take);
     return {
@@ -248,9 +270,28 @@ export const ensureSubaccount = internalAction({
     if (existing) return existing._id;
     const config = whopConfig();
     if (!config) throw new Error("WHOP_API_KEY or WHOP_ACCOUNT_ID is not set");
+    const contact = await ctx.runQuery(internal.whop.userContact, { shopperId });
+    // Sandbox demo reuses one pre-verified subaccount: Whop only creates an account
+    // for an address that accepts mail, and anonymous demo shoppers have none.
+    const demoAccount = readEnv("WHOP_DEMO_SUBACCOUNT_ID");
+    if (demoAccount && whopEnvironment(config.base) === "sandbox") {
+      return await ctx.runMutation(internal.whop.saveSubaccount, {
+        shopperId,
+        providerAccountId: demoAccount,
+        environment: "sandbox",
+        kycRequired: false,
+        status: "active",
+      });
+    }
+    const address = email ?? contact.email;
+    if (!address) {
+      throw new Error(
+        "A Whop subaccount needs a real email address. Sign in with an email before funding with Whop.",
+      );
+    }
     const created = await createSubaccount(config, {
-      title: (name ?? "Cart shopper").slice(0, 80),
-      email: email ?? `${shopperId}@cart.local`,
+      title: (name ?? contact.name ?? "Cart shopper").slice(0, 80),
+      email: address,
     });
     if (!created.ok) throw new Error(created.error);
     const subaccountId: Id<"shopperSubaccounts"> = await ctx.runMutation(internal.whop.saveSubaccount, {
@@ -285,7 +326,7 @@ export const fundPurchase = internalAction({
       subaccountId: subaccount.providerAccountId,
       amountCents: billing.request.quote.totalCents,
       currency: billing.request.quote.currency ?? "USD",
-      title: billing.offer?.seller ? `Cart order: ${billing.offer.seller}` : "Cart order",
+      title: "Cart order",
       requestId,
       quoteVersion: billing.request.quoteVersion,
     });
@@ -328,20 +369,43 @@ export const handlePaymentEvent = internalAction({
   },
   handler: async (ctx, args) => {
     if (args.failed) {
+      if (/refund/i.test(args.type)) {
+        await ctx.runMutation(internal.whop.markRefundFromProvider, {
+          providerPaymentId: args.providerPaymentId,
+          refundedAt: Date.now(),
+        });
+      }
       await ctx.runMutation(internal.whop.finishEvent, {
         eventId: args.eventId,
         outcome: `payment ${args.providerPaymentId} reported ${args.type}; nothing recorded as money in`,
       });
       return null;
     }
-    const recorded = await ctx.runMutation(internal.whop.savePaid, {
+    let recorded: {
+      duplicate: boolean;
+      paymentId: Id<"payments">;
+      mismatch: string | null;
+      requestId: Id<"purchaseRequests">;
+    };
+    try {
+      recorded = await ctx.runMutation(internal.whop.savePaid, {
       providerPaymentId: args.providerPaymentId,
       requestId: args.requestId,
       quoteVersion: args.quoteVersion,
       amountCents: args.amountCents,
       currency: args.currency,
-      paidAt: Date.now(),
-    });
+        paidAt: Date.now(),
+      });
+    } catch (e) {
+      // A payment we cannot tie to an approved quote is recorded, never dropped.
+      await ctx.runMutation(internal.whop.finishEvent, {
+        eventId: args.eventId,
+        outcome: `payment ${args.providerPaymentId} could not be recorded: ${
+          e instanceof Error ? e.message : String(e)
+        }`.slice(0, 240),
+      });
+      return null;
+    }
     await ctx.runMutation(internal.whop.finishEvent, {
       eventId: args.eventId,
       outcome: recorded.duplicate
@@ -390,6 +454,7 @@ export const fulfil = internalAction({
 
     const revalidation = await ctx.runAction(internal.enrichment.revalidateOffer, {
       offerId: request.offerId,
+      approvedTotalCents: request.quote.totalCents,
     });
     await ctx.runMutation(internal.whop.setOrder, {
       orderId: order._id,
@@ -440,11 +505,12 @@ export const fulfil = internalAction({
       transactionLimitCents: subaccount.cardTransactionLimitCents ?? 0,
     };
     if (!subaccount.cardId) {
+      const contact = await ctx.runQuery(internal.whop.userContact, { shopperId: request.shopperId });
       const issued = await issueCard(config, {
         subaccountId: subaccount.providerAccountId,
+        cardholderEmail: contact.email ?? `demo+${request.shopperId.slice(-12)}@cart.app`,
         spendLimitCents: Math.max(request.quote.totalCents, 1000),
         transactionLimitCents: request.quote.totalCents,
-        cardholderEmail: "shopper@cart.local",
         cardholderName: "Cart Shopper",
       });
       card = {
@@ -468,14 +534,14 @@ export const fulfil = internalAction({
       });
     }
 
-    // The issuer-side cap is only real with a Rain account; Cart enforces it either way.
-    if (card.transactionLimitCents > 0 && request.quote.totalCents > card.transactionLimitCents) {
-      await ctx.runMutation(internal.whop.setOrder, {
-        orderId: order._id,
-        status: "failed",
-        error: "The order total exceeds the card's per-charge limit; no charge was attempted.",
+    // The per-charge cap follows the approved quote, so a second, larger order is not
+    // permanently capped by the first. Cart enforces it either way.
+    if (request.quote.totalCents > card.transactionLimitCents) {
+      card = { ...card, transactionLimitCents: request.quote.totalCents };
+      await ctx.runMutation(internal.whop.setSubaccount, {
+        subaccountId: payment.subaccountId,
+        cardTransactionLimitCents: card.transactionLimitCents,
       });
-      return null;
     }
 
     const charge = await chargeCard(config, {
@@ -511,8 +577,19 @@ export const fulfil = internalAction({
       });
       return null;
     }
-    await ctx.runMutation(internal.whop.setOrder, { orderId: order._id, status: "submitting" });
-    await ctx.scheduler.runAfter(0, internal.orders.submitOrder, { orderId: order._id });
+    if (order.simulated) {
+      await ctx.runMutation(internal.whop.setOrder, { orderId: order._id, status: "submitting" });
+      await ctx.scheduler.runAfter(0, internal.orders.submitOrder, { orderId: order._id });
+      return null;
+    }
+    // Money has moved for a real retailer quote. The simulated adapter must never
+    // "place" that order, so it waits for the live session to submit it.
+    await ctx.runMutation(internal.whop.setOrder, {
+      orderId: order._id,
+      status: "awaiting_client",
+      error:
+        "Payment is confirmed and the card charge is recorded; the retailer submission runs on the shopper's device with its live session.",
+    });
     return null;
   },
 });
@@ -721,5 +798,380 @@ export const createSandboxRequest = internalMutation({
       simulated: true,
     });
     return { shopperId, requestId, quoteVersion: 1 };
+  },
+});
+
+/**
+ * Sandbox repair, internal and CLI-only: a probe payment must never stand in for a
+ * real one, so this puts a row polluted by a probe back to pending.
+ */
+export const resetProbePayment = internalMutation({
+  args: { paymentId: v.id("payments") },
+  handler: async (ctx, { paymentId }) => {
+    const payment = await ctx.db.get("payments", paymentId);
+    if (!payment) return null;
+    if (!payment.providerPaymentId?.startsWith("pay_probe")) {
+      throw new Error("Refusing to reset a payment that did not come from a probe.");
+    }
+    await ctx.db.patch("payments", paymentId, {
+      status: "pending",
+      providerPaymentId: undefined,
+      paidAt: undefined,
+      failureReason: undefined,
+      updatedAt: Date.now(),
+    });
+    return { paymentId, status: "pending" as const };
+  },
+});
+
+/**
+ * Approval that cannot place an order: the request is marked approved at the given
+ * quote version and an order row is opened at `awaiting_payment`, but nothing is
+ * ever submitted until a payment is confirmed for that version.
+ */
+export const approveForPayment = internalMutation({
+  args: {
+    shopperId: v.id("users"),
+    requestId: v.id("purchaseRequests"),
+    quoteVersion: v.number(),
+  },
+  handler: async (ctx, { shopperId, requestId, quoteVersion }) => {
+    const request = await ctx.db.get("purchaseRequests", requestId);
+    if (!request || request.shopperId !== shopperId) {
+      throw new ConvexError({ code: "NOT_FOUND", message: "Purchase request not found." });
+    }
+    if (request.quoteVersion !== quoteVersion) {
+      throw new ConvexError({
+        code: "STALE_QUOTE",
+        message: `This quote is version ${request.quoteVersion}; approve the current one.`,
+      });
+    }
+    if (!request.quote) {
+      throw new ConvexError({ code: "INVALID_STATE", message: "The quote has no amount to charge." });
+    }
+    const now = Date.now();
+    if (request.status !== "approved") {
+      await ctx.db.patch("purchaseRequests", requestId, { status: "approved", decidedAt: now });
+    }
+    const existing = await ctx.db
+      .query("orders")
+      .withIndex("by_purchaseRequestId", (q) => q.eq("purchaseRequestId", requestId))
+      .unique();
+    if (existing) {
+      if (existing.status === "placed" || existing.status === "submitting") {
+        throw new ConvexError({
+          code: "INVALID_STATE",
+          message: "This order is already moving; it cannot be re-approved for payment.",
+        });
+      }
+      await ctx.db.patch("orders", existing._id, {
+        status: "awaiting_payment",
+        quote: request.quote,
+        quoteVersion: request.quoteVersion,
+        error: undefined,
+      });
+      return { orderId: existing._id, status: "awaiting_payment" as const };
+    }
+    const offer = await ctx.db.get("offers", request.offerId);
+    const orderId = await ctx.db.insert("orders", {
+      shopperId,
+      purchaseRequestId: requestId,
+      cartItemId: request.cartItemId,
+      orderRef: `PAY-${requestId.slice(-8).toUpperCase()}`,
+      retailer: offer?.retailer ?? request.quote.retailer,
+      status: "awaiting_payment",
+      quoteVersion: request.quoteVersion,
+      quote: request.quote,
+      submitAttempts: 0,
+      simulated: request.quote.simulated,
+    });
+    return { orderId, status: "awaiting_payment" as const };
+  },
+});
+
+/** A refund the provider reports, applied to the payment it names. */
+export const markRefundFromProvider = internalMutation({
+  args: { providerPaymentId: v.string(), refundedAt: v.number() },
+  handler: async (ctx, { providerPaymentId, refundedAt }) => {
+    const payment = await ctx.db
+      .query("payments")
+      .withIndex("by_providerPaymentId", (q) => q.eq("providerPaymentId", providerPaymentId))
+      .first();
+    if (!payment) return null;
+    await ctx.db.patch("payments", payment._id, {
+      status: "refunded",
+      refundAmountCents: payment.amountCents,
+      refundedAt,
+      updatedAt: Date.now(),
+    });
+    return null;
+  },
+});
+
+export const subaccountByProvider = internalQuery({
+  args: { providerAccountId: v.string() },
+  handler: async (ctx, { providerAccountId }) =>
+    await ctx.db
+      .query("shopperSubaccounts")
+      .withIndex("by_providerAccountId", (q) => q.eq("providerAccountId", providerAccountId))
+      .first(),
+});
+
+export const subaccountById = internalQuery({
+  args: { subaccountId: v.id("shopperSubaccounts") },
+  handler: async (ctx, { subaccountId }) => await ctx.db.get("shopperSubaccounts", subaccountId),
+});
+
+/** The provider's own view of a subaccount: balances, card count, onboarding. */
+export const providerSnapshot = internalAction({
+  args: { subaccountId: v.id("shopperSubaccounts") },
+  handler: async (
+    ctx,
+    { subaccountId },
+  ): Promise<{
+    availableCents: number | null;
+    pendingCents: number | null;
+    currency: string | null;
+    fetchedAt: number;
+    cardCount: number | null;
+    onboarding: string | null;
+  }> => {
+    const config = whopConfig();
+    if (!config) throw new Error("Whop is not configured");
+    const subaccount = await ctx.runQuery(internal.whop.subaccountById, { subaccountId });
+    if (!subaccount) throw new Error("No such subaccount");
+    const res = await whopFetch<{
+      balances?: { symbol?: string; breakdown?: { available?: string; pending?: string } }[];
+      cards?: unknown[];
+      onboarding_type?: string | null;
+    }>(config, `/accounts/${subaccount.providerAccountId}`);
+    if (!res.ok) throw new Error(res.error);
+    const account = res.data;
+    const balances = Array.isArray(account.balances) ? account.balances : [];
+    const usd: { symbol?: string; breakdown?: { available?: string; pending?: string } } | null =
+      balances.find((b: { symbol?: string }) => (b.symbol ?? "").toUpperCase() === "USD") ?? balances[0] ?? null;
+    const cents = (value: string | undefined): number | null =>
+      value === undefined || value === "" ? null : Math.round(Number(value) * 100);
+    const availableCents = cents(usd?.breakdown?.available);
+    const pendingCents = cents(usd?.breakdown?.pending);
+    const currency = usd?.symbol ?? null;
+    const fetchedAt = Date.now();
+    const cardCount = Array.isArray(account.cards) ? account.cards.length : null;
+    await ctx.runMutation(internal.whop.setSubaccount, {
+      subaccountId,
+      providerAvailableCents: availableCents ?? undefined,
+      providerPendingCents: pendingCents ?? undefined,
+      providerCurrency: currency ?? undefined,
+      providerFetchedAt: fetchedAt,
+      providerCardCount: cardCount ?? undefined,
+      providerOnboarding: account.onboarding_type ?? undefined,
+    });
+    return { availableCents, pendingCents, currency, fetchedAt, cardCount, onboarding: account.onboarding_type ?? null };
+  },
+});
+
+/** Records a second successful charge as its own payment row, tied to its request. */
+export const recordExtraPayment = internalMutation({
+  args: {
+    providerPaymentId: v.string(),
+    requestId: v.string(),
+    amountCents: v.number(),
+    currency: v.string(),
+    paidAt: v.number(),
+    note: v.string(),
+  },
+  handler: async (ctx, { providerPaymentId, requestId, amountCents, currency, paidAt, note }) => {
+    const existing = await ctx.db
+      .query("payments")
+      .withIndex("by_providerPaymentId", (q) => q.eq("providerPaymentId", providerPaymentId))
+      .first();
+    if (existing) return existing._id;
+    const request = await ctx.db.get("purchaseRequests", requestId as Id<"purchaseRequests">);
+    if (!request) throw new Error("The duplicate payment names a request that no longer exists.");
+    const siblings = await ctx.db
+      .query("payments")
+      .withIndex("by_requestId", (q) => q.eq("requestId", request._id))
+      .take(20);
+    const sibling = siblings.find((p) => p.providerPaymentId !== providerPaymentId);
+    if (!sibling) throw new Error("The duplicate payment has no subaccount to attach to.");
+    const now = Date.now();
+    return await ctx.db.insert("payments", {
+      shopperId: request.shopperId,
+      requestId: request._id,
+      quoteVersion: request.quoteVersion,
+      subaccountId: sibling.subaccountId,
+      providerPaymentId,
+      amountCents,
+      currency: currency.toUpperCase(),
+      status: "succeeded",
+      paidAt,
+      failureReason: note,
+      createdAt: now,
+      updatedAt: now,
+    });
+  },
+});
+
+export const markRefundedPayment = internalMutation({
+  args: { paymentId: v.id("payments"), refundId: v.string(), amountCents: v.number() },
+  handler: async (ctx, { paymentId, refundId, amountCents }) => {
+    await ctx.db.patch("payments", paymentId, {
+      status: "refunded",
+      refundId,
+      refundAmountCents: amountCents,
+      refundedAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+    return null;
+  },
+});
+
+/**
+ * Reconciliation from the provider's own record, never a replay: records the paid
+ * payments a subaccount holds against the quote their metadata names, and refunds a
+ * second successful charge for a quote that was already paid.
+ */
+export const reconcileSubaccount = internalAction({
+  args: { subaccountId: v.id("shopperSubaccounts"), refundDuplicates: v.optional(v.boolean()) },
+  handler: async (
+    ctx,
+    { subaccountId, refundDuplicates },
+  ): Promise<{
+    examined: number;
+    recorded: number;
+    duplicates: number;
+    refunded: string[];
+    refundErrors: string[];
+    unmatched: string[];
+  }> => {
+    const config = whopConfig();
+    if (!config) throw new Error("Whop is not configured");
+    const subaccount = await ctx.runQuery(internal.whop.subaccountById, { subaccountId });
+    if (!subaccount) throw new Error("No such subaccount");
+    const res = await whopFetch<{ data?: any[] }>(
+      config,
+      `/payments?account_id=${subaccount.providerAccountId}&first=50`,
+    );
+    if (!res.ok) throw new Error(res.error);
+    const paid = (Array.isArray(res.data.data) ? res.data.data : [])
+      .filter((p: any) => p?.status === "paid" && p?.substatus === "succeeded" && typeof p?.id === "string")
+      .sort((a: any, b: any) => Date.parse(a.paid_at ?? 0) - Date.parse(b.paid_at ?? 0));
+    let recorded = 0;
+    let duplicates = 0;
+    const refunded: string[] = [];
+    const refundErrors: string[] = [];
+    const unmatched: string[] = [];
+    const firstForQuote = new Map<string, string>();
+    for (const payment of paid) {
+      const id = payment.id as string;
+      const amount = payment?.total?.amount ?? payment?.amount_charged?.amount ?? null;
+      const currency = payment?.total?.currency ?? payment?.currency ?? null;
+      const metadata = payment?.metadata ?? {};
+      const requestId = typeof metadata.requestId === "string" ? metadata.requestId : null;
+      const quoteVersion =
+        typeof metadata.quoteVersion === "string" ? metadata.quoteVersion : String(metadata.quoteVersion ?? "");
+      const quoteKey = requestId ? `${requestId}:${quoteVersion}` : null;
+      const earlier = quoteKey ? firstForQuote.get(quoteKey) : undefined;
+      if (quoteKey && !earlier) firstForQuote.set(quoteKey, id);
+      const amountCents = amount === null ? 0 : Math.round(Number(amount) * 100);
+      try {
+        if (quoteKey && earlier) {
+          duplicates++;
+          const extra = await ctx.runMutation(internal.whop.recordExtraPayment, {
+            providerPaymentId: id,
+            requestId: requestId!,
+            amountCents,
+            currency: typeof currency === "string" ? currency : "USD",
+            paidAt: payment?.paid_at ? Date.parse(payment.paid_at) : Date.now(),
+            note: `Duplicate charge for quote ${quoteVersion}; the first payment was ${earlier}.`,
+          });
+          if (refundDuplicates) {
+            const refund = await refundPayment(config, {
+              paymentId: id,
+              reason: "Duplicate charge for an already-paid Cart quote",
+            });
+            if (refund.ok) {
+              await ctx.runMutation(internal.whop.markRefundedPayment, {
+                paymentId: extra,
+                refundId: refund.data.id,
+                amountCents,
+              });
+              refunded.push(id);
+            } else if (/refundable|already|refunded/i.test(refund.error)) {
+              // The provider already refunded it; keep our ledger in step.
+              await ctx.runMutation(internal.whop.markRefundedPayment, {
+                paymentId: extra,
+                refundId: "refunded-by-provider",
+                amountCents,
+              });
+              refunded.push(id);
+            } else {
+              refundErrors.push(`${id}: ${refund.error}`);
+            }
+          }
+          continue;
+        }
+        const result = await ctx.runMutation(internal.whop.savePaid, {
+          providerPaymentId: id,
+          requestId,
+          quoteVersion: quoteVersion === "" ? null : quoteVersion,
+          amountCents: amount === null ? null : amountCents,
+          currency: typeof currency === "string" ? currency : null,
+          paidAt: payment?.paid_at ? Date.parse(payment.paid_at) : Date.now(),
+        });
+        if (result.duplicate) duplicates++;
+        else if (result.mismatch) unmatched.push(`${id}: ${result.mismatch}`);
+        else recorded++;
+      } catch (e) {
+        unmatched.push(`${id}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+    return { examined: paid.length, recorded, duplicates, refunded, refundErrors, unmatched };
+  },
+});
+
+/** Read-only audit of which Cart shopper holds the live agent connections. */
+export const museAudit = internalQuery({
+  args: { label: v.optional(v.string()) },
+  handler: async (ctx, { label }) => {
+    const wanted = (label ?? "muse").toLowerCase();
+    const tokens = await ctx.db.query("mcpTokens").take(200);
+    const connections = tokens
+      .filter((t) => t.kind === "connection" && !t.revokedAt)
+      .filter((t) => (t.label ?? "").toLowerCase().includes(wanted))
+      .map((t) => ({ tokenId: t._id, label: t.label ?? null, shopperId: t.shopperId, createdAt: t.createdAt }));
+    const shopperIds = [...new Set(connections.map((c) => c.shopperId))];
+    const recentAgentItems: {
+      shopperId: Id<"users">;
+      url: string;
+      addedAt: number;
+      addedBy: string;
+    }[] = [];
+    for (const shopperId of shopperIds) {
+      const items = await ctx.db
+        .query("cartItems")
+        .withIndex("by_shopperId_and_status", (q) => q.eq("shopperId", shopperId))
+        .order("desc")
+        .take(10);
+      for (const item of items) {
+        recentAgentItems.push({ shopperId, url: item.url.slice(0, 90), addedAt: item.addedAt, addedBy: item.addedBy });
+      }
+    }
+    const subaccounts = (await ctx.db.query("shopperSubaccounts").take(50)).map((row) => ({
+      subaccountId: row._id,
+      shopperId: row.shopperId,
+      providerAccountId: row.providerAccountId,
+      status: row.status,
+      environment: row.environment,
+    }));
+    const payments = (await ctx.db.query("payments").take(50)).map((p) => ({
+      paymentId: p._id,
+      shopperId: p.shopperId,
+      subaccountId: p.subaccountId,
+      status: p.status,
+      providerPaymentId: p.providerPaymentId ?? null,
+      amountCents: p.amountCents,
+    }));
+    return { connections, recentAgentItems, subaccounts, payments };
   },
 });

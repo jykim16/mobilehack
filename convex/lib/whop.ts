@@ -89,7 +89,8 @@ export async function createCheckoutConfiguration(
     body: {
       account_id: input.subaccountId,
       variant: {
-        title: input.title.slice(0, 120),
+        // Whop caps the dynamic plan title at 30 characters.
+        title: input.title.slice(0, 30),
         billing_type: "one_time",
         initial_price: Number((input.amountCents / 100).toFixed(2)),
         currency: input.currency.toLowerCase(),
@@ -207,11 +208,11 @@ export async function refundPayment(
   config: WhopConfig,
   input: { paymentId: string; amountCents?: number; reason?: string },
 ): Promise<WhopResult<{ id: string }>> {
-  return await whopFetch<{ id: string }>(config, "/refunds", {
+  // Whop refunds a payment in place: POST /payments/{id}/refund.
+  return await whopFetch<{ id: string }>(config, `/payments/${input.paymentId}/refund`, {
     method: "POST",
     idempotencyKey: `refund-${input.paymentId}-${input.amountCents ?? "full"}`,
     body: {
-      payment_id: input.paymentId,
       ...(input.amountCents ? { amount: Number((input.amountCents / 100).toFixed(2)) } : {}),
       reason: input.reason ?? "Cart retailer order could not be fulfilled",
     },

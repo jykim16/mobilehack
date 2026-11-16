@@ -176,12 +176,37 @@ export const submitOrder = internalAction({
     const { order, request } = loaded;
     if (order.status !== "submitting" && order.status !== "unknown") return null;
 
+    // No order moves without money behind it. A simulated demo order is the one
+    // exception, and it is labeled simulated everywhere it appears.
+    if (!order.simulated) {
+      const paid = await ctx.runQuery(internal.orders.paymentForRequest, {
+        requestId: order.purchaseRequestId,
+        quoteVersion: order.quoteVersion,
+      });
+      if (!paid) {
+        await ctx.runMutation(internal.orders.markFailed, {
+          orderId,
+          error: "No confirmed payment for this quote version, so the order was not submitted.",
+        });
+        return null;
+      }
+    }
+
     const offer = await ctx.runQuery(internal.purchases.offerSnapshot, { offerId: request.offerId });
     if (!offer) {
       await ctx.runMutation(internal.orders.markFailed, { orderId, error: "Offer no longer exists." });
       return null;
     }
     const adapter = getAdapter(ctx, order.retailer);
+    if (!order.simulated && adapter.simulated) {
+      // Real money is not fulfilled by the simulation adapter: the order waits for
+      // the live retailer session instead of recording a fake placement.
+      await ctx.runMutation(internal.orders.markAwaitingClient, {
+        orderId,
+        note: "Payment is confirmed; the retailer submission runs on the shopper's device with its live session.",
+      });
+      return null;
+    }
 
     if (order.submitAttempts > 0) {
       const existing = await adapter.getOrderStatus({ orderRef: order.orderRef });
@@ -362,6 +387,35 @@ export const applyShipment = internalMutation({
       simulated,
       updatedAt: Date.now(),
     });
+    return null;
+  },
+});
+
+/** The payment that unlocks an order: confirmed, for this exact quote version. */
+export const paymentForRequest = internalQuery({
+  args: { requestId: v.id("purchaseRequests"), quoteVersion: v.number() },
+  handler: async (ctx, { requestId, quoteVersion }) => {
+    const payments = await ctx.db
+      .query("payments")
+      .withIndex("by_requestId", (q) => q.eq("requestId", requestId))
+      .take(20);
+    return (
+      payments.find(
+        (p) =>
+          p.status === "succeeded" &&
+          p.quoteVersion === quoteVersion &&
+          p.providerPaymentId !== undefined,
+      ) ?? null
+    );
+  },
+});
+
+export const markAwaitingClient = internalMutation({
+  args: { orderId: v.id("orders"), note: v.string() },
+  handler: async (ctx, { orderId, note }) => {
+    const order = await ctx.db.get("orders", orderId);
+    if (!order || order.status === "placed") return null;
+    await ctx.db.patch("orders", orderId, { status: "awaiting_client", error: note });
     return null;
   },
 });

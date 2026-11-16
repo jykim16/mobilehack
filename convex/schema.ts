@@ -277,8 +277,18 @@ export default defineSchema({
     cardTransactionLimitCents: v.optional(v.number()),
     cardIssuedAt: v.optional(v.number()),
     cardNote: v.optional(v.string()),
+    /** Balances Cart computes from its own ledger (money in minus card spend). */
     availableBalanceCents: v.optional(v.number()),
     balanceCheckedAt: v.optional(v.number()),
+    /** Balances the provider reports for the account, unmodified and separately labeled. */
+    providerAvailableCents: v.optional(v.number()),
+    providerPendingCents: v.optional(v.number()),
+    providerCurrency: v.optional(v.string()),
+    providerFetchedAt: v.optional(v.number()),
+    providerSettlementDate: v.optional(v.string()),
+    /** What the provider says it can do with cards on this account. */
+    providerCardCount: v.optional(v.number()),
+    providerOnboarding: v.optional(v.string()),
     createdAt: v.number(),
     updatedAt: v.number(),
   })
@@ -307,6 +317,7 @@ export default defineSchema({
     updatedAt: v.number(),
   })
     .index("by_providerPaymentId", ["providerPaymentId"])
+    .index("by_subaccountId", ["subaccountId"])
     .index("by_requestId", ["requestId"])
     .index("by_shopperId_and_status", ["shopperId", "status"]),
 
@@ -333,6 +344,7 @@ export default defineSchema({
     updatedAt: v.number(),
   })
     .index("by_orderId", ["orderId"])
+    .index("by_subaccountId", ["subaccountId"])
     .index("by_providerTransactionId", ["providerTransactionId"])
     .index("by_shopperId_and_status", ["shopperId", "status"]),
 
