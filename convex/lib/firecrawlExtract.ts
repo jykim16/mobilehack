@@ -4,6 +4,8 @@
  * does not state something we keep null rather than guessing.
  */
 
+import { canonicalKeyForUrl } from "./urls";
+
 export const OFFER_SCHEMA = {
   type: "object",
   properties: {
@@ -85,9 +87,11 @@ function asBoolean(value: unknown): boolean | null {
 
 /** Relative image paths are resolved against the listing they came from. */
 export function resolveImageUrl(imageUrl: string | null, listingUrl: string): string | null {
-  if (!imageUrl) return null;
+  if (!imageUrl?.trim()) return null;
   try {
-    return new URL(imageUrl, listingUrl).toString();
+    const url = new URL(imageUrl, listingUrl);
+    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) return null;
+    return url.toString();
   } catch {
     return null;
   }
@@ -158,6 +162,13 @@ export function parseReturnTerms(raw: RawExtraction): ExtractedReturnTerms {
  */
 export function sameVariant(expectedKey: string | null, extractedKey: string | null): boolean {
   if (expectedKey === null) return extractedKey === null;
+  if (expectedKey.startsWith("amazon:")) {
+    const normalized = /^amazon:[A-Z0-9]{10}$/i.test(expectedKey)
+      ? expectedKey
+      : canonicalKeyForUrl(`https://${expectedKey.slice("amazon:".length)}`);
+    return normalized !== null && /^amazon:[A-Z0-9]{10}$/i.test(normalized) &&
+      normalized.slice("amazon:".length).toUpperCase() === extractedKey?.trim().toUpperCase();
+  }
   const want = expectedKey.split(":").pop()!.toUpperCase();
   // Retailers we cannot key by SKU fall back to a URL-shaped key
   // ("walmart:walmart.com/ip/Widget/123456"). There the scraped page is the

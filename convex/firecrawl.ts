@@ -1,5 +1,6 @@
 import { v } from "convex/values";
 import { env, internalAction } from "./_generated/server";
+import { canonicalKeyForUrl } from "./lib/urls";
 import {
   OFFER_PROMPT,
   OFFER_SCHEMA,
@@ -106,7 +107,8 @@ export const extractOffer = internalAction({
       error: null,
       offer,
       sourceUrl: result.sourceUrl,
-      variantMatches: sameVariant(expectedKey, offer.asinOrSku),
+      variantMatches: sameVariant(expectedKey ?? canonicalKeyForUrl(url), offer.asinOrSku) &&
+        canonicalKeyForUrl(result.sourceUrl) === canonicalKeyForUrl(url),
     };
   },
 });
