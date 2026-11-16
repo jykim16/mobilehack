@@ -2,6 +2,9 @@ import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
 import test from 'node:test';
 import vm from 'node:vm';
+import { readFileSync } from 'node:fs';
+import ts from 'typescript';
+import { AMAZON_LIVE_SUBMISSION_ENABLED, DurableSubmissionClaims, PersistedBrowserOwner } from '../durable-safety.ts';
 
 import {
   buildShipmentEvents,
@@ -33,6 +36,7 @@ import {
   buildScrapeOrderConfirmationScript,
   buildScrapeProgressTrackerScript,
   buildScrapeYourOrdersScript,
+  buildSessionCheckScript,
   buildSubmitCheckoutOrderScript,
 } from '../scripts.ts';
 
@@ -588,6 +592,7 @@ test('(e) repeat approval/placeOrder on same orderRef cannot double-submit while
   ledger.recordUnknown({
     orderRef,
     submittedAt: 1_700_000_000_000,
+    baselineCapturedAt: 1_700_000_000_000,
     approvedItems: [{ asin: 'B09XS7JWHH', quantity: 1 }],
     expectedTotalCents: 24900,
     preExistingOrderIds: ['114-0000001-0000001'],
@@ -606,6 +611,7 @@ test('(e) repeat approval/placeOrder on same orderRef cannot double-submit while
       asin: 'B09XS7JWHH',
       items: [{ asin: 'B09XS7JWHH', quantity: 1 }],
       totalCents: 24900,
+      placedAtPrecision: 'timestamp',
       placedAtMs: 1_700_000_010_000,
       syncedAt: 1_700_000_030_000,
     },
@@ -911,6 +917,7 @@ test('(h.2) historical purchases, unparsed ASINs, mismatched totals/quantities, 
   ledger.recordUnknown({
     orderRef: 'CART-REQ_HIST',
     submittedAt,
+    baselineCapturedAt: submittedAt,
     approvedItems: [{ asin: 'B09XS7JWHH', quantity: 2 }],
     expectedTotalCents: 49800,
   });
@@ -923,6 +930,7 @@ test('(h.2) historical purchases, unparsed ASINs, mismatched totals/quantities, 
       asin: 'B09XS7JWHH',
       items: [{ asin: 'B09XS7JWHH', quantity: 2 }],
       totalCents: 49800,
+      placedAtPrecision: 'timestamp',
       placedAtMs: submittedAt,
       syncedAt: submittedAt + 5000,
     },
@@ -932,6 +940,7 @@ test('(h.2) historical purchases, unparsed ASINs, mismatched totals/quantities, 
       asin: 'B09XS7JWHH',
       items: [{ asin: 'B09XS7JWHH', quantity: 2 }],
       totalCents: 49800,
+      placedAtPrecision: 'timestamp',
       placedAtMs: new Date('2026-10-01T12:00:00Z').getTime(),
       syncedAt: submittedAt + 5000,
     },
@@ -940,6 +949,7 @@ test('(h.2) historical purchases, unparsed ASINs, mismatched totals/quantities, 
       retailerOrderId: '114-3333333-3333333',
       asin: null,
       totalCents: 49800,
+      placedAtPrecision: 'timestamp',
       placedAtMs: submittedAt,
       syncedAt: submittedAt + 5000,
     },
@@ -949,6 +959,7 @@ test('(h.2) historical purchases, unparsed ASINs, mismatched totals/quantities, 
       asin: 'B09XS7JWHH',
       items: [{ asin: 'B09XS7JWHH', quantity: 1 }],
       totalCents: 49800,
+      placedAtPrecision: 'timestamp',
       placedAtMs: submittedAt,
       syncedAt: submittedAt + 5000,
     },
@@ -958,6 +969,7 @@ test('(h.2) historical purchases, unparsed ASINs, mismatched totals/quantities, 
       asin: 'B09XS7JWHH',
       items: [{ asin: 'B09XS7JWHH', quantity: 2 }],
       totalCents: 24900,
+      placedAtPrecision: 'timestamp',
       placedAtMs: submittedAt,
       syncedAt: submittedAt + 5000,
     },
@@ -973,6 +985,7 @@ test('(h.2) historical purchases, unparsed ASINs, mismatched totals/quantities, 
       asin: 'B09XS7JWHH',
       items: [{ asin: 'B09XS7JWHH', quantity: 2 }],
       totalCents: 49800,
+      placedAtPrecision: 'timestamp',
       placedAtMs: submittedAt,
       syncedAt: submittedAt + 10_000,
     },
@@ -981,6 +994,7 @@ test('(h.2) historical purchases, unparsed ASINs, mismatched totals/quantities, 
       asin: 'B09XS7JWHH',
       items: [{ asin: 'B09XS7JWHH', quantity: 2 }],
       totalCents: 49800,
+      placedAtPrecision: 'timestamp',
       placedAtMs: submittedAt,
       syncedAt: submittedAt + 10_000,
     },
@@ -1186,6 +1200,7 @@ test('(h.5) settleSubmittedOrderConfirmation catches post-submit evalStep timeou
   const result = await settleSubmittedOrderConfirmation({
     orderRef: 'CART-TIMEOUT_1',
     submittedAt: 1_700_000_000_000,
+    baselineCapturedAt: 1_700_000_000_000,
     approvedItems: [{ asin: 'B09XS7JWHH', quantity: 1 }],
     expectedTotalCents: 24900,
     preExistingOrderIds: ['114-0000000-0000000'],
@@ -1589,6 +1604,7 @@ test('(i.3) SessionResetBarrier fences mid-flight confirmation and addItem conti
   const settled = await settleSubmittedOrderConfirmation({
     orderRef: 'CART-STALE-EPOCH',
     submittedAt: 1_700_000_000_000,
+    baselineCapturedAt: 1_700_000_000_000,
     approvedItems: [{ asin: 'B09XS7JWHH', quantity: 1 }],
     expectedTotalCents: 24900,
     verifiedQuote: quote,
@@ -1670,6 +1686,8 @@ test('(i.4) SessionResetBarrier keeps Amazon operations fail-closed locked when 
   const okVerdict = barrier.verifySignOutResult(resetEpoch, {
     currentUrl: 'https://www.amazon.com/gp/cart/view.html',
     signedIn: false,
+    signedOut: true,
+    challenge: 'none',
   });
   assert.equal(okVerdict.ok, true);
   assert.equal(barrier.isLogoutPending, false);
@@ -2427,6 +2445,8 @@ test('(j.9) checkoutAmazonItem enforces sign-in, dryRun:true halt, and exact Con
     closeBrowserSheet: () => {
       sequence.push('closeBrowserSheet');
     },
+    submissionAuthority: { available: true, claim: async () => true },
+    captureOrderBaseline: async () => ({ capturedAt: Date.now(), orderIds: [] }),
     runExclusive: async (fn) => fn(),
     isolationDeps: {
       navigateToCart: async () => {},
@@ -2576,12 +2596,53 @@ test('(j.9) checkoutAmazonItem enforces sign-in, dryRun:true halt, and exact Con
   assert.equal(placeOrderClicked, 0);
   assert.deepEqual(sequence, ['ensureSignedIn', 'closeBrowserSheet', 'spcInspect']);
 
+  for (const flags of [{}, { dryRun: false }, { userConfirmed: true }, { dryRun: false, userConfirmed: false }, { dryRun: true, userConfirmed: true }]) {
+    sequence.length = 0;
+    const result = await executeDeterministicItemCheckout({ ...makeCommonDeps(), input: { item: cartItem, ...flags } });
+    assert.equal(result.status, 'dry_run_halted');
+    assert.equal(placeOrderClicked, 0);
+    assert.deepEqual(sequence, ['spcInspect']);
+  }
+  const disabled = await executeDeterministicItemCheckout({
+    ...makeCommonDeps(), submissionAuthority: undefined,
+    input: { item: cartItem, dryRun: false, userConfirmed: true },
+  });
+  assert.equal(disabled.status, 'safety_blocked');
+  assert.equal(placeOrderClicked, 0);
+  assert.equal(AMAZON_LIVE_SUBMISSION_ENABLED, false);
+
+  const records = new Map();
+  const storage = { getItem: async (key) => records.get(key) ?? null, setItem: async (key, value) => { records.set(key, value); } };
+  const claim = new DurableSubmissionClaims(storage);
+  const lostAckDeps = makeCommonDeps();
+  let dispatches = 0;
+  const attempt = (claims, ledger) => executeDeterministicItemCheckout({
+    ...lostAckDeps,
+    input: { item: cartItem, dryRun: false, userConfirmed: true },
+    submissionLedger: ledger,
+    submissionAuthority: { available: true, claim: (ref, at) => claims.claim('opaque-shopper', ref, at) },
+    submitCheckoutOrder: async () => {
+      dispatches += 1;
+      assert.equal(ledger.get('CART-AWAITING1')?.state, 'unknown');
+      assert.equal(records.size, 1);
+      throw new Error('mock lost WebView acknowledgement');
+    },
+  });
+  const lost = await attempt(claim, new OrderSubmissionLedger());
+  assert.equal(lost.status, 'unknown');
+  const restarted = await attempt(new DurableSubmissionClaims(storage), new OrderSubmissionLedger());
+  assert.equal(restarted.status, 'unknown');
+  assert.equal(dispatches, 1);
+  const unavailable = await attempt(new DurableSubmissionClaims({ getItem: async () => { throw new Error('unavailable'); }, setItem: async () => {} }), new OrderSubmissionLedger());
+  assert.equal(unavailable.status, 'unknown');
+  assert.equal(dispatches, 1);
+
   // 2. Human-confirmed live checkout (`userConfirmed: true`, `dryRun: false`) -> exact Convex + WebKit sequence!
   sequence.length = 0;
   const liveDeps = makeCommonDeps();
   const liveRes = await executeDeterministicItemCheckout({
     ...liveDeps,
-    input: { item: cartItem, userConfirmed: true },
+    input: { item: cartItem, dryRun: false, userConfirmed: true },
   });
 
   assert.equal(liveRes.status, 'placed');
@@ -2608,12 +2669,171 @@ test('(j.9) checkoutAmazonItem enforces sign-in, dryRun:true halt, and exact Con
     input: {
       item: cartItem,
       orderRef: 'CART-AWAITING1',
+      dryRun: false,
       userConfirmed: true,
     },
   });
   assert.equal(dupRes.status, 'placed');
   assert.equal(dupRes.safetyGate.orderSubmitted, false);
   assert.equal(placeOrderClicked, 1);
+});
+
+test('(l.1) durable claims serialize separate instances, retain unknown across restart, and scope shopper/order without lossy keys', async () => {
+  const records = new Map();
+  const storage = { getItem: async (key) => records.get(key) ?? null, setItem: async (key, value) => { records.set(key, value); } };
+  const first = new DurableSubmissionClaims(storage);
+  const second = new DurableSubmissionClaims(storage);
+  assert.deepEqual(await Promise.all([first.claim('A', 'canonical', 100), second.claim('A', 'canonical', 100)]), [true, false]);
+  assert.equal(await new DurableSubmissionClaims(storage).claim('A', 'canonical', 200), false);
+  assert.equal(await second.claim('B', 'canonical', 200), true);
+  assert.equal(await first.claim('A!', 'canonical', 200), true);
+  assert.equal(await first.claim(null, 'canonical', 200), false);
+  const rejectingWrite = new DurableSubmissionClaims({ getItem: async () => null, setItem: async () => { throw new Error('disk unavailable'); } });
+  assert.equal(await rejectingWrite.claim('A', 'other', 200), false);
+});
+
+test('(l.2) cold boot and null-to-B cookie timing cannot expose a session before persisted owner and verified reset', async () => {
+  const records = new Map();
+  const storage = { getItem: async (key) => records.get(key) ?? null, setItem: async (key, value) => { records.set(key, value); } };
+  const owner = new PersistedBrowserOwner(storage);
+  let resets = 0;
+  let finishReset;
+  const initializing = owner.initialize('B', async () => { resets += 1; await new Promise((resolve) => { finishReset = resolve; }); });
+  assert.equal(owner.isReady('B'), false);
+  while (!finishReset) await Promise.resolve();
+  assert.equal(owner.isReady('B'), false);
+  finishReset();
+  assert.equal(await initializing, true);
+  assert.equal(resets, 1);
+  assert.equal(owner.isReady('B'), true);
+  assert.equal(owner.isReady('A'), false);
+  const restored = new PersistedBrowserOwner(storage);
+  assert.equal(restored.isReady('B'), false);
+  assert.equal(await restored.initialize('B', async () => { throw new Error('must not reset trusted owner'); }), true);
+  const switched = new PersistedBrowserOwner(storage);
+  assert.equal(await switched.initialize('A', async () => { throw new Error('offline signout'); }), false);
+  assert.equal(switched.isReady('A'), false);
+  const nullBoot = new PersistedBrowserOwner(storage);
+  assert.equal(await nullBoot.initialize(null, async () => { resets += 1; }), false);
+  assert.equal(nullBoot.isReady('B'), false);
+  assert.equal(await nullBoot.initialize('B', async () => { resets += 1; }), true);
+  assert.equal(resets, 3);
+  assert.deepEqual([...records.values()], ['B']);
+  const unavailable = new PersistedBrowserOwner({ getItem: async () => { throw new Error('storage unavailable'); }, setItem: async () => {} });
+  assert.equal(await unavailable.initialize('B', async () => {}), false);
+  assert.equal(unavailable.isReady('B'), false);
+});
+
+test('(l.3) unknown reconciliation rejects earlier same-day, date-only, stale/missing baseline and out-of-window evidence', () => {
+  const submittedAt = Date.parse('2026-11-15T14:30:00Z');
+  const candidate = {
+    retailerOrderId: '114-1234567-1234567', asin: 'B09XS7JWHH',
+    items: [{ asin: 'B09XS7JWHH', quantity: 1 }], totalCents: 24900,
+    placedAtMs: submittedAt + 1000, placedAtPrecision: 'timestamp', syncedAt: submittedAt + 5000,
+  };
+  for (const [baselineCapturedAt, changes] of [
+    [submittedAt, { placedAtMs: submittedAt - 5.5 * 60 * 60 * 1000 }],
+    [submittedAt, { placedAtPrecision: 'date' }],
+    [submittedAt, { placedAtPrecision: undefined }],
+    [submittedAt - 30_001, {}], [undefined, {}], [submittedAt + 1, {}],
+    [submittedAt, { placedAtMs: submittedAt + 10 * 60 * 1000 + 1 }],
+  ]) {
+    const ledger = new OrderSubmissionLedger();
+    ledger.recordUnknown({ orderRef: 'canonical', submittedAt, baselineCapturedAt, approvedItems: candidate.items, expectedTotalCents: 24900 });
+    assert.deepEqual(ledger.reconcileFromSyncedOrders([{ ...candidate, ...changes }]), []);
+    assert.equal(ledger.get('canonical')?.state, 'unknown');
+  }
+  const ledger = new OrderSubmissionLedger();
+  ledger.recordUnknown({ orderRef: 'canonical', submittedAt, baselineCapturedAt: submittedAt, approvedItems: candidate.items, expectedTotalCents: 24900 });
+  assert.equal(ledger.reconcileFromSyncedOrders([candidate]).length, 1);
+  const manual = new OrderSubmissionLedger();
+  manual.recordUnknown({ orderRef: 'canonical', submittedAt, approvedItems: candidate.items, expectedTotalCents: 24900 });
+  manual.recordPlaced('canonical', candidate.retailerOrderId, submittedAt + 1000);
+  assert.equal(manual.get('canonical')?.state, 'placed');
+});
+
+test('(l.4) superseded owner binding writes finish before the next reset/bind transaction and cannot corrupt cold restore', async () => {
+  let persisted = 'previous';
+  let finishAWrite;
+  let aWriteStarted;
+  const writingA = new Promise((resolve) => { aWriteStarted = resolve; });
+  const storage = {
+    getItem: async () => persisted,
+    setItem: async (_key, value) => {
+      if (value === 'A') {
+        aWriteStarted();
+        await new Promise((resolve) => { finishAWrite = resolve; });
+      }
+      persisted = value;
+    },
+  };
+  const a = new PersistedBrowserOwner(storage);
+  const b = new PersistedBrowserOwner(storage);
+  const initA = a.initialize('A', async () => {});
+  await writingA;
+  a.invalidate();
+  let bResets = 0;
+  const initB = b.initialize('B', async () => { bResets += 1; });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(b.isReady('B'), false);
+  assert.equal(bResets, 0);
+  finishAWrite();
+  assert.equal(await initA, false);
+  assert.equal(await initB, true);
+  assert.equal(persisted, 'B');
+  assert.equal(bResets, 1);
+  a.deactivate();
+  assert.equal(await a.initialize('A', async () => { throw new Error('revoked callback must not reset'); }), false);
+  const coldA = new PersistedBrowserOwner({ getItem: async () => persisted, setItem: async (_key, value) => { persisted = value; } });
+  let coldResets = 0;
+  assert.equal(await coldA.initialize('A', async () => { coldResets += 1; }), true);
+  assert.equal(coldResets, 1);
+});
+
+function providerCallback(name, context) {
+  const source = ts.createSourceFile('AmazonBrowserProvider.tsx', readFileSync(new URL('../AmazonBrowserProvider.tsx', import.meta.url), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  let callback;
+  function visit(node) {
+    if (ts.isVariableDeclaration(node) && node.name.getText(source) === name && node.initializer && ts.isCallExpression(node.initializer)) {
+      callback = node.initializer.arguments[0].getText(source);
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(source);
+  assert.ok(callback, `Missing provider callback ${name}`);
+  const js = ts.transpileModule(`const callback = ${callback};`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  return vm.runInNewContext(`(() => { ${js}\nreturn callback; })()`, context);
+}
+
+test('(l.5) actual retained provider callbacks cannot read cached requests or defer the next shopper request', async () => {
+  const records = new Map();
+  const storage = { getItem: async (key) => records.get(key) ?? null, setItem: async (key, value) => { records.set(key, value); } };
+  const a = new PersistedBrowserOwner(storage);
+  await a.initialize('A', async () => {});
+  const request = { requestId: 'B-request', quoteVersion: 1, expiresAt: Date.now() + 60_000, status: 'pending_approval', quote: { productTitle: 'mock B-only quote' }, order: null };
+  let state = [request];
+  const context = {
+    ownerIsReady: () => a.isReady('A'),
+    sessionBarrier: { isLogoutPending: false, epoch: 42, isCurrent: () => true },
+    idempotencyMapRef: { current: new Map([['shared-key', request.requestId]]) },
+    pendingRequestsRef: { current: state },
+    setPendingRequests: (update) => { state = update(state); },
+    enqueueCommand: async () => { throw new Error('Browser commands must not run'); },
+  };
+  const oldRequest = providerCallback('requestPurchase', context);
+  const oldDecision = providerCallback('decidePurchase', context);
+  a.invalidate();
+  const b = new PersistedBrowserOwner(storage);
+  await b.initialize('B', async () => {});
+  await assert.rejects(oldRequest({ idempotencyKey: 'shared-key' }), /ownership/);
+  await assert.rejects(oldDecision({ requestId: request.requestId, quoteVersion: 1, decision: 'defer' }), /ownership/);
+  assert.equal(state[0].status, 'pending_approval');
+  const bContext = { ...context, ownerIsReady: () => b.isReady('B') };
+  const currentRequest = providerCallback('requestPurchase', bContext);
+  const currentDecision = providerCallback('decidePurchase', bContext);
+  assert.equal((await currentRequest({ idempotencyKey: 'shared-key' })).requestId, request.requestId);
+  assert.equal((await currentDecision({ requestId: request.requestId, quoteVersion: 1, decision: 'defer' })).outcome, 'deferred');
+  assert.equal(state[0].status, 'deferred');
 });
 
 test('(j.10) coordinateConvexOneTapApproval reuses existing pending approval and fails closed on stale_quote', async () => {
@@ -2736,10 +2956,12 @@ test('(j.11) checkoutAmazonItem falls back to status="unknown" on unverified con
   };
 
   const res = await executeDeterministicItemCheckout({
-    input: { item: cartItem, userConfirmed: true },
+    input: { item: cartItem, dryRun: false, userConfirmed: true },
     isSignedIn: () => true,
     ensureSignedIn: async () => true,
     closeBrowserSheet: () => {},
+    submissionAuthority: { available: true, claim: async () => true },
+    captureOrderBaseline: async () => ({ capturedAt: Date.now(), orderIds: [] }),
     runExclusive: async (fn) => fn(),
     isolationDeps: {
       navigateToCart: async () => {},
@@ -2798,7 +3020,8 @@ test('(j.11) checkoutAmazonItem falls back to status="unknown" on unverified con
           asin: 'B09XS7JWHH',
           items: [{ asin: 'B09XS7JWHH', quantity: 1 }],
           totalCents: 24900,
-          placedAtMs: now,
+          placedAtPrecision: 'timestamp',
+      placedAtMs: now,
           syncedAt: now,
         },
       ]);
@@ -2896,10 +3119,12 @@ test('(k.1) [HIGH] retrying checkoutAmazonItem({ item }) without orderRef reuses
   };
 
   const makeAttemptDeps = () => ({
-    input: { item: cartItem, userConfirmed: true }, // NOTE: NO orderRef or requestId passed!
+    input: { item: cartItem, dryRun: false, userConfirmed: true }, // NOTE: NO orderRef or requestId passed!
     isSignedIn: () => true,
     ensureSignedIn: async () => true,
     closeBrowserSheet: () => {},
+    submissionAuthority: { available: true, claim: async () => true },
+    captureOrderBaseline: async () => ({ capturedAt: Date.now(), orderIds: [] }),
     runExclusive: async (fn) => fn(),
     isolationDeps: {
       navigateToCart: async () => {},
@@ -2964,7 +3189,8 @@ test('(k.1) [HIGH] retrying checkoutAmazonItem({ item }) without orderRef reuses
           asin: 'B09XS7JWHH',
           items: [{ asin: 'B09XS7JWHH', quantity: 1 }],
           totalCents: 24900,
-          placedAtMs: now,
+          placedAtPrecision: 'timestamp',
+      placedAtMs: now,
           syncedAt: now,
         },
       ]);
@@ -3196,10 +3422,12 @@ test('(k.3) [MEDIUM] immediate reconcileViaSyncOrders executes strictly inside r
   };
 
   const checkoutPromise = executeDeterministicItemCheckout({
-    input: { item: cartItem, userConfirmed: true },
+    input: { item: cartItem, dryRun: false, userConfirmed: true },
     isSignedIn: () => true,
     ensureSignedIn: async () => true,
     closeBrowserSheet: () => {},
+    submissionAuthority: { available: true, claim: async () => true },
+    captureOrderBaseline: async () => ({ capturedAt: Date.now(), orderIds: [] }),
     runExclusive: (fn) => enqueueCommand(fn),
     isolationDeps: {
       navigateToCart: async () => {
@@ -3289,3 +3517,386 @@ test('(k.3) [MEDIUM] immediate reconcileViaSyncOrders executes strictly inside r
 });
 
 
+function providerSource() {
+  return ts.createSourceFile(
+    'AmazonBrowserProvider.tsx',
+    readFileSync(new URL('../AmazonBrowserProvider.tsx', import.meta.url), 'utf8'),
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TSX,
+  );
+}
+
+function runExtracted(code, context) {
+  const js = ts.transpileModule('const extracted = ' + code + ';', {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.React },
+    fileName: 'extracted.tsx',
+  }).outputText;
+  return vm.runInNewContext('(() => { ' + js + '\nreturn extracted; })()', context);
+}
+
+function providerHookBody(hook, marker, context) {
+  const source = providerSource();
+  const found = [];
+  (function visit(node) {
+    if (
+      ts.isCallExpression(node) &&
+      node.expression.getText(source) === hook &&
+      node.arguments[0] &&
+      node.arguments[0].getText(source).includes(marker)
+    ) {
+      found.push(node.arguments[0].getText(source));
+    }
+    ts.forEachChild(node, visit);
+  })(source);
+  assert.equal(found.length, 1, hook + ' containing ' + marker);
+  return runExtracted(found[0], context);
+}
+
+function makeAppStateMock(initial = 'active') {
+  const listeners = [];
+  return {
+    currentState: initial,
+    listeners,
+    addEventListener: (_event, fn) => {
+      listeners.push(fn);
+      return { remove: () => listeners.splice(listeners.indexOf(fn), 1) };
+    },
+    emit(next) {
+      this.currentState = next;
+      for (const fn of [...listeners]) fn(next);
+    },
+  };
+}
+
+test('(m.1) daemon defaults off: provider and AmazonSyncDaemon start no subscription, poller, quote, cart, or backend write unless opted in', () => {
+  const source = providerSource();
+  let providerDefault;
+  let daemonEnabledExpr;
+  (function visit(node) {
+    if (ts.isFunctionDeclaration(node) && node.name?.text === 'AmazonBrowserProvider') {
+      for (const el of node.parameters[0].name.elements) {
+        if (el.name.getText(source) === 'enableBackendDaemon') providerDefault = el.initializer?.getText(source);
+      }
+    }
+    if (ts.isJsxSelfClosingElement(node) && node.tagName.getText(source) === 'AmazonSyncDaemon') {
+      for (const attr of node.attributes.properties) {
+        if (attr.name?.getText(source) === 'enabled') daemonEnabledExpr = attr.initializer.expression.getText(source);
+      }
+    }
+    ts.forEachChild(node, visit);
+  })(source);
+  assert.equal(providerDefault, 'false');
+  assert.equal(daemonEnabledExpr, 'enableBackendDaemon && ownerReady');
+
+  const daemonSource = ts.createSourceFile(
+    'AmazonSyncDaemon.tsx',
+    readFileSync(new URL('../AmazonSyncDaemon.tsx', import.meta.url), 'utf8'),
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TSX,
+  );
+  let daemonFn;
+  (function visit(node) {
+    if (ts.isFunctionDeclaration(node) && node.name?.text === 'AmazonSyncDaemon') {
+      daemonFn = node.getText(daemonSource).replace(/^export\s+/, '');
+    }
+    ts.forEachChild(node, visit);
+  })(daemonSource);
+  const backendCalls = [];
+  const convex = new Proxy({}, { get: (_t, prop) => (...args) => { backendCalls.push(String(prop)); return args; } });
+  const rendered = [];
+  const context = {
+    useAmazonDaemonBridge: () => ({ isSignedIn: () => true }),
+    useConvex: () => convex,
+    Platform: { OS: 'ios' },
+    DAEMON_POLL_INTERVAL_MS: 2500,
+    ORDER_SYNC_INTERVAL_MS: 30000,
+    DaemonAuthBoundary: function DaemonAuthBoundary() {},
+    AmazonSyncDaemonActive: function AmazonSyncDaemonActive() {},
+    React: { createElement: (type, props, ...children) => { rendered.push(type.name); return { type, props, children }; } },
+  };
+  const AmazonSyncDaemon = runExtracted('(' + daemonFn.replace('function AmazonSyncDaemon', 'function') + ')', context);
+  assert.equal(AmazonSyncDaemon({}), null);
+  assert.equal(AmazonSyncDaemon({ enabled: false }), null);
+  assert.deepEqual(rendered, []);
+  assert.deepEqual(backendCalls, []);
+  assert.notEqual(AmazonSyncDaemon({ enabled: true }), null);
+  assert.ok(rendered.includes('AmazonSyncDaemonActive'));
+});
+
+test('(m.2) daemon off: mount, foreground resume, and sign-in completion dispatch zero cart, order, quote, or backend work', async () => {
+  for (const enableBackendDaemon of [false, true]) {
+    const calls = [];
+    const spy = (name) => async () => { calls.push(name); return {}; };
+    const appState = makeAppStateMock('active');
+    const intervals = [];
+    const flushes = [];
+    const effectContext = {
+      Platform: { OS: 'ios' },
+      enableBackendDaemon,
+      AppState: appState,
+      setInterval: (fn) => { intervals.push(fn); return intervals.length; },
+      clearInterval: () => {},
+      Date,
+      shouldRunIdleHeartbeat,
+      HEARTBEAT_INTERVAL_MS,
+      busyCountRef: { current: 0 },
+      isSheetOpenRef: { current: false },
+      currentUrlRef: { current: 'https://www.amazon.com/gp/cart/view.html' },
+      challengeRef: { current: 'none' },
+      lastHeartbeatAtRef: { current: 0 },
+      lastSyncedAtRef: { current: 0 },
+      isSignedInRef: { current: false },
+      sessionBarrier: { isLogoutPending: false },
+      checkSession: spy('checkSession'),
+      syncOrders: spy('syncOrders'),
+      refreshCart: spy('refreshCart'),
+      convexSync: { recordClientPlacement: spy('convex.recordClientPlacement') },
+      autoConvexSyncRef: { current: undefined },
+      convexSyncRef: { current: undefined },
+      ownerIsReady: () => true,
+      syncQueue: { flush: async (client) => { flushes.push(client); return {}; } },
+    };
+
+    const flushEffect = providerHookBody('useEffect', 'syncQueue.flush(effective)', effectContext);
+    flushEffect();
+    const resumeEffect = providerHookBody('useEffect', 'AppState.addEventListener', effectContext);
+    const cleanup = resumeEffect();
+
+    let settled = null;
+    const notifyPageReady = providerCallback('notifyPageReady', {
+      ...effectContext,
+      setCurrentUrl: () => {},
+      setChallenge: () => {},
+      setIsSignedIn: (v) => { effectContext.isSignedInRef.current = v; },
+      settleSignInWaiters: (v) => { settled = v; },
+      pageWaitersRef: { current: new Set() },
+    });
+    notifyPageReady('https://www.amazon.com/gp/cart/view.html', true, 'none');
+    assert.equal(settled, true);
+    assert.equal(effectContext.isSignedInRef.current, true);
+
+    appState.emit('background');
+    appState.emit('active');
+    for (const tick of intervals) tick();
+    await new Promise((r) => setImmediate(r));
+    cleanup?.();
+
+    if (!enableBackendDaemon) {
+      assert.deepEqual(calls, [], 'daemon off must not run cart/order/session automation');
+      assert.deepEqual(flushes, [], 'daemon off must not flush backend retry queue');
+      assert.equal(appState.listeners.length, 0);
+      assert.equal(intervals.length, 0);
+    } else {
+      assert.ok(calls.includes('syncOrders'), 'positive control: opted-in resume syncs orders');
+      assert.equal(flushes.length, 1, 'positive control: opted-in mount flushes retry queue');
+    }
+  }
+});
+
+test('(m.3) logout verification requires positive signed-out header evidence; CAPTCHA, MFA, empty or unknown pages keep the owner locked', async () => {
+  const probeFor = async (env) => (await runInjectedStepScript(buildSessionCheckScript('probe'), env)).data;
+  const greeting = (text, href = '') => (sel) => {
+    if (sel.includes('#nav-logobar-greeting')) return { textContent: text, getAttribute: () => href };
+    return null;
+  };
+  const captcha = await probeFor({ pathname: '/errors/validateCaptcha', href: 'https://www.amazon.com/errors/validateCaptcha', querySelector: () => null });
+  const mfa = await probeFor({ pathname: '/ap/mfa', href: 'https://www.amazon.com/ap/mfa', querySelector: () => null });
+  const emptyCart = await probeFor({ pathname: '/gp/cart/view.html', href: 'https://www.amazon.com/gp/cart/view.html', querySelector: () => null });
+  const signedIn = await probeFor({ pathname: '/gp/cart/view.html', href: 'https://www.amazon.com/gp/cart/view.html', querySelector: greeting('Hello, Shopper') });
+  const signedOut = await probeFor({ pathname: '/gp/cart/view.html', href: 'https://www.amazon.com/gp/cart/view.html', querySelector: greeting('Sign in ›', '/ap/signin') });
+
+  for (const probe of [captcha, mfa, emptyCart]) {
+    assert.equal(probe.signedIn, false);
+    assert.equal(probe.signedOut, false);
+  }
+  assert.equal(signedIn.signedOut, false);
+  assert.equal(signedOut.signedOut, true);
+  assert.equal(signedOut.challenge, 'none');
+
+  for (const probe of [captcha, mfa, emptyCart, signedIn, { ...signedOut, challenge: 'signin' }]) {
+    const barrier = new SessionResetBarrier();
+    const epoch = barrier.beginReset({ requiresBrowserSignOut: true });
+    assert.equal(barrier.verifySignOutResult(epoch, probe).ok, false);
+    assert.equal(barrier.isLogoutPending, true);
+
+    const records = new Map();
+    const owner = new PersistedBrowserOwner({ getItem: async (k) => records.get(k) ?? null, setItem: async (k, v) => { records.set(k, v); } });
+    const bound = await owner.initialize('B', async () => {
+      const verdict = barrier.verifySignOutResult(epoch, probe);
+      if (!verdict.ok) throw new Error(verdict.reason);
+    });
+    assert.equal(bound, false);
+    assert.equal(owner.isReady('B'), false);
+    assert.notEqual([...records.values()].at(-1), 'B');
+  }
+
+  const barrier = new SessionResetBarrier();
+  const epoch = barrier.beginReset({ requiresBrowserSignOut: true });
+  assert.equal(barrier.verifySignOutResult(epoch, signedOut).ok, true);
+  assert.equal(barrier.isCurrent(epoch), true);
+});
+
+test('(m.4) provider isolation steps refuse dispatch after reset and stop mid-loop when revoked during an awaited step', async () => {
+  for (const revokeDuringFirstStep of [false, true]) {
+    let current = true;
+    const dispatched = [];
+    const context = {
+      sessionBarrier: { isCurrent: () => current },
+      evalStep: async (build) => {
+        const label = build('req');
+        dispatched.push(label);
+        if (label === 'scrape') {
+          return { signedIn: true, challenge: 'none', currentUrl: 'https://www.amazon.com/gp/cart/view.html', items: [{ asin: 'B09XS7JWHH', title: 'Mock', quantity: 1, unitPriceCents: 100 }] };
+        }
+        if (label.startsWith('step:') && revokeDuringFirstStep) current = false;
+        return { mutated: true };
+      },
+      navigateTo: async () => {},
+      runAddToCartUnlocked: async () => { dispatched.push('add'); return { ok: true }; },
+      delay: async () => {},
+      AMAZON_CART_URL: 'https://www.amazon.com/gp/cart/view.html',
+      buildScrapeCartScript: () => 'scrape',
+      buildMoveSavedToCartScript: () => 'move',
+      buildMutateCartRowScript: (_r, asin, op) => 'step:' + op,
+      buildSaveCartRowForLaterScript: () => 'save',
+      setIsSignedIn: () => {},
+      setChallenge: () => {},
+      isSignedInRef: { current: false },
+      challengeRef: { current: 'none' },
+    };
+    const makeDeps = providerCallback('makeUnlockedIsolationDeps', context);
+    const deps = makeDeps(() => 7);
+    const run = isolateSingleActiveCartItem({ ...deps, asin: 'B09XS7JWHH', url: 'https://www.amazon.com/dp/B09XS7JWHH', quantity: 3 });
+    if (revokeDuringFirstStep) {
+      await assert.rejects(run, /reset/);
+      assert.deepEqual(dispatched.filter((d) => d.startsWith('step:')), ['step:increment']);
+    } else {
+      await run.catch(() => undefined);
+      assert.deepEqual(dispatched.filter((d) => d.startsWith('step:')), ['step:increment', 'step:increment']);
+    }
+  }
+
+  let current = false;
+  const dispatched = [];
+  const makeDeps = providerCallback('makeUnlockedIsolationDeps', {
+    sessionBarrier: { isCurrent: () => current },
+    evalStep: async (build) => { dispatched.push(build('req')); return { mutated: true }; },
+    navigateTo: async () => { dispatched.push('navigate'); },
+    runAddToCartUnlocked: async () => { dispatched.push('add'); return { ok: true }; },
+    delay: async () => {},
+    AMAZON_CART_URL: 'cart',
+    buildScrapeCartScript: () => 'scrape',
+    buildMoveSavedToCartScript: () => 'move',
+    buildMutateCartRowScript: () => 'step',
+    buildSaveCartRowForLaterScript: () => 'save',
+    setIsSignedIn: () => {},
+    setChallenge: () => {},
+    isSignedInRef: { current: false },
+    challengeRef: { current: 'none' },
+  });
+  const deps = makeDeps(() => 1);
+  for (const call of [deps.navigateToCart(), deps.scrapeCart(), deps.moveSavedToCart('B09XS7JWHH'), deps.addTargetToCart({ asin: 'B09XS7JWHH' }), deps.stepRowQuantity('B09XS7JWHH', 'increment'), deps.saveRowForLater('B000OTHER0')]) {
+    await assert.rejects(call, /reset/);
+  }
+  assert.deepEqual(dispatched, []);
+});
+
+test('(m.5) a queued flush waiter from before clear() cannot send the next shopper job through the old client', async () => {
+  const queue = new ConvexSyncRetryQueue();
+  const sent = [];
+  let releaseA;
+  let bOnline = false;
+  const clientA = {
+    recordClientPlacement: async (args) => {
+      sent.push('A-client:' + args.orderRef);
+      if (args.orderRef === 'A-order') await new Promise((r) => { releaseA = r; });
+    },
+  };
+  const clientB = {
+    recordClientPlacement: async (args) => {
+      if (!bOnline) throw new Error('offline');
+      sent.push('B-client:' + args.orderRef);
+    },
+  };
+  const placement = (orderRef) => ({ orderRef, retailerOrderId: '114-1234567-1234567', placedAt: 1, quote: null });
+
+  const first = queue.enqueuePlacement(placement('A-order'), clientA);
+  const staleWaiter = queue.flush(clientA);
+  while (!releaseA) await Promise.resolve();
+  queue.clear();
+  await queue.enqueuePlacement(placement('B-private-order'), clientB);
+  assert.equal(queue.pendingCount, 1);
+  releaseA();
+  await Promise.all([first, staleWaiter]);
+  await new Promise((r) => setImmediate(r));
+
+  assert.deepEqual(sent, ['A-client:A-order']);
+  assert.equal(queue.pendingCount, 1, 'B job is preserved for the B client');
+  bOnline = true;
+  await queue.flush(clientB);
+  assert.deepEqual(sent, ['A-client:A-order', 'B-client:B-private-order']);
+  assert.equal(queue.pendingCount, 0);
+});
+
+test('(m.6) Close, owner revocation, unmount, and failed reconnect settle every outstanding sign-in waiter', async () => {
+  const waiters = new Set();
+  const results = [];
+  const settleContext = { signInWaitersRef: { current: waiters } };
+  const settleSignInWaiters = providerCallback('settleSignInWaiters', settleContext);
+  const addWaiter = () => waiters.add((v) => results.push(v));
+
+  addWaiter();
+  const closeBrowserSheet = providerCallback('closeBrowserSheet', {
+    ownerIsReady: () => true,
+    setIsSheetOpen: () => {},
+    settleSignInWaiters,
+    isSignedInRef: { current: true },
+  });
+  closeBrowserSheet();
+  assert.deepEqual(results, [false]);
+
+  const records = new Map();
+  const owner = new PersistedBrowserOwner({ getItem: async (k) => records.get(k) ?? null, setItem: async (k, v) => { records.set(k, v); } });
+  await owner.initialize('A', async () => {});
+  const barrier = new SessionResetBarrier();
+  const layout = providerHookBody('useLayoutEffect', 'browserOwner.activate()', {
+    browserOwner: owner,
+    shopperId: 'A',
+    sessionBarrier: barrier,
+    Platform: { OS: 'ios' },
+    settleSignInWaiters,
+  });
+  const cleanup = layout();
+  addWaiter();
+  owner.invalidate();
+  assert.deepEqual(results, [false, false]);
+  assert.equal(barrier.isLogoutPending, true);
+  addWaiter();
+  cleanup();
+  assert.deepEqual(results, [false, false, false]);
+
+  addWaiter();
+  const openBrowserSheet = providerCallback('openBrowserSheet', {
+    ownerIsReady: () => false,
+    resetSession: async () => { throw new Error('offline'); },
+    setIsSheetOpen: () => { throw new Error('must not open'); },
+    settleSignInWaiters,
+  });
+  openBrowserSheet();
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(results, [false, false, false, false]);
+
+  let opened = 0;
+  const ensureSignedIn = providerCallback('ensureSignedIn', {
+    checkSession: async () => ({ signedIn: true }),
+    ownerIsReady: () => false,
+    signInWaitersRef: { current: waiters },
+    openBrowserSheet: () => { opened += 1; },
+    Promise,
+  });
+  assert.equal(await ensureSignedIn(), false);
+  assert.equal(opened, 0);
+  assert.equal(waiters.size, 0);
+});

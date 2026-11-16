@@ -415,8 +415,9 @@ export class ConvexSyncRetryQueue {
     lastSyncError: string | null;
   }> {
     if (this.activeFlush) {
+      const waiterGen = this.generation;
       return this.activeFlush.then(() =>
-        this.jobs.size > 0 && client
+        this.generation === waiterGen && this.jobs.size > 0 && client
           ? this.flush(client)
           : {
               synced: 0,
@@ -785,7 +786,15 @@ export class SessionResetBarrier {
 
   verifySignOutResult(
     resetEpoch: number,
-    probe: { currentUrl?: string | null; signedIn?: boolean | null } | null | undefined,
+    probe:
+      | {
+          currentUrl?: string | null;
+          signedIn?: boolean | null;
+          signedOut?: boolean | null;
+          challenge?: string | null;
+        }
+      | null
+      | undefined,
   ): { ok: true } | { ok: false; reason: string } {
     if (this.currentEpoch !== resetEpoch) {
       return {
@@ -811,6 +820,15 @@ export class SessionResetBarrier {
         ok: false,
         reason:
           'Amazon session still appeared signed in after sign-out navigation. Session remains locked until sign-out succeeds.',
+      };
+    }
+
+    if (probe.signedOut !== true || probe.challenge !== 'none') {
+      this.logoutRequired = true;
+      return {
+        ok: false,
+        reason:
+          'Amazon sign-out was not positively confirmed (challenge, unrecognized, or empty page). Session remains locked until a signed-out Amazon header is observed.',
       };
     }
 

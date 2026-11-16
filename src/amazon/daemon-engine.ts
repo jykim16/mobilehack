@@ -1197,6 +1197,10 @@ export interface SpcReviewInspection {
 }
 
 export interface DeterministicCheckoutDeps {
+  submissionAuthority?: {
+    available: boolean;
+    claim: (orderRef: string, submittedAt: number) => Promise<boolean>;
+  };
   input: AmazonCheckoutItemInput;
   isSignedIn: () => boolean;
   ensureSignedIn: () => Promise<boolean>;
@@ -1227,6 +1231,7 @@ export interface DeterministicCheckoutDeps {
     purchases: Purchase[];
   }>;
   getPreExistingOrderIds: () => Iterable<string>;
+  captureOrderBaseline?: () => Promise<{ capturedAt: number; orderIds: string[] }>;
   onOrderPlacedLocalState?: (params: {
     item: CartItem;
     orderRef: string;
@@ -1251,7 +1256,7 @@ export interface DeterministicCheckoutDeps {
  *    other active rows + reload + `verifyActiveBasketBinding`).
  * 3. Live SPC checkout review inspection + `verifyCheckoutReviewBinding` + positive integer total check.
  * 4. Convex coordination (`requestPurchase -> attachClientQuote -> decidePurchase`) yielding canonical `orderRef`.
- * 5. Guarded `#placeYourOrder` click (`dryRun: false, userConfirmed: true` unless `input.dryRun === true`).
+ * 5. Guarded submission requires both explicit flags and an available submission authority.
  * 6. Confirmation scrape (`###-#######-#######` + delivery date) + `recordClientPlacement` + `syncClientShipment`,
  *    falling back to `status: 'unknown'` + immediate `syncOrders()` reconciliation if DOM lacks the order ID.
  */
@@ -1259,8 +1264,8 @@ export async function executeDeterministicItemCheckout(
   deps: DeterministicCheckoutDeps,
 ): Promise<AmazonPlaceOrderResult> {
   const clock = deps.now ?? Date.now;
-  const effectiveDryRun = deps.input.dryRun === true;
-  const userConfirmed = !effectiveDryRun;
+  const userConfirmed = deps.input.userConfirmed === true;
+  const effectiveDryRun = deps.input.dryRun !== false || !userConfirmed;
   const initialBinding = deps.submissionLedger.getItemBinding(deps.input.item.id);
   const initialOrderRef = deps.input.orderRef ?? initialBinding?.orderRef;
   const initialRequestId = deps.input.requestId ?? initialBinding?.requestId;
@@ -1461,6 +1466,8 @@ export async function executeDeterministicItemCheckout(
       }
     }
 
+    const baseline = !effectiveDryRun ? await deps.captureOrderBaseline?.() : undefined;
+
     // Step 2: Single-item active-basket isolation on /gp/cart/view.html
     const isolation = await isolateSingleActiveCartItem({
       ...deps.isolationDeps,
@@ -1600,6 +1607,19 @@ export async function executeDeterministicItemCheckout(
       };
     }
 
+    if (deps.submissionAuthority?.available !== true) {
+      return {
+        status: 'safety_blocked',
+        safetyGate: { dryRun: false, userConfirmed, orderSubmitted: false },
+        orderRef: knownOrderRef ?? fallbackOrderRef,
+        retailerOrderId: null,
+        placedAt: null,
+        quote: liveQuote,
+        shipment: null,
+        reason: 'Live checkout is release-disabled pending a transactional shopper/order submission claim.',
+      };
+    }
+
     // Step 4: Convex Coordination (requestPurchase -> attachClientQuote -> decidePurchase)
     let canonicalOrderRef = knownOrderRef ?? fallbackOrderRef;
     let canonicalRequestId = knownRequestId ?? `req_${deps.input.item.id}`;
@@ -1728,16 +1748,59 @@ export async function executeDeterministicItemCheckout(
       };
     }
 
-    const submitRes = await deps.submitCheckoutOrder({
-      dryRun: false,
-      userConfirmed: true,
-      expectedTotalCents: gateDecision.expectedTotalCents,
+    const submittedAt = clock();
+    let claimed = false;
+    try {
+      claimed = await deps.submissionAuthority.claim(canonicalOrderRef, submittedAt);
+    } catch {
+      claimed = false;
+    }
+    if (!claimed || deps.isSessionCurrent?.() === false) {
+      return {
+        status: 'unknown',
+        safetyGate: { dryRun: false, userConfirmed, orderSubmitted: false },
+        orderRef: canonicalOrderRef,
+        retailerOrderId: null,
+        placedAt: null,
+        quote: liveQuote,
+        shipment: null,
+        reason: 'Submission intent already exists or durable storage is unavailable. Manual reconciliation required.',
+      };
+    }
+    deps.submissionLedger.recordUnknown({
+      orderRef: canonicalOrderRef,
+      submittedAt,
       approvedItems: gateDecision.approvedItems,
+      expectedTotalCents: gateDecision.expectedTotalCents,
+      preExistingOrderIds: baseline?.orderIds ?? deps.getPreExistingOrderIds(),
+      baselineCapturedAt: baseline?.capturedAt,
     });
+    let submitRes;
+    try {
+      submitRes = await deps.submitCheckoutOrder({
+        dryRun: false,
+        userConfirmed: true,
+        expectedTotalCents: gateDecision.expectedTotalCents,
+        approvedItems: gateDecision.approvedItems,
+      });
+    } catch {
+      return {
+        status: 'unknown',
+        safetyGate: { dryRun: false, userConfirmed, orderSubmitted: true },
+        orderRef: canonicalOrderRef,
+        retailerOrderId: null,
+        placedAt: null,
+        quote: liveQuote,
+        shipment: null,
+        reason: 'Submission acknowledgement was lost. Intent remains blocked; reconcile manually before any further purchase.',
+      };
+    }
 
     if (!submitRes.submitted) {
       const blockedStatus: PlaceOrderExecutionStatus =
-        submitRes.code === 'requote_required'
+        !submitRes.haltedBySafetyGate
+          ? 'unknown'
+          : submitRes.code === 'requote_required'
           ? 'requote_required'
           : submitRes.code === 'basket_mismatch'
             ? 'basket_mismatch'
@@ -1746,7 +1809,7 @@ export async function executeDeterministicItemCheckout(
               : 'failed';
       return {
         status: blockedStatus,
-        safetyGate: { dryRun: false, userConfirmed: true, orderSubmitted: false },
+        safetyGate: { dryRun: false, userConfirmed: true, orderSubmitted: !submitRes.haltedBySafetyGate },
         orderRef: canonicalOrderRef,
         retailerOrderId: null,
         placedAt: null,
@@ -1759,7 +1822,7 @@ export async function executeDeterministicItemCheckout(
     // Step 6: Order Confirmation Scrape + Convex Placement & Shipment Sync
     const settled = await settleSubmittedOrderConfirmation({
       orderRef: canonicalOrderRef,
-      submittedAt: clock(),
+      submittedAt,
       approvedItems: gateDecision.approvedItems,
       expectedTotalCents: gateDecision.expectedTotalCents,
       preExistingOrderIds: deps.getPreExistingOrderIds(),
