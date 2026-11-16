@@ -123,3 +123,48 @@ export const shipmentStatus = v.union(
   v.literal("out_for_delivery"),
   v.literal("delivered"),
 );
+
+/** Whop-for-Platforms money movement: one subaccount per funded shopper. */
+export const subaccountStatus = v.union(
+  v.literal("pending_kyc"),
+  v.literal("active"),
+  v.literal("restricted"),
+  v.literal("failed"),
+);
+export type SubaccountStatus = Infer<typeof subaccountStatus>;
+
+export const cardStatus = v.union(
+  v.literal("none"),
+  v.literal("requested"),
+  v.literal("active"),
+  v.literal("blocked"),
+  v.literal("unsupported"),
+);
+export type CardStatus = Infer<typeof cardStatus>;
+
+export const paymentStatus = v.union(
+  v.literal("pending"),
+  v.literal("succeeded"),
+  v.literal("failed"),
+  v.literal("refunded"),
+  v.literal("partially_refunded"),
+  v.literal("disputed"),
+);
+export type PaymentStatus = Infer<typeof paymentStatus>;
+
+export const cardTransactionStatus = v.union(
+  v.literal("processing"),
+  v.literal("succeeded"),
+  v.literal("failed"),
+  v.literal("released"),
+);
+export type CardTransactionStatus = Infer<typeof cardTransactionStatus>;
+
+/** Outcome of re-reading the retailer page just before money moves. */
+export const revalidation = v.object({
+  status: v.union(v.literal("unchanged"), v.literal("changed"), v.literal("unavailable")),
+  checkedAt: v.number(),
+  totalCents: v.union(v.number(), v.null()),
+  note: v.union(v.string(), v.null()),
+});
+export type Revalidation = Infer<typeof revalidation>;
