@@ -63,6 +63,18 @@ describe("exact listing image fallback", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, url: "https://www.amazon.com/dp/B0D1XD1ZV3", text: async () => html }));
     expect(await fetchOpenGraph(url)).toEqual({});
   });
+
+  test("accepts a mobile listing and its redirect to the same ASIN", async () => {
+    const mobileUrl = "https://www.amazon.com/gp/aw/d/B0FQFB8FMG/ref=mobile";
+    expect(parseOpenGraph(html, mobileUrl)).toMatchObject({ image, title: "Apple AirPods Pro 3" });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, url, text: async () => html }));
+    expect(await fetchOpenGraph(mobileUrl)).toMatchObject({ image, title: "Apple AirPods Pro 3" });
+  });
+
+  test("rejects a mobile listing redirected to a different ASIN", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, url: "https://www.amazon.com/dp/B0D1XD1ZV3", text: async () => html }));
+    expect(await fetchOpenGraph("https://www.amazon.com/gp/aw/d/B0FQFB8FMG")).toEqual({});
+  });
 });
 
 describe("image-only repair", () => {
