@@ -38,7 +38,7 @@ export function canonicalKeyForUrl(raw: string): string | null {
   if (url.protocol !== "https:" && url.protocol !== "http:") return null;
   const known = knownRetailer(url.hostname);
   if (known?.retailer === "amazon") {
-    const m = url.pathname.match(/\/(?:dp|gp\/product|product-reviews)\/([A-Z0-9]{10})/i);
+    const m = url.pathname.match(/\/(?:dp|gp\/product|gp\/aw\/d|product-reviews)\/([A-Z0-9]{10})(?:\/|$)/i);
     if (m) return `amazon:${m[1].toUpperCase()}`;
   }
   if (known?.retailer === "bestbuy") {

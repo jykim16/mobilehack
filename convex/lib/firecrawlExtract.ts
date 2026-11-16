@@ -4,6 +4,8 @@
  * does not state something we keep null rather than guessing.
  */
 
+import { canonicalKeyForUrl } from "./urls";
+
 export const OFFER_SCHEMA = {
   type: "object",
   properties: {
@@ -160,6 +162,13 @@ export function parseReturnTerms(raw: RawExtraction): ExtractedReturnTerms {
  */
 export function sameVariant(expectedKey: string | null, extractedKey: string | null): boolean {
   if (expectedKey === null) return extractedKey === null;
+  if (expectedKey.startsWith("amazon:")) {
+    const normalized = /^amazon:[A-Z0-9]{10}$/i.test(expectedKey)
+      ? expectedKey
+      : canonicalKeyForUrl(`https://${expectedKey.slice("amazon:".length)}`);
+    return normalized !== null && /^amazon:[A-Z0-9]{10}$/i.test(normalized) &&
+      normalized.slice("amazon:".length).toUpperCase() === extractedKey?.trim().toUpperCase();
+  }
   const want = expectedKey.split(":").pop()!.toUpperCase();
   // Retailers we cannot key by SKU fall back to a URL-shaped key
   // ("walmart:walmart.com/ip/Widget/123456"). There the scraped page is the

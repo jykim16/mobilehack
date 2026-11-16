@@ -23,15 +23,8 @@ function attribute(tag: string, name: string): string | undefined {
   return (match?.[1] ?? match?.[2])?.replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/&#39;/g, "'").trim();
 }
 
-function listingKey(url: string): string | null {
-  const key = canonicalKeyForUrl(url);
-  if (!key?.startsWith("amazon:")) return key;
-  const mobileAsin = new URL(url).pathname.match(/\/gp\/aw\/d\/([A-Z0-9]{10})(?:\/|$)/i)?.[1];
-  return mobileAsin ? `amazon:${mobileAsin.toUpperCase()}` : key;
-}
-
 export function parseOpenGraph(html: string, url: string): OpenGraph {
-  const key = listingKey(url);
+  const key = canonicalKeyForUrl(url);
   let image = resolveImageUrl(meta(html, "og:image") ?? null, url);
   if (key?.startsWith("amazon:")) {
     const asinTag = html.match(/<input\b[^>]*\sid=["']ASIN["'][^>]*>/i)?.[0];
@@ -65,8 +58,8 @@ export async function fetchOpenGraph(url: string): Promise<OpenGraph> {
     redirect: "follow",
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const key = listingKey(url);
-  if (key?.startsWith("amazon:") && listingKey(res.url || url) !== key) return {};
+  const key = canonicalKeyForUrl(url);
+  if (key?.startsWith("amazon:") && canonicalKeyForUrl(res.url || url) !== key) return {};
   const html = (await res.text()).slice(0, 1_500_000);
   return parseOpenGraph(html, url);
 }

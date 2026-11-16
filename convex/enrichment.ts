@@ -16,7 +16,7 @@ import { fetchOpenGraph, titleFromUrl } from "./lib/opengraph";
 import { canonicalKeyForUrl, retailerFromHost } from "./lib/urls";
 import { keepaProductUrl } from "./lib/keepa";
 import { classifyCondition, isWithheldCondition } from "./lib/conditions";
-import { resolveImageUrl } from "./lib/firecrawlExtract";
+import { resolveImageUrl, sameVariant } from "./lib/firecrawlExtract";
 
 const MAX_ATTEMPTS = 3;
 /** Staggered so the demo shows sections filling in one by one. */
@@ -79,13 +79,14 @@ async function extractWithCache(
   canonicalKey: string,
   force: boolean,
 ): Promise<CachedExtraction> {
+  canonicalKey = canonicalKeyForUrl(url) ?? canonicalKey;
   const now = Date.now();
   const cached = await ctx.runQuery(internal.cache.read, { kind: "offer", key: canonicalKey });
   const stored = cached?.payload
     ? (JSON.parse(cached.payload) as { offer: CachedExtraction["offer"]; variantMatches: boolean })
     : null;
   const payload = stored?.offer ?? null;
-  const variantMatches = stored?.variantMatches ?? true;
+  const variantMatches = stored?.variantMatches === true && sameVariant(canonicalKey, payload?.asinOrSku ?? null);
   const fresh = Boolean(payload) && !force && !cached!.invalidatedAt && isFresh("offer", cached!.fetchedAt, now);
   if (fresh) {
     return {
@@ -211,9 +212,11 @@ export const enrichOfferFromWeb = internalAction({
     const data = await ctx.runQuery(internal.enrichment.getSectionContext, { cartItemId });
     if (!data) return null;
     const extraction = await extractWithCache(ctx, data.offer.url, data.offer.canonicalKey, false);
-    if (extraction.imageUrl) {
+    const imageUrl = extraction.imageUrl ?? (extraction.variantMatches ? extraction.offer?.imageUrl : null);
+    if (imageUrl) {
       await ctx.runMutation(internal.productImages.applyMissing, {
-        cartItemId, imageUrl: extraction.imageUrl, sourceUrl: data.offer.url,
+        cartItemId, productId: data.product._id, offerId: data.offer._id, variantId: data.offer.variantId,
+        imageUrl, sourceUrl: extraction.sourceUrl,
       });
     }
     const usable =
@@ -329,11 +332,6 @@ export const applyExtractedOffer = internalMutation({
         },
       });
       return null;
-    }
-    const product = await ctx.db.get("products", offer.productId);
-    const extractedImage = resolveImageUrl(extraction.imageUrl, sourceUrl);
-    if (product && !product.imageUrl && extractedImage) {
-      await ctx.db.patch("products", product._id, { imageUrl: extractedImage });
     }
     const hasPrice = extraction.priceCents !== null && extraction.priceCents > 0;
     await ctx.db.patch("offers", offerId, {
@@ -873,6 +871,12 @@ export const attachOffer = internalMutation({
       variantId: offer.variantId,
       offerId: offer._id,
     });
+    if (args.imageUrl) {
+      await ctx.runMutation(internal.productImages.applyMissing, {
+        cartItemId: item._id, productId: offer.productId, offerId: offer._id, variantId: offer.variantId,
+        imageUrl: args.imageUrl, sourceUrl: item.url,
+      });
+    }
     await ctx.runMutation(internal.enrichment.start, { cartItemId: item._id });
     return null;
   },

@@ -2,7 +2,8 @@
 import { convexTest } from "convex-test";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { internal } from "./_generated/api";
-import { resolveImageUrl } from "./lib/firecrawlExtract";
+import { resolveImageUrl, sameVariant } from "./lib/firecrawlExtract";
+import { canonicalKeyForUrl } from "./lib/urls";
 import { fetchOpenGraph, parseOpenGraph } from "./lib/opengraph";
 import { getItemFor } from "./model/cart";
 import schema from "./schema";
@@ -39,6 +40,13 @@ async function seed(imageUrl?: string) {
 }
 
 describe("exact listing image fallback", () => {
+  test("normalizes mobile ASINs once and requires exact extracted identifiers", () => {
+    expect(canonicalKeyForUrl("https://www.amazon.com/gp/aw/d/B0FQFB8FMG")).toBe("amazon:B0FQFB8FMG");
+    expect(sameVariant("amazon:amazon.com/gp/aw/d/B0FQFB8FMG", "B0D1XD1ZV3")).toBe(false);
+    expect(sameVariant("amazon:B0FQFB8FMG", "B0FQFB8FMG-extra")).toBe(false);
+    expect(sameVariant("amazon:B0FQFB8FMG", null)).toBe(false);
+    expect(sameVariant("amazon:B0FQFB8FMG", "B0FQFB8FMG")).toBe(true);
+  });
   test("extracts Amazon's main image without OpenGraph metadata or a price", () => {
     expect(parseOpenGraph(html, url)).toMatchObject({ image, title: "Apple AirPods Pro 3" });
     expect(parseOpenGraph(html, url).priceCents).toBeUndefined();
@@ -78,6 +86,105 @@ describe("exact listing image fallback", () => {
 });
 
 describe("image-only repair", () => {
+  test.each(["B0FQFB8FMG", "B0D1XD1ZV3"])("initial mobile resolution preserves only the matching no-price image %s when OG fails", async (asin) => {
+    vi.useFakeTimers();
+    vi.stubEnv("FIRECRAWL_API_KEY", "test-key");
+    const { t, cartItemId } = await seed();
+    const mobileUrl = "https://www.amazon.com/gp/aw/d/B0FQFB8FMG";
+    await t.run((ctx) => ctx.db.patch("cartItems", cartItemId, { url: mobileUrl, productId: undefined, variantId: undefined, offerId: undefined }));
+    vi.stubGlobal("fetch", vi.fn(async (_url, init) => {
+      if (!init?.body) throw new Error("OpenGraph unavailable");
+      return new Response(JSON.stringify({ data: { metadata: { sourceURL: url }, json: { asinOrSku: asin, imageUrl: image, displayedPrice: null } } }));
+    }));
+    await t.action(internal.enrichment.resolveOffer, { cartItemId });
+    const context = await t.query(internal.enrichment.getSectionContext, { cartItemId });
+    expect(context?.product.imageUrl).toBe(asin === "B0FQFB8FMG" ? image : undefined);
+    expect(context?.offer.priceCents).toBe(0);
+  });
+
+  test.each(["B0FQFB8FMG", "B0D1XD1ZV3"])("mobile no-price extraction with desktop redirect validates ASIN %s", async (asin) => {
+    vi.useFakeTimers();
+    vi.stubEnv("FIRECRAWL_API_KEY", "test-key");
+    const { t, cartItemId, productId, offerId } = await seed();
+    const mobileUrl = "https://www.amazon.com/gp/aw/d/B0FQFB8FMG";
+    await t.run(async (ctx) => {
+      await ctx.db.patch("cartItems", cartItemId, { url: mobileUrl });
+      await ctx.db.patch("offers", offerId, { url: mobileUrl, canonicalKey: "amazon:amazon.com/gp/aw/d/B0FQFB8FMG" });
+    });
+    vi.stubGlobal("fetch", vi.fn(async (_url, init) => {
+      if (!init?.body) throw new Error("OpenGraph unavailable");
+      const request = JSON.parse(init.body);
+      return new Response(JSON.stringify({ data: { metadata: { sourceURL: request.url.includes("/gp/aw/d/") ? url : request.url }, json:
+        request.url === mobileUrl ? { asinOrSku: asin, imageUrl: image, displayedPrice: null } : {} } }));
+    }));
+    await t.action(internal.enrichment.enrichOfferFromWeb, { cartItemId });
+    const product = await t.run((ctx) => ctx.db.get("products", productId));
+    expect(product?.imageUrl).toBe(asin === "B0FQFB8FMG" ? image : undefined);
+    expect((await t.run((ctx) => ctx.db.get("offers", offerId)))?.priceCents).toBe(0);
+  });
+
+  test("rejects wrong-ASIN cached image despite a cached true match flag", async () => {
+    const { t, cartItemId, productId, offerId } = await seed();
+    await t.run(async (ctx) => {
+      await ctx.db.patch("offers", offerId, { url: "https://www.amazon.com/gp/aw/d/B0FQFB8FMG" });
+      await ctx.db.insert("extractionCache", {
+        kind: "offer", key: "amazon:B0FQFB8FMG", source: "firecrawl", simulated: false, attempts: 1, fetchedAt: 1,
+        payload: JSON.stringify({ variantMatches: true, offer: { imageUrl: image, asinOrSku: "B0D1XD1ZV3" } }),
+      });
+    });
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("unavailable")));
+    expect(await t.action(internal.productImages.refreshMissing, { cartItemId })).toBeNull();
+    expect((await t.run((ctx) => ctx.db.get("products", productId)))?.imageUrl).toBeUndefined();
+  });
+
+  test("fetches selected offer rather than original item URL", async () => {
+    const { t, cartItemId } = await seed();
+    await t.run((ctx) => ctx.db.patch("cartItems", cartItemId, { url: "https://www.amazon.com/dp/B0D1XD1ZV3" }));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(html)));
+    expect(await t.action(internal.productImages.refreshMissing, { cartItemId })).toBe(image);
+    expect(vi.mocked(fetch).mock.calls[0][0]).toBe(url);
+  });
+
+  test("declines product-level image repair for sibling variants", async () => {
+    const { t, cartItemId, productId, offerId, variantId } = await seed();
+    await t.run((ctx) => ctx.db.insert("variants", { productId, label: "Black" }));
+    vi.stubGlobal("fetch", vi.fn());
+    expect(await t.action(internal.productImages.refreshMissing, { cartItemId })).toBeNull();
+    expect(await t.mutation(internal.productImages.applyMissing, { cartItemId, productId, offerId, variantId, sourceUrl: url, imageUrl: image })).toBeNull();
+    expect(fetch).not.toHaveBeenCalled();
+    expect((await t.run((ctx) => ctx.db.get("products", productId)))?.imageUrl).toBeUndefined();
+  });
+
+  test("rejects a stale repair after selected offer changes during fetch", async () => {
+    const { t, cartItemId, productId, offerId } = await seed();
+    const nextOffer = await t.run(async (ctx) => {
+      const offer = (await ctx.db.get("offers", offerId))!;
+      const { _id, _creationTime, ...fields } = offer;
+      return await ctx.db.insert("offers", { ...fields, url: "https://www.amazon.com/dp/B0D1XD1ZV3", canonicalKey: "amazon:B0D1XD1ZV3" });
+    });
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      await t.run((ctx) => ctx.db.patch("cartItems", cartItemId, { offerId: nextOffer }));
+      return new Response(html);
+    }));
+    expect(await t.action(internal.productImages.refreshMissing, { cartItemId })).toBeNull();
+    expect((await t.run((ctx) => ctx.db.get("products", productId)))?.imageUrl).toBeUndefined();
+  });
+
+  test("rejects a stale repair after variant changes on the same offer", async () => {
+    const { t, cartItemId, productId, offerId, variantId } = await seed();
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      await t.run(async (ctx) => {
+        await ctx.db.delete("variants", variantId);
+        const nextVariant = await ctx.db.insert("variants", { productId, label: "Black" });
+        await ctx.db.patch("offers", offerId, { variantId: nextVariant });
+        await ctx.db.patch("cartItems", cartItemId, { variantId: nextVariant });
+      });
+      return new Response(html);
+    }));
+    expect(await t.action(internal.productImages.refreshMissing, { cartItemId })).toBeNull();
+    expect((await t.run((ctx) => ctx.db.get("products", productId)))?.imageUrl).toBeUndefined();
+  });
+
   test("fills missing image while leaving offer, price and variant identical", async () => {
     const { t, shopperId, cartItemId, productId, offerId, variantId } = await seed();
     const before = await t.run(async (ctx) => ({ offer: await ctx.db.get("offers", offerId), variant: await ctx.db.get("variants", variantId) }));
@@ -94,10 +201,10 @@ describe("image-only repair", () => {
   });
 
   test("preserves existing images without fetching", async () => {
-    const { t, cartItemId } = await seed("https://example.com/good.jpg");
+    const { t, cartItemId, productId, offerId, variantId } = await seed("https://example.com/good.jpg");
     vi.stubGlobal("fetch", vi.fn());
     expect(await t.action(internal.productImages.refreshMissing, { cartItemId })).toBe("https://example.com/good.jpg");
-    expect(await t.mutation(internal.productImages.applyMissing, { cartItemId, imageUrl: image, sourceUrl: url })).toBe("https://example.com/good.jpg");
+    expect(await t.mutation(internal.productImages.applyMissing, { cartItemId, productId, offerId, variantId, imageUrl: image, sourceUrl: url })).toBe("https://example.com/good.jpg");
     expect(fetch).not.toHaveBeenCalled();
   });
 
@@ -115,9 +222,9 @@ describe("image-only repair", () => {
   });
 
   test("rejects cross-listing repairs and unsafe URLs", async () => {
-    const { t, cartItemId, productId } = await seed();
-    expect(await t.mutation(internal.productImages.applyMissing, { cartItemId, imageUrl: image, sourceUrl: "https://www.amazon.com/dp/B0D1XD1ZV3" })).toBeNull();
-    expect(await t.mutation(internal.productImages.applyMissing, { cartItemId, imageUrl: "data:image/png;base64,AA", sourceUrl: url })).toBeNull();
+    const { t, cartItemId, productId, offerId, variantId } = await seed();
+    expect(await t.mutation(internal.productImages.applyMissing, { cartItemId, productId, offerId, variantId, imageUrl: image, sourceUrl: "https://www.amazon.com/dp/B0D1XD1ZV3" })).toBeNull();
+    expect(await t.mutation(internal.productImages.applyMissing, { cartItemId, productId, offerId, variantId, imageUrl: "data:image/png;base64,AA", sourceUrl: url })).toBeNull();
     expect(await t.run((ctx) => ctx.db.get("products", productId))).not.toHaveProperty("imageUrl");
   });
 
