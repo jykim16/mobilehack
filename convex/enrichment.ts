@@ -64,6 +64,7 @@ type CachedExtraction = {
   note: string | null;
   error: string | null;
   variantMatches: boolean;
+  imageUrl?: string | null;
 };
 
 /**
@@ -174,6 +175,9 @@ async function extractWithCache(
 
   const error = extraction.error ?? "the page returned no price";
   await ctx.runMutation(internal.cache.fail, { kind: "offer", key: canonicalKey, error, token });
+  const imageUrl = extraction.variantMatches && extraction.sourceUrl && canonicalKeyForUrl(extraction.sourceUrl) === canonicalKey
+    ? resolveImageUrl(extraction.offer?.imageUrl ?? null, extraction.sourceUrl)
+    : null;
   if (payload) {
     return {
       offer: payload,
@@ -185,9 +189,19 @@ async function extractWithCache(
       )}.`,
       error,
       variantMatches,
+      imageUrl,
     };
   }
-  return { offer: null, sourceUrl: url, observedAt: now, stale: false, note: null, error, variantMatches: true };
+  return {
+    offer: null,
+    sourceUrl: url,
+    observedAt: now,
+    stale: false,
+    note: null,
+    error,
+    variantMatches: extraction.variantMatches,
+    imageUrl,
+  };
 }
 
 export const enrichOfferFromWeb = internalAction({
@@ -197,6 +211,11 @@ export const enrichOfferFromWeb = internalAction({
     const data = await ctx.runQuery(internal.enrichment.getSectionContext, { cartItemId });
     if (!data) return null;
     const extraction = await extractWithCache(ctx, data.offer.url, data.offer.canonicalKey, false);
+    if (extraction.imageUrl) {
+      await ctx.runMutation(internal.productImages.applyMissing, {
+        cartItemId, imageUrl: extraction.imageUrl, sourceUrl: data.offer.url,
+      });
+    }
     const usable =
       extraction.offer !== null && (extraction.offer.priceCents !== null || extraction.offer.seller !== null);
     if (!usable) {
@@ -566,6 +585,7 @@ export const start = internalMutation({
   handler: async (ctx, { cartItemId }) => {
     const item = await ctx.db.get("cartItems", cartItemId);
     if (!item || !item.offerId) return null;
+    await ctx.scheduler.runAfter(0, internal.productImages.refreshMissing, { cartItemId });
     for (const section of SECTION_NAMES) {
       const existing = await ctx.db
         .query("evidence")
@@ -612,6 +632,7 @@ export const restartSections = internalMutation({
   handler: async (ctx, { cartItemId }) => {
     const item = await ctx.db.get("cartItems", cartItemId);
     if (!item || !item.offerId) return null;
+    await ctx.scheduler.runAfter(0, internal.productImages.refreshMissing, { cartItemId });
     const isAmazon = !!item.url && /amazon\./i.test(item.url);
     const rows = await ctx.db
       .query("evidence")
@@ -667,6 +688,7 @@ export const resolveOffer = internalAction({
   handler: async (ctx, { cartItemId }) => {
     const item = await ctx.runQuery(internal.enrichment.getItemInternal, { cartItemId });
     if (!item || item.offerId) return null;
+    let extractedImage: string | null = null;
     if (env.FIRECRAWL_API_KEY) {
       const extraction = await extractWithCache(
         ctx,
@@ -674,6 +696,7 @@ export const resolveOffer = internalAction({
         canonicalKeyForUrl(item.url) ?? item.url,
         false,
       );
+      extractedImage = extraction.imageUrl ?? null;
       if (
         extraction.offer &&
         extraction.variantMatches &&
@@ -699,7 +722,7 @@ export const resolveOffer = internalAction({
     await ctx.runMutation(internal.enrichment.attachOffer, {
       cartItemId,
       title: og.title ?? titleFromUrl(item.url),
-      imageUrl: og.image ?? "",
+      imageUrl: og.image ?? extractedImage ?? "",
       description: og.description ?? "",
       priceCents: og.priceCents ?? 0,
     });

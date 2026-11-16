@@ -85,9 +85,11 @@ function asBoolean(value: unknown): boolean | null {
 
 /** Relative image paths are resolved against the listing they came from. */
 export function resolveImageUrl(imageUrl: string | null, listingUrl: string): string | null {
-  if (!imageUrl) return null;
+  if (!imageUrl?.trim()) return null;
   try {
-    return new URL(imageUrl, listingUrl).toString();
+    const url = new URL(imageUrl, listingUrl);
+    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) return null;
+    return url.toString();
   } catch {
     return null;
   }

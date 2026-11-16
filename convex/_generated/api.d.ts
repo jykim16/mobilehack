@@ -44,6 +44,7 @@ import type * as model_views from "../model/views.js";
 import type * as model_whop from "../model/whop.js";
 import type * as orders from "../orders.js";
 import type * as payments from "../payments.js";
+import type * as productImages from "../productImages.js";
 import type * as purchases from "../purchases.js";
 import type * as retail_adapter from "../retail/adapter.js";
 import type * as retail_index from "../retail/index.js";
@@ -96,6 +97,7 @@ declare const fullApi: ApiFromModules<{
   "model/whop": typeof model_whop;
   orders: typeof orders;
   payments: typeof payments;
+  productImages: typeof productImages;
   purchases: typeof purchases;
   "retail/adapter": typeof retail_adapter;
   "retail/index": typeof retail_index;

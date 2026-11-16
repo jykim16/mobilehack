@@ -1,3 +1,6 @@
+import { resolveImageUrl } from "./firecrawlExtract";
+import { canonicalKeyForUrl } from "./urls";
+
 export type OpenGraph = {
   title?: string;
   image?: string;
@@ -15,6 +18,37 @@ function meta(html: string, key: string): string | undefined {
   return (m?.[1] ?? m?.[2])?.replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/&#39;/g, "'").trim();
 }
 
+function attribute(tag: string, name: string): string | undefined {
+  const match = tag.match(new RegExp(`\\s${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`, "i"));
+  return (match?.[1] ?? match?.[2])?.replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/&#39;/g, "'").trim();
+}
+
+export function parseOpenGraph(html: string, url: string): OpenGraph {
+  const key = canonicalKeyForUrl(url);
+  let image = resolveImageUrl(meta(html, "og:image") ?? null, url);
+  if (key?.startsWith("amazon:")) {
+    const asinTag = html.match(/<input\b[^>]*\sid=["']ASIN["'][^>]*>/i)?.[0];
+    const asin = asinTag ? attribute(asinTag, "value") : undefined;
+    if (!asin || key !== `amazon:${asin.toUpperCase()}`) return {};
+    const mainImage = html.match(/<img\b[^>]*\sid=["'](?:landingImage|imgBlkFront)["'][^>]*>/i)?.[0];
+    if (!image && mainImage) {
+      for (const name of ["data-a-hires", "data-old-hires", "src"]) {
+        image = resolveImageUrl(attribute(mainImage, name) ?? null, url);
+        if (image) break;
+      }
+    }
+  }
+  const price = meta(html, "product:price:amount") ?? meta(html, "og:price:amount");
+  const titleTag = html.match(/<title[^>]*>([^<]+)<\/title>/i)?.[1]?.trim();
+  return {
+    title: meta(html, "og:title") ?? titleTag,
+    image: image ?? undefined,
+    description: meta(html, "og:description") ?? meta(html, "description"),
+    siteName: meta(html, "og:site_name"),
+    priceCents: price && !Number.isNaN(Number(price)) ? Math.round(Number(price) * 100) : undefined,
+  };
+}
+
 export async function fetchOpenGraph(url: string): Promise<OpenGraph> {
   const res = await fetch(url, {
     headers: {
@@ -24,16 +58,10 @@ export async function fetchOpenGraph(url: string): Promise<OpenGraph> {
     redirect: "follow",
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const html = (await res.text()).slice(0, 500_000);
-  const price = meta(html, "product:price:amount") ?? meta(html, "og:price:amount");
-  const titleTag = html.match(/<title[^>]*>([^<]+)<\/title>/i)?.[1]?.trim();
-  return {
-    title: meta(html, "og:title") ?? titleTag,
-    image: meta(html, "og:image"),
-    description: meta(html, "og:description") ?? meta(html, "description"),
-    siteName: meta(html, "og:site_name"),
-    priceCents: price && !Number.isNaN(Number(price)) ? Math.round(Number(price) * 100) : undefined,
-  };
+  const key = canonicalKeyForUrl(url);
+  if (key?.startsWith("amazon:") && canonicalKeyForUrl(res.url || url) !== key) return {};
+  const html = (await res.text()).slice(0, 1_500_000);
+  return parseOpenGraph(html, url);
 }
 
 export function titleFromUrl(url: string): string {
