@@ -8,6 +8,7 @@ import { AmazonBrowserProvider } from '@/amazon';
 import { useColors } from '@/constants/theme';
 import { ShopProvider } from '@/data/shop-store';
 import { SessionProvider, useSession, useShopperId } from '@/lib/session';
+import { whopPreviewEnabled } from '@/payments/preview-config';
 
 export default function RootLayout() {
   const Colors = useColors();
@@ -48,6 +49,9 @@ function RootStack() {
       <Stack.Protected guard={!needsSignIn}>
         <Stack.Screen name="(tabs)" />
         <Stack.Screen name="connect-agent" />
+        <Stack.Protected guard={whopPreviewEnabled}>
+          <Stack.Screen name="payment-details" options={{ presentation: 'modal' }} />
+        </Stack.Protected>
         <Stack.Screen name="item/[id]" options={{ presentation: 'fullScreenModal' }} />
         <Stack.Screen name="purchase/[id]" options={{ presentation: 'fullScreenModal' }} />
         <Stack.Screen name="reviews/[id]" options={{ presentation: 'modal', contentStyle: { backgroundColor: Colors.sheet } }} />

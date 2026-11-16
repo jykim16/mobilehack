@@ -1,6 +1,12 @@
 # Hosted payment UI (gated follow-up)
 
-The components in `src/payments` use local presentation models. `whop-adapter.ts` normalizes the published `payments.subaccount` and `payments.status` response fields without calling either endpoint. `paymentCapability.available` is false; no production screen mounts them. The coordinator exposes only reads and opening an existing checkout. It cannot approve a request, create a payment, retry a charge, place an order, or withdraw funds.
+The components in `src/payments` use local presentation models. `whop-adapter.ts` normalizes the published `payments.subaccount` and `payments.status` response fields without calling either endpoint. `paymentCapability.available` is false. The coordinator exposes only reads and opening an existing checkout. It cannot approve a request, create a payment, retry a charge, place an order, or withdraw funds.
+
+## Visible Account preview
+
+Account shows a locally bundled official Whop logo and a synthetic `•••• 0000` card in builds whose `extra.appEnvironment` is exactly `development` or `preview`. This uses the existing `app.config.ts` environment selection; a preview APK does not require `__DEV__`. Production and missing/unknown environments hide both the card and its protected Payment details route. The read-only details page has no fixture controls, browser checkout, or backend calls.
+
+The current UI always supplies the unmapped model: **Account not linked / Balance unavailable**. It does not fetch a shared balance or infer mapping from sign-in, email, a provider account id, or the existence of a sandbox account. Only a future explicitly authorized, unambiguous mapping may supply a backend model. The visual synthetic card is not an issued/active card. The original brand sources and usage attribution are in `assets/brands/whop/ATTRIBUTION.md`.
 
 ## Needed before live wiring
 
