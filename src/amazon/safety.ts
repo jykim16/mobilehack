@@ -442,6 +442,7 @@ export interface SyncedOrderCandidate {
   items?: ApprovedBasketItem[];
   totalCents?: number | null;
   placedAtMs?: number | null;
+  placedAtPrecision?: 'timestamp' | 'date';
   syncedAt: number;
 }
 
@@ -453,6 +454,7 @@ export type LedgerEntry =
       approvedItems: ApprovedBasketItem[];
       expectedTotalCents: number;
       preExistingOrderIds: Set<string>;
+      baselineCapturedAt?: number;
     };
 
 export interface ItemCheckoutBinding {
@@ -528,9 +530,10 @@ export class OrderSubmissionLedger {
     approvedItems: ApprovedBasketItem[];
     expectedTotalCents: number;
     preExistingOrderIds?: Iterable<string>;
+    baselineCapturedAt?: number;
   }): void {
     const existing = this.entries.get(params.orderRef);
-    if (existing?.state === 'placed') return;
+    if (existing) return;
 
     const preExisting = new Set<string>(this.observedHistoricalOrderIds);
     if (params.preExistingOrderIds) {
@@ -545,6 +548,7 @@ export class OrderSubmissionLedger {
       approvedItems: params.approvedItems,
       expectedTotalCents: params.expectedTotalCents,
       preExistingOrderIds: preExisting,
+      baselineCapturedAt: params.baselineCapturedAt,
     });
   }
 
@@ -565,24 +569,27 @@ export class OrderSubmissionLedger {
 
     for (const [orderRef, entry] of this.entries.entries()) {
       if (entry.state !== 'unknown') continue;
+      if (
+        entry.baselineCapturedAt === undefined ||
+        !Number.isFinite(entry.baselineCapturedAt) ||
+        entry.baselineCapturedAt > entry.submittedAt ||
+        entry.submittedAt - entry.baselineCapturedAt > 30_000
+      ) continue;
       const expectedByAsin = new Map<string, number>();
       for (const item of entry.approvedItems) {
         const key = item.asin.trim().toUpperCase();
         expectedByAsin.set(key, (expectedByAsin.get(key) ?? 0) + item.quantity);
       }
 
-      // Start of local calendar day containing submittedAt (Your Orders headers carry calendar dates)
-      const submissionDayFloor = new Date(entry.submittedAt);
-      submissionDayFloor.setHours(0, 0, 0, 0);
-      const minOrderMs = submissionDayFloor.getTime();
-      const maxOrderMs = entry.submittedAt + 48 * 60 * 60 * 1000;
+      const minOrderMs = entry.submittedAt;
+      const maxOrderMs = entry.submittedAt + 10 * 60 * 1000;
 
       const candidates = syncedOrders.filter((ord) => {
         if (!AMAZON_ORDER_ID_RE.test(ord.retailerOrderId)) return false;
+        if (ord.placedAtPrecision !== 'timestamp' || ord.syncedAt < entry.submittedAt) return false;
         if (claimedOrderIds.has(ord.retailerOrderId)) return false;
         if (entry.preExistingOrderIds.has(ord.retailerOrderId)) return false;
 
-        // Require verified order date on or after submission day so historical orders never match
         if (
           typeof ord.placedAtMs !== 'number' ||
           !Number.isFinite(ord.placedAtMs) ||
